@@ -1,0 +1,16 @@
+services:
+  redis:
+    image: redis:latest
+    container_name: local-redis
+    ports:
+      - "6379:6379"
+
+  db:
+    image: postgres:latest
+    container_name: local-postgres
+    environment:
+      POSTGRES_USER: django_user
+      POSTGRES_PASSWORD: django_password
+      POSTGRES_DB: django_db
+    ports:
+      - "5432:5432"
