@@ -332,8 +332,8 @@ class AuthController:
     @http_post(
         "/password-reset/confirm",
         response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
-        summary="Confirm password reset",
-        description="Reset password using the token received via email.",
+        summary="Confirm password reset with OTP",
+        description="Reset password using the 6-digit code received via email.",
     )
     async def confirm_password_reset(
         self, request: HttpRequest, payload: PasswordResetConfirmSchema
@@ -353,7 +353,8 @@ class AuthController:
 
         try:
             await AuthService.aconfirm_password_reset(
-                token=payload.token,
+                email=payload.email,
+                otp=payload.otp,
                 new_password=payload.new_password,
             )
             return 200, {

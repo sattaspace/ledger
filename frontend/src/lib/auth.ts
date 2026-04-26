@@ -86,15 +86,19 @@ export async function requestPasswordReset(email: string): Promise<void> {
 }
 
 /**
- * Confirm password reset — POST /auth/password-reset/confirm
+ * Confirm password reset — POST /auth/password-reset/confirm (OTP-based)
  */
 export async function confirmPasswordReset(
-  token: string,
+  email: string,
+  otp: string,
   new_password: string,
+  confirm_password: string,
 ): Promise<void> {
   await apiClient.post("/auth/password-reset/confirm", {
-    token,
+    email,
+    otp,
     new_password,
+    confirm_password,
   });
 }
 

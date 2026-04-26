@@ -131,64 +131,54 @@ class AuthService:
         logger.info(f"Password changed (async): user={user.email}")
 
     # =========================================================================
-    # Password Reset (Token-Based)
+    # Password Reset (OTP-Based)
     # =========================================================================
 
-    @staticmethod
-    def request_password_reset(email: str) -> str:
-        """Request a password reset. Generates UUID4 token, invalidates old ones."""
-        try:
-            user = UserModel.objects.get(email=email, is_active=True, is_deleted=False)
-        except User.DoesNotExist:
-            logger.warning(f"Password reset requested for non-existent email: {email}")
-            raise ValueError(
-                "If an account with this email exists, a reset link has been sent."
-            )
+    PASSWORD_RESET_OTP_PREFIX = "pwreset_otp"
+    PASSWORD_RESET_ATTEMPTS_PREFIX = "pwreset_attempts"
+    PASSWORD_RESET_OTP_EXPIRY = 600  # 10 minutes
+    MAX_PASSWORD_RESET_ATTEMPTS = 5
 
-        PasswordResetToken.objects.filter(user=user, used_at__isnull=True).update(
-            used_at=timezone.now()
-        )
-        reset_token = PasswordResetToken.objects.create(user=user)
+    @classmethod
+    def _generate_otp(cls) -> str:
+        """Generate a cryptographically random 6-digit OTP."""
+        import secrets
 
-        try:
-            from django.conf import settings
+        return str(secrets.randbelow(1_000_000)).zfill(6)
 
-            send_mail(
-                subject="Password Reset - Satta Ledger",
-                message=(
-                    f"You requested a password reset.\n\n"
-                    f"Your reset token: {reset_token.token}\n\n"
-                    f"This token expires in 15 minutes.\n"
-                    f"If you didn't request this, ignore this email."
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password reset email: {e}")
+    @classmethod
+    def _get_pwreset_otp_cache_key(cls, email: str) -> str:
+        return f"{cls.PASSWORD_RESET_OTP_PREFIX}:{email.lower().strip()}"
 
-        logger.info(f"Password reset requested: user={user.email}")
-        return str(reset_token.token)
+    @classmethod
+    def _get_pwreset_attempts_cache_key(cls, email: str) -> str:
+        return f"{cls.PASSWORD_RESET_ATTEMPTS_PREFIX}:{email.lower().strip()}"
 
-    @staticmethod
-    async def arequest_password_reset(email: str) -> str:
-        """Async version of request_password_reset()."""
+    @classmethod
+    async def arequest_password_reset(cls, email: str) -> None:
+        """Request a password reset. Generates 6-digit OTP, sends via email."""
+        email = email.lower().strip()
         try:
             user = await UserModel.objects.aget(
                 email=email, is_active=True, is_deleted=False
             )
         except User.DoesNotExist:
             logger.warning(f"Password reset requested for non-existent email: {email}")
+            # Still raise to trigger the 200 "sent" response in controller
             raise ValueError(
-                "If an account with this email exists, a reset link has been sent."
+                "If an account with this email exists, a reset code has been sent."
             )
 
-        await PasswordResetToken.objects.filter(
-            user=user, used_at__isnull=True
-        ).aupdate(used_at=timezone.now())
+        otp = cls._generate_otp()
+        cache_key = cls._get_pwreset_otp_cache_key(email)
 
-        reset_token = await PasswordResetToken.objects.acreate(user=user)
+        from django.core.cache import cache
+
+        await sync_to_async(cache.set)(cache_key, otp, cls.PASSWORD_RESET_OTP_EXPIRY)
+
+        # Reset attempt counter
+        attempts_key = cls._get_pwreset_attempts_cache_key(email)
+        await sync_to_async(cache.delete)(attempts_key)
 
         try:
             from django.conf import settings
@@ -197,8 +187,8 @@ class AuthService:
                 subject="Password Reset - Satta Ledger",
                 message=(
                     f"You requested a password reset.\n\n"
-                    f"Your reset token: {reset_token.token}\n\n"
-                    f"This token expires in 15 minutes.\n"
+                    f"Your verification code is: {otp}\n\n"
+                    f"This code expires in 10 minutes.\n\n"
                     f"If you didn't request this, ignore this email."
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
@@ -206,59 +196,59 @@ class AuthService:
                 fail_silently=True,
             )
         except Exception as e:
-            logger.error(f"Failed to send password reset email: {e}")
+            logger.error(f"Failed to send password reset OTP: {e}")
 
-        logger.info(f"Password reset requested (async): user={user.email}")
-        return str(reset_token.token)
+        logger.info(f"Password reset OTP sent (async): user={user.email}")
 
-    @staticmethod
-    def confirm_password_reset(token: str, new_password: str) -> None:
-        """Confirm a password reset using the token."""
-        try:
-            reset_token = PasswordResetToken.objects.select_related("user").get(
-                token=token
+    @classmethod
+    async def aconfirm_password_reset(
+        cls, email: str, otp: str, new_password: str
+    ) -> None:
+        """Confirm a password reset using OTP and set new password."""
+        from django.core.cache import cache
+
+        email = email.lower().strip()
+        cache_key = cls._get_pwreset_otp_cache_key(email)
+        attempts_key = cls._get_pwreset_attempts_cache_key(email)
+
+        # Check attempt limit
+        attempts = await sync_to_async(cache.get)(attempts_key, 0)
+        if attempts >= cls.MAX_PASSWORD_RESET_ATTEMPTS:
+            await sync_to_async(cache.delete)(cache_key)
+            raise ValueError(
+                "Too many failed attempts. Please request a new reset code."
             )
-        except PasswordResetToken.DoesNotExist:
-            raise ValueError("Invalid or expired reset token.")
 
-        if not reset_token.is_valid:
-            if reset_token.is_used:
-                raise ValueError("This reset token has already been used.")
-            else:
-                raise ValueError("This reset token has expired.")
+        # Get cached OTP
+        cached_otp = await sync_to_async(cache.get)(cache_key)
+        if not cached_otp:
+            raise ValueError("Reset code has expired. Please request a new one.")
 
-        user = reset_token.user
-        if not user.is_active or user.is_deleted:
-            raise ValueError("This account is no longer active.")
-
-        user.set_password(new_password)
-        user.save(update_fields=["password"])
-        reset_token.mark_used()
-        logger.info(f"Password reset confirmed: user={user.email}")
-
-    @staticmethod
-    async def aconfirm_password_reset(token: str, new_password: str) -> None:
-        """Async version of confirm_password_reset()."""
-        try:
-            reset_token = await PasswordResetToken.objects.select_related("user").aget(
-                token=token
+        # Validate OTP
+        if otp.strip() != str(cached_otp):
+            await sync_to_async(cache.set)(
+                attempts_key, attempts + 1, cls.PASSWORD_RESET_OTP_EXPIRY
             )
-        except PasswordResetToken.DoesNotExist:
-            raise ValueError("Invalid or expired reset token.")
+            remaining = cls.MAX_PASSWORD_RESET_ATTEMPTS - (attempts + 1)
+            raise ValueError(
+                f"Invalid reset code. {remaining} attempt{'s' if remaining != 1 else ''} remaining."
+            )
 
-        if not reset_token.is_valid:
-            if reset_token.is_used:
-                raise ValueError("This reset token has already been used.")
-            else:
-                raise ValueError("This reset token has expired.")
-
-        user = reset_token.user
-        if not user.is_active or user.is_deleted:
-            raise ValueError("This account is no longer active.")
+        # OTP correct — find user and reset password
+        try:
+            user = await UserModel.objects.aget(
+                email=email, is_active=True, is_deleted=False
+            )
+        except User.DoesNotExist:
+            raise ValueError("No account found with this email address.")
 
         user.set_password(new_password)
         await user.asave(update_fields=["password"])
-        await sync_to_async(reset_token.mark_used)()
+
+        # Clean up cache
+        await sync_to_async(cache.delete)(cache_key)
+        await sync_to_async(cache.delete)(attempts_key)
+
         logger.info(f"Password reset confirmed (async): user={user.email}")
 
     # =========================================================================

@@ -143,12 +143,20 @@ class PasswordResetRequestSchema(Schema):
 
 
 class PasswordResetConfirmSchema(Schema):
-    """Schema for confirming a password reset with token."""
+    """Schema for confirming a password reset with OTP."""
 
-    token: str = Field(
+    email: str = Field(
         ...,
-        description="Password reset token (UUID4) received via email",
-        examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"],
+        max_length=255,
+        description="Email address associated with the account",
+        examples=["user@example.com"],
+    )
+    otp: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        description="6-digit OTP code received via email",
+        examples=["123456"],
     )
     new_password: str = Field(
         ...,
@@ -162,22 +170,34 @@ class PasswordResetConfirmSchema(Schema):
         description="Confirm new password",
     )
 
+    @field_validator("email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+    @field_validator("otp")
+    @classmethod
+    def otp_must_be_digits(cls, v: str) -> str:
+        if not v.strip().isdigit():
+            raise ValueError("OTP must be a 6-digit number.")
+        return v.strip()
+
     @field_validator("new_password")
     @classmethod
     def password_strength(cls, v: str) -> str:
         return _validate_password_strength(v)
 
-    @field_validator("token")
-    @classmethod
-    def token_must_be_uuid(cls, v: str) -> str:
-        """Validate that the token is a valid UUID4 format."""
-        import uuid
+    # @field_validator("token")
+    # @classmethod
+    # def token_must_be_uuid(cls, v: str) -> str:
+    #     """Validate that the token is a valid UUID4 format."""
+    #     import uuid
 
-        try:
-            uuid.UUID(v, version=4)
-        except (ValueError, AttributeError):
-            raise ValueError("Invalid token format. Expected UUID4.")
-        return v
+    #     try:
+    #         uuid.UUID(v, version=4)
+    #     except (ValueError, AttributeError):
+    #         raise ValueError("Invalid token format. Expected UUID4.")
+    #     return v
 
     @model_validator(mode="after")
     def passwords_match(self):
