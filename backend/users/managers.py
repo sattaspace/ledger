@@ -36,17 +36,7 @@ class CustomUserManager(BaseUserManager):
         return user
 
     def create_user(self, email, password=None, **extra_fields):
-        """Create and return a regular user.
-
-        Args:
-            email: The user's email address (required).
-            password: The user's password. If None, an unusable password is set
-                      (used for OAuth-only users).
-            **extra_fields: Additional fields (first_name, last_name, etc.)
-
-        Returns:
-            The created User instance.
-        """
+        """Create and return a regular user."""
         extra_fields.setdefault("is_staff", False)
         extra_fields.setdefault("is_superuser", False)
         extra_fields.setdefault("is_active", False)
@@ -55,19 +45,7 @@ class CustomUserManager(BaseUserManager):
         return self._create_user(email, password, **extra_fields)
 
     def create_superuser(self, email, password=None, **extra_fields):
-        """Create and return a superuser.
-
-        Args:
-            email: The superuser's email address.
-            password: The superuser's password.
-            **extra_fields: Additional fields.
-
-        Returns:
-            The created superuser instance.
-
-        Raises:
-            ValueError: If is_staff or is_superuser is not True.
-        """
+        """Create and return a superuser."""
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
@@ -81,11 +59,15 @@ class CustomUserManager(BaseUserManager):
         return self._create_user(email, password, **extra_fields)
 
     def get_by_natural_key(self, email):
-        """Allow authentication by email as the natural key."""
-        return self.get(email=email)
+        """Allow authentication by email as the natural key.
+
+        Note: Excludes soft-deleted users to prevent authentication
+        of deactivated accounts.
+        """
+        return self.get(email=email, is_deleted=False)
 
     def email_exists(self, email: str) -> bool:
-        """Check if a user with the given email exists."""
+        """Check if a user with the given email exists (including non-active)."""
         return self.filter(email=email).exists()
 
     def active(self):
@@ -99,15 +81,6 @@ class CustomUserManager(BaseUserManager):
     # =========================================================================
     # Asynchronous Methods (Django 5.2+ async ORM)
     # =========================================================================
-    # These methods mirror their sync counterparts but use Django's async ORM
-    # (aget, acount, afirst, etc.). Use these in async controller/service
-    # methods to avoid blocking the event loop.
-    #
-    # Usage in async contexts:
-    #   async def my_async_view(request):
-    #       user = await User.objects.acreate_user(email=..., password=...)
-    #       exists = await User.objects.aemail_exists(email=...)
-    #       user = await User.objects.aget_by_slug(slug)
 
     async def acreate_user(self, email, password=None, **extra_fields):
         """Async version of create_user()."""
@@ -141,7 +114,7 @@ class CustomUserManager(BaseUserManager):
 
     async def aget_by_natural_key(self, email):
         """Async version of get_by_natural_key()."""
-        return await self.aget(email=email)
+        return await self.aget(email=email, is_deleted=False)
 
     async def aemail_exists(self, email: str) -> bool:
         """Async version of email_exists()."""
@@ -169,7 +142,3 @@ class CustomUserManager(BaseUserManager):
     async def aget_active_by_email(self, email: str):
         """Get an active, non-deleted user by email (async). Returns None if not found."""
         return await self.filter(email=email, is_active=True, is_deleted=False).afirst()
-
-    async def aget_by_oauth(self, provider: str, oauth_uid: str):
-        """Get a user by OAuth provider and UID (async). Returns None if not found."""
-        return await self.filter(oauth_provider=provider, oauth_uid=oauth_uid).afirst()

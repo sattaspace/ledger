@@ -43,22 +43,8 @@ class TooManyRequestsException(APIException):
     default_message = "Too many requests. Please try again later."
 
 
-class OTPExpiredException(APIException):
-    """Raised when an OTP code has expired."""
-
-    status_code = 410
-    default_message = "The OTP code has expired. Please request a new one."
-
-
-class InvalidOTPException(APIException):
-    """Raised when an OTP code is invalid."""
-
-    status_code = 400
-    default_message = "The OTP code is invalid."
-
-
 class AccountNotActiveException(APIException):
     """Raised when user account is not active."""
 
     status_code = 403
-    default_message = "Your account is not active. Please verify your email."
+    default_message = "Your account is not active. Please contact support."

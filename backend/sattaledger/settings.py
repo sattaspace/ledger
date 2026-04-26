@@ -42,7 +42,7 @@ INSTALLED_APPS = [
     "django_celery_beat",
     "ninja_extra",
     "ninja_jwt",
-    'ninja_jwt.token_blacklist',
+    "ninja_jwt.token_blacklist",
     "corsheaders",
     "users",
     "api",
@@ -224,7 +224,53 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SECURE_SSL_HOST = True
     SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_NAME = env("SESSION_COOKIE_NAME")
+    SESSION_COOKIE_NAME = env("SESSION_COOKIE_NAME", default="sessionid")
+
+    # HSTS — enforce HTTPS
+    SECURE_HSTS_SECONDS = env(
+        "SECURE_HSTS_SECONDS", default=31536000, cast=int
+    )  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # Require separate JWT signing key in production (never fall back to SECRET_KEY)
+    _jwt_key = env("JWT_SIGNING_KEY", default=None)
+    if _jwt_key is None:
+        raise environ.ImproperlyConfigured(
+            "JWT_SIGNING_KEY must be set explicitly in production (not defaulting to SECRET_KEY)."
+        )
+
+# --- Rate Limiting ---
+RATE_LIMIT_LOGIN_ATTEMPTS = env("RATE_LIMIT_LOGIN_ATTEMPTS", default=10, cast=int)
+RATE_LIMIT_LOGIN_WINDOW = env(
+    "RATE_LIMIT_LOGIN_WINDOW", default=900, cast=int
+)  # 15 min
+RATE_LIMIT_REGISTER_ATTEMPTS = env("RATE_LIMIT_REGISTER_ATTEMPTS", default=5, cast=int)
+RATE_LIMIT_REGISTER_WINDOW = env(
+    "RATE_LIMIT_REGISTER_WINDOW", default=3600, cast=int
+)  # 1 hour
+RATE_LIMIT_PASSWORD_RESET_ATTEMPTS = env(
+    "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", default=5, cast=int
+)
+RATE_LIMIT_PASSWORD_RESET_WINDOW = env(
+    "RATE_LIMIT_PASSWORD_RESET_WINDOW", default=3600, cast=int
+)  # 1 hour
+
+# --- Password Reset ---
+PASSWORD_RESET_TOKEN_EXPIRY_SECONDS = env(
+    "PASSWORD_RESET_TOKEN_EXPIRY", default=900, cast=int
+)  # 15 min
+
+RATE_LIMIT_SENSITIVE_ATTEMPTS = env(
+    "RATE_LIMIT_SENSITIVE_ATTEMPTS", default=5, cast=int
+)
+RATE_LIMIT_SENSITIVE_WINDOW = env(
+    "RATE_LIMIT_SENSITIVE_WINDOW", default=3600, cast=int
+)  # 1 hour
+# --- Email Change ---
+EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS = env(
+    "EMAIL_CHANGE_TOKEN_EXPIRY", default=3600, cast=int
+)  # 1 hour
 
 
 FORMATTERS = (
@@ -335,10 +381,6 @@ NINJA_JWT = {
     "USER_ID_CLAIM": "user_id",
 }
 
-# --- OTP Configuration ---
-OTP_EXPIRY_MINUTES = env("OTP_EXPIRY_MINUTES", default=10, cast=int)
-OTP_MAX_REQUESTS_PER_HOUR = env("OTP_MAX_REQUESTS_PER_HOUR", default=5, cast=int)
-OTP_MAX_ATTEMPTS = env("OTP_MAX_ATTEMPTS", default=3, cast=int)
 
 # --- User Roles ---
 USER_ROLES = ["owner", "admin", "member"]

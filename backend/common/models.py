@@ -6,16 +6,12 @@ class TimeStampedModel(models.Model):
 
     created_at = models.DateTimeField(
         auto_now_add=True,
-        # null=True,
-        # blank=True,
         editable=False,
         db_index=True,
         verbose_name="Created At",
     )
     updated_at = models.DateTimeField(
         auto_now=True,
-        # null=True,
-        # blank=True,
         editable=False,
         db_index=True,
         verbose_name="Updated At",

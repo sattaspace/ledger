@@ -3,6 +3,7 @@ import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
+from django.conf import settings
 
 from common.models import TimeStampedModel, SoftDeleteModel
 
@@ -16,7 +17,6 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     Designed for SaaS use with:
     - Email as primary identifier (USERNAME_FIELD)
     - Profile fields for personalization
-    - OAuth provider support (Google, GitHub)
     - Email verification tracking
     - Soft delete support (is_deleted)
     - TimestampedModel (created_at, updated_at)
@@ -66,22 +66,6 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
         _("Last Login IP"), null=True, blank=True
     )
 
-    # --- OAuth ---
-    oauth_provider = models.CharField(
-        _("OAuth Provider"),
-        max_length=50,
-        blank=True,
-        default="",
-        help_text=_("e.g. google, github"),
-    )
-    oauth_uid = models.CharField(
-        _("OAuth Provider UID"),
-        max_length=255,
-        blank=True,
-        default="",
-        db_index=True,
-    )
-
     # --- SaaS / Tenant fields (foundation for future) ---
     role = models.CharField(
         _("Role"),
@@ -103,14 +87,7 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
         verbose_name_plural = _("Users")
         ordering = ["-created_at"]
 
-        # Unique constraint for OAuth providers
-        constraints = [
-            models.UniqueConstraint(
-                fields=["oauth_provider", "oauth_uid"],
-                condition=models.Q(oauth_provider__gt=""),
-                name="unique_oauth_provider_uid",
-            ),
-        ]
+        constraints = []
 
     def __str__(self) -> str:
         return str(self.slug)
@@ -127,68 +104,133 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
         return self.first_name.strip() or self.email.split("@")[0]
 
 
-class OTP(TimeStampedModel):
-    """One-Time Password model for email-based verification.
+# =============================================================================
+# Token Models
+# =============================================================================
 
-    Supports multiple purposes:
-    - registration: Verify email during signup
-    - login: OTP-based passwordless login
-    - password_reset: Verify identity before password change
-    - email_verification: Verify a new email address
+
+class PasswordResetToken(models.Model):
+    """Token for password reset flow.
+
+    When a user requests a password reset, a unique token is generated and stored.
+    The token is single-use and expires after PASSWORD_RESET_TOKEN_EXPIRY_SECONDS.
     """
 
-    PURPOSE_CHOICES = [
-        ("registration", _("Registration")),
-        ("login", _("Login")),
-        ("password_reset", _("Password Reset")),
-        ("email_verification", _("Email Verification")),
-    ]
-
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="otps",
-        verbose_name=_("User"),
+    id = models.BigAutoField(primary_key=True)
+    token = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        db_index=True,
+        editable=False,
+        help_text="Unique reset token (UUID4). Sent to user's email.",
     )
-    code = models.CharField(_("OTP Code"), max_length=6)
-    purpose = models.CharField(
-        _("Purpose"),
-        max_length=30,
-        choices=PURPOSE_CHOICES,
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_tokens",
         db_index=True,
     )
-    expires_at = models.DateTimeField(_("Expires At"), db_index=True)
-    is_used = models.BooleanField(_("Is Used"), default=False)
-    attempts = models.PositiveSmallIntegerField(_("Attempts"), default=0)
-    ip_address = models.GenericIPAddressField(_("IP Address"), null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "users_otp"
-        verbose_name = _("OTP")
-        verbose_name_plural = _("OTPs")
+        db_table = "users_password_reset_token"
+        verbose_name = "Password Reset Token"
+        verbose_name_plural = "Password Reset Tokens"
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
-        return f"{self.user.email} | {self.get_purpose_display()} | {self.code}"
+        return f"ResetToken({self.token}, user={self.user.email})"
 
-    def is_valid(self) -> bool:
-        """Check if the OTP is still valid (not used, not expired, under attempt limit)."""
+    @property
+    def is_expired(self) -> bool:
+        """Check if the token has expired."""
         from django.utils import timezone
 
-        return (
-            not self.is_used and self.attempts < 3 and self.expires_at > timezone.now()
-        )
+        expiry_seconds = getattr(settings, "PASSWORD_RESET_TOKEN_EXPIRY_SECONDS", 900)
+        return (timezone.now() - self.created_at).total_seconds() > expiry_seconds
 
-    def mark_used(self):
-        """Mark the OTP as used."""
-        self.is_used = True
-        self.save(update_fields=["is_used"])
+    @property
+    def is_used(self) -> bool:
+        """Check if the token has already been used."""
+        return self.used_at is not None
 
-    def increment_attempts(self):
-        """Increment the attempt counter and save."""
-        self.attempts += 1
-        if self.attempts >= 3:
-            self.is_used = True
-            self.save(update_fields=["attempts", "is_used"])
-        else:
-            self.save(update_fields=["attempts"])
+    @property
+    def is_valid(self) -> bool:
+        """Check if the token is still valid (not expired and not used)."""
+        return not self.is_expired and not self.is_used
+
+    def mark_used(self) -> None:
+        """Mark the token as used."""
+        from django.utils import timezone
+
+        self.used_at = timezone.now()
+        self.save(update_fields=["used_at"])
+
+
+class EmailChangeToken(models.Model):
+    """Token for email change confirmation.
+
+    When a user requests an email change (with current password verification),
+    a token is generated and sent to their CURRENT email. The user must
+    confirm by clicking the link or entering the token within the expiry window.
+
+    This prevents an attacker with a stolen session from silently changing
+    the email (and thus taking over the account via password reset).
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    token = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        db_index=True,
+        editable=False,
+        help_text="Unique email change token (UUID4). Sent to current email.",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_change_tokens",
+        db_index=True,
+    )
+    new_email = models.EmailField(
+        _("New Email"),
+        max_length=255,
+        help_text="The pending new email address.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "users_email_change_token"
+        verbose_name = "Email Change Token"
+        verbose_name_plural = "Email Change Tokens"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"EmailChangeToken({self.token}, user={self.user.email} -> {self.new_email})"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if the token has expired."""
+        from django.utils import timezone
+
+        expiry_seconds = getattr(settings, "EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS", 3600)
+        return (timezone.now() - self.created_at).total_seconds() > expiry_seconds
+
+    @property
+    def is_used(self) -> bool:
+        """Check if the token has already been used."""
+        return self.used_at is not None
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if the token is still valid (not expired and not used)."""
+        return not self.is_expired and not self.is_used
+
+    def mark_used(self) -> None:
+        """Mark the token as used."""
+        from django.utils import timezone
+
+        self.used_at = timezone.now()
+        self.save(update_fields=["used_at"])

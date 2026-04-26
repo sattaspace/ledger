@@ -1,17 +1,29 @@
-"""Pydantic schemas for the users app.
+"""Pydantic schemas for the users app."""
 
-These schemas define the request/response contracts for all user-related API
-endpoints. They enforce validation and provide automatic OpenAPI documentation.
-"""
-
+import re
 from typing import Optional
-from datetime import datetime
-import uuid as _uuid
 from ninja import Schema, ModelSchema
 from pydantic import Field, field_validator, model_validator
-from enum import Enum
 
 from .models import User
+
+
+# =============================================================================
+# Shared Validators
+# =============================================================================
+
+
+def _validate_password_strength(v: str) -> str:
+    """Validate password meets minimum strength requirements."""
+    if not any(c.isupper() for c in v):
+        raise ValueError("Password must contain at least one uppercase letter.")
+    if not any(c.islower() for c in v):
+        raise ValueError("Password must contain at least one lowercase letter.")
+    if not any(c.isdigit() for c in v):
+        raise ValueError("Password must contain at least one digit.")
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\\/~`;\']', v):
+        raise ValueError("Password must contain at least one special character.")
+    return v
 
 
 # =============================================================================
@@ -22,30 +34,12 @@ from .models import User
 class RegisterInputSchema(Schema):
     """Schema for user registration request."""
 
-    email: str = Field(
-        ...,
-        max_length=255,
-        description="User's email address (used as login)",
-        examples=["user@example.com"],
-    )
+    email: str = Field(..., max_length=255, examples=["user@example.com"])
     password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="Password (min 8 chars, 1 uppercase, 1 digit)",
-        examples=["SecurePass123"],
+        ..., min_length=8, max_length=128, examples=["SecurePass123!"]
     )
-    first_name: str = Field(
-        ...,
-        min_length=1,
-        max_length=150,
-        description="User's first name",
-    )
-    last_name: Optional[str] = Field(
-        default="",
-        max_length=150,
-        description="User's last name",
-    )
+    first_name: str = Field(..., min_length=1, max_length=150)
+    last_name: Optional[str] = Field(default="", max_length=150)
 
     @field_validator("email")
     @classmethod
@@ -55,25 +49,14 @@ class RegisterInputSchema(Schema):
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter.")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit.")
-        return v
+        return _validate_password_strength(v)
 
 
 class LoginInputSchema(Schema):
     """Schema for email/password login request."""
 
-    email: str = Field(
-        ...,
-        description="User's email address",
-        examples=["user@example.com"],
-    )
-    password: str = Field(
-        ...,
-        description="User's password",
-    )
+    email: str = Field(..., examples=["user@example.com"])
+    password: str = Field(...)
 
 
 class TokenOutputSchema(Schema):
@@ -86,75 +69,111 @@ class TokenOutputSchema(Schema):
 class TokenRefreshInputSchema(Schema):
     """Schema for token refresh request."""
 
-    refresh: str = Field(..., description="Refresh token")
+    refresh: str = Field(...)
+
+
+class TokenVerifyInputSchema(Schema):
+    """Schema for token verify request."""
+
+    token: str = Field(...)
+
+
+class TokenBlacklistInputSchema(Schema):
+    """Schema for token blacklist request."""
+
+    refresh: str = Field(...)
 
 
 # =============================================================================
-# OTP Schemas
+# Password Reset Schemas
 # =============================================================================
 
 
-class OTPOurpose(str, Enum):
-    """Valid OTP purposes."""
+class PasswordResetRequestSchema(Schema):
+    """Schema for requesting a password reset."""
 
-    REGISTRATION = "registration"
-    LOGIN = "login"
-    PASSWORD_RESET = "password_reset"
-    EMAIL_VERIFICATION = "email_verification"
+    email: str = Field(..., max_length=255, examples=["user@example.com"])
 
-
-class OTPRequestInputSchema(Schema):
-    """Schema for requesting an OTP code."""
-
-    email: str = Field(
-        ...,
-        description="Email address to send OTP to",
-        examples=["user@example.com"],
-    )
-    purpose: OTPOurpose = Field(
-        ...,
-        description="Purpose of the OTP",
-    )
+    @field_validator("email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
 
 
-class OTPVerifyInputSchema(Schema):
-    """Schema for verifying an OTP code."""
+class PasswordResetConfirmSchema(Schema):
+    """Schema for confirming a password reset with token."""
 
-    email: str = Field(
-        ...,
-        description="Email address the OTP was sent to",
-        examples=["user@example.com"],
-    )
-    code: str = Field(
-        ...,
-        min_length=6,
-        max_length=6,
-        pattern=r"^\d{6}$",
-        description="6-digit OTP code",
-        examples=["123456"],
-    )
-    purpose: OTPOurpose = Field(
-        ...,
-        description="Purpose of the OTP (must match request purpose)",
-    )
+    token: str = Field(..., examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"])
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(...)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password_strength(v)
+
+    @field_validator("token")
+    @classmethod
+    def token_must_be_uuid(cls, v: str) -> str:
+        import uuid
+
+        try:
+            uuid.UUID(v, version=4)
+        except (ValueError, AttributeError):
+            raise ValueError("Invalid token format. Expected UUID4.")
+        return v
+
+    @model_validator(mode="after")
+    def passwords_match(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError("New password and confirm password do not match.")
+        return self
 
 
-class OTPLoginInputSchema(Schema):
-    """Schema for OTP-based passwordless login."""
+# =============================================================================
+# Sensitive Action — Re-Authentication Schemas
+# =============================================================================
 
-    email: str = Field(
-        ...,
-        description="Email address",
-        examples=["user@example.com"],
-    )
-    code: str = Field(
-        ...,
-        min_length=6,
-        max_length=6,
-        pattern=r"^\d{6}$",
-        description="6-digit OTP code",
-        examples=["123456"],
-    )
+
+class PasswordConfirmSchema(Schema):
+    """Schema for confirming user identity via current password."""
+
+    current_password: str = Field(...)
+
+
+class ChangeEmailRequestSchema(Schema):
+    """Schema for requesting an email change (requires current password)."""
+
+    current_password: str = Field(...)
+    new_email: str = Field(..., max_length=255, examples=["newemail@example.com"])
+
+    @field_validator("new_email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+
+class ChangeEmailConfirmSchema(Schema):
+    """Schema for confirming an email change with token."""
+
+    token: str = Field(..., examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"])
+
+    @field_validator("token")
+    @classmethod
+    def token_must_be_uuid(cls, v: str) -> str:
+        import uuid
+
+        try:
+            uuid.UUID(v, version=4)
+        except (ValueError, AttributeError):
+            raise ValueError("Invalid token format. Expected UUID4.")
+        return v
+
+
+class DeleteAccountRequestSchema(Schema):
+    """Schema for requesting account deletion (requires current password)."""
+
+    current_password: str = Field(...)
 
 
 # =============================================================================
@@ -163,18 +182,10 @@ class OTPLoginInputSchema(Schema):
 
 
 class UserOutputSchema(ModelSchema):
-    """Schema for user data in API responses.
+    """Schema for user data in API responses."""
 
-    Uses Ninja's ModelSchema to auto-generate fields from the User model.
-    Extra computed properties (full_name, display_name) are declared explicitly
-    since they are model @property methods, not database columns.
-    """
-
-    # These are model @property methods — declared explicitly
     full_name: str
     display_name: str
-    # Note: slug is auto-mapped from the UUIDField by ModelSchema.
-    # We redeclare it as UUID to keep the schema correct for OpenAPI.
 
     class Meta:
         model = User
@@ -192,7 +203,6 @@ class UserOutputSchema(ModelSchema):
             "is_email_verified",
             "is_active",
             "role",
-            "oauth_provider",
             "created_at",
         ]
 
@@ -211,96 +221,20 @@ class UserProfileUpdateInputSchema(Schema):
 class ChangePasswordInputSchema(Schema):
     """Schema for changing password (authenticated user)."""
 
-    current_password: str = Field(..., description="Current password")
-    new_password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="New password (min 8 chars, 1 uppercase, 1 digit)",
-    )
-    confirm_password: str = Field(..., description="Confirm new password")
+    current_password: str = Field(...)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(...)
 
     @field_validator("new_password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter.")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit.")
-        return v
+        return _validate_password_strength(v)
 
     @model_validator(mode="after")
     def passwords_match(self):
         if self.new_password != self.confirm_password:
             raise ValueError("New password and confirm password do not match.")
         return self
-
-
-class ResetPasswordInputSchema(Schema):
-    """Schema for resetting password with OTP verification."""
-
-    email: str = Field(..., description="Email address")
-    code: str = Field(
-        ...,
-        min_length=6,
-        max_length=6,
-        pattern=r"^\d{6}$",
-        description="6-digit OTP code",
-    )
-    new_password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="New password",
-    )
-
-    @field_validator("new_password")
-    @classmethod
-    def password_strength(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter.")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit.")
-        return v
-
-
-# =============================================================================
-# OAuth Schemas
-# =============================================================================
-
-
-class OAuthProvider(str, Enum):
-    """Supported OAuth providers."""
-
-    GOOGLE = "google"
-    GITHUB = "github"
-
-
-class OAuthLoginInputSchema(Schema):
-    """Schema for OAuth-based login/signup.
-
-    The flow:
-    1. Frontend authenticates with OAuth provider (Google/GitHub)
-    2. Frontend sends provider's access_token to this endpoint
-    3. Backend validates token with provider, finds/creates user
-    4. Backend returns our JWT tokens
-    """
-
-    provider: OAuthProvider = Field(
-        ...,
-        description="OAuth provider name",
-    )
-    access_token: str = Field(
-        ...,
-        description="Access token from the OAuth provider",
-    )
-
-
-class OAuthLinkInputSchema(Schema):
-    """Schema for linking an OAuth provider to an existing account."""
-
-    provider: OAuthProvider = Field(...)
-    access_token: str = Field(...)
 
 
 # =============================================================================
