@@ -47,6 +47,8 @@ from .schemas import (
     MessageSchema,
     EmailVerifyRequestSchema,
     EmailVerifyConfirmSchema,
+    ChangeEmailRequestSchema,
+    ChangeEmailConfirmOTPSchema,
 )
 from .services import AuthService, UserService
 from .models import User
@@ -604,11 +606,11 @@ class UserController:
             401: MessageSchema,
             429: MessageSchema,
         },
-        summary="Request email change",
+        summary="Request email change (OTP)",
         description=(
             "Request to change email address. Requires current password. "
-            "A confirmation token will be sent to your CURRENT email. "
-            "Use POST /auth/email-change/confirm with the token to complete the change."
+            "A 6-digit OTP will be sent to your CURRENT email. "
+            "Use POST /users/me/change-email/confirm with the OTP to complete the change."
         ),
     )
     async def request_email_change(
@@ -634,8 +636,7 @@ class UserController:
                 new_email=payload.new_email,
             )
             return 200, {
-                "message": "Email change confirmation sent to your current email. "
-                "Please check your inbox and use the token to confirm.",
+                "message": "A verification code has been sent to your current email.",
                 "success": True,
             }
         except ValueError as e:
@@ -643,6 +644,42 @@ class UserController:
             if "password" in msg.lower():
                 return 401, {"message": msg, "success": False}
             return 400, {"message": msg, "success": False}
+
+    @http_post(
+        "/me/change-email/confirm",
+        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        summary="Confirm email change with OTP",
+        description=(
+            "Confirm an email change using the 6-digit OTP sent to your current email. "
+            "After confirmation, your session will be invalidated. Please log in with your new email."
+        ),
+    )
+    async def confirm_email_change_otp(
+        self, request: HttpRequest, payload: ChangeEmailConfirmOTPSchema
+    ):
+        client_ip = get_client_ip(request)
+        rl_key = f"email_change_confirm:{request.user.id}:{client_ip}"
+
+        if not check_rate_limit(
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
+            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
+        ):
+            return 429, {
+                "message": "Too many attempts. Please try again later.",
+                "success": False,
+            }
+
+        try:
+            new_email = await AuthService.aconfirm_email_change_otp(
+                request.user, payload.otp
+            )
+            return 200, {
+                "message": f"Email changed to {new_email}. Please log in with your new email.",
+                "success": True,
+            }
+        except ValueError as e:
+            return 400, {"message": str(e), "success": False}
 
     @http_post(
         "/me/delete-account",

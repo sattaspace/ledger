@@ -204,47 +204,47 @@ class PasswordConfirmSchema(Schema):
     )
 
 
-class ChangeEmailRequestSchema(Schema):
-    """Schema for requesting an email change.
+# class ChangeEmailRequestSchema(Schema):
+#     """Schema for requesting an email change.
 
-    Requires current password verification. A 6-digit OTP will be
-    sent to the user's CURRENT email address.
-    """
+#     Requires current password verification. A 6-digit OTP will be
+#     sent to the user's CURRENT email address.
+#     """
 
-    current_password: str = Field(
-        ...,
-        description="Current password to confirm identity",
-    )
-    new_email: str = Field(
-        ...,
-        max_length=255,
-        description="The new email address to change to",
-        examples=["newemail@example.com"],
-    )
+#     current_password: str = Field(
+#         ...,
+#         description="Current password to confirm identity",
+#     )
+#     new_email: str = Field(
+#         ...,
+#         max_length=255,
+#         description="The new email address to change to",
+#         examples=["newemail@example.com"],
+#     )
 
-    @field_validator("new_email")
-    @classmethod
-    def email_must_be_lowercase(cls, v: str) -> str:
-        return v.lower().strip()
+#     @field_validator("new_email")
+#     @classmethod
+#     def email_must_be_lowercase(cls, v: str) -> str:
+#         return v.lower().strip()
 
 
-class ChangeEmailConfirmOTPSchema(Schema):
-    """Schema for confirming an email change with OTP."""
+# class ChangeEmailConfirmOTPSchema(Schema):
+#     """Schema for confirming an email change with OTP."""
 
-    otp: str = Field(
-        ...,
-        min_length=6,
-        max_length=6,
-        description="6-digit verification code sent to your current email",
-        examples=["123456"],
-    )
+#     otp: str = Field(
+#         ...,
+#         min_length=6,
+#         max_length=6,
+#         description="6-digit verification code sent to your current email",
+#         examples=["123456"],
+#     )
 
-    @field_validator("otp")
-    @classmethod
-    def otp_must_be_digits(cls, v: str) -> str:
-        if not v.isdigit():
-            raise ValueError("OTP must be a 6-digit number.")
-        return v
+#     @field_validator("otp")
+#     @classmethod
+#     def otp_must_be_digits(cls, v: str) -> str:
+#         if not v.isdigit():
+#             raise ValueError("OTP must be a 6-digit number.")
+#         return v
 
 
 class ChangeEmailConfirmSchema(Schema):
@@ -389,6 +389,59 @@ class EmailVerifyConfirmSchema(Schema):
     @classmethod
     def email_must_be_lowercase(cls, v: str) -> str:
         return v.lower().strip()
+
+    @field_validator("otp")
+    @classmethod
+    def otp_must_be_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP must be a 6-digit number.")
+        return v
+
+
+# =============================================================================
+# Message Schemas
+# =============================================================================
+
+
+# =============================================================================
+# Email Change Schemas (OTP-Based)
+# =============================================================================
+
+
+class ChangeEmailRequestSchema(Schema):
+    """Schema for requesting an email change.
+
+    Requires current password verification. A 6-digit OTP will be
+    sent to the user's CURRENT email address.
+    """
+
+    current_password: str = Field(
+        ...,
+        description="Current password to confirm identity",
+    )
+    new_email: str = Field(
+        ...,
+        max_length=255,
+        description="The new email address to change to",
+        examples=["newemail@example.com"],
+    )
+
+    @field_validator("new_email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+
+class ChangeEmailConfirmOTPSchema(Schema):
+    """Schema for confirming an email change with OTP."""
+
+    otp: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        description="6-digit verification code sent to your current email",
+        examples=["123456"],
+    )
 
     @field_validator("otp")
     @classmethod
