@@ -1,0 +1,140 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import Sidebar from "@/components/astro/Sidebar.astro";
+import Navbar from "@/components/astro/Navbar.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "Dashboard — Satta Ledger",
+  description = "Your personal finance dashboard.",
+} = Astro.props;
+
+---
+
+<BaseLayout title={title} description={description}>
+  <div class="flex min-h-screen">
+
+    <!-- Sidebar (desktop) -->
+    <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 z-30 border-r border-border bg-card">
+      <Sidebar />
+    </aside>
+
+    <!-- Mobile sidebar overlay -->
+    <div id="mobile-sidebar-overlay" class="hidden fixed inset-0 z-40 lg:hidden">
+      <!-- Backdrop -->
+      <div class="fixed inset-0 bg-black/50 transition-opacity duration-200" id="mobile-sidebar-backdrop"></div>
+      <!-- Panel -->
+      <div class="fixed inset-y-0 left-0 w-64 bg-card shadow-2xl transition-transform duration-200 flex flex-col" id="mobile-sidebar-panel">
+        <!-- Close button row -->
+        <div class="flex h-16 items-center justify-end border-b border-border px-4">
+          <button
+            type="button"
+            class="inline-flex items-center justify-center rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-ring transition-colors"
+            id="mobile-menu-close"
+            aria-label="Close sidebar menu"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <!-- Sidebar content -->
+        <div class="flex-1 overflow-y-auto">
+          <Sidebar />
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="flex flex-1 flex-col lg:pl-64 min-w-0">
+      <!-- Top navbar -->
+      <Navbar />
+
+      <!-- Page content -->
+      <main class="flex-1 p-4 md:p-6 lg:p-8 animate-fade-in">
+        <slot />
+      </main>
+
+      <!-- Footer — sticks to bottom -->
+      <footer class="mt-auto border-t border-border px-6 py-4 text-center text-sm text-muted-foreground">
+        <p>&copy; {new Date().getFullYear()} Satta Ledger. All rights reserved.</p>
+      </footer>
+    </div>
+  </div>
+</BaseLayout>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const overlay = document.getElementById("mobile-sidebar-overlay")!;
+    const backdrop = document.getElementById("mobile-sidebar-backdrop")!;
+    const panel = document.getElementById("mobile-sidebar-panel")!;
+    const menuToggle = document.getElementById("mobile-menu-toggle");
+    const menuClose = document.getElementById("mobile-menu-close");
+
+    if (!overlay || !backdrop || !panel) return;
+
+    let isOpen = false;
+
+    function openSidebar() {
+      isOpen = true;
+      overlay.classList.remove("hidden");
+      // Force reflow then animate in
+      panel.style.transform = "translateX(-100%)";
+      requestAnimationFrame(() => {
+        panel.style.transform = "translateX(0)";
+        backdrop.style.opacity = "0";
+        requestAnimationFrame(() => {
+          backdrop.style.opacity = "1";
+        });
+      });
+      document.body.style.overflow = "hidden";
+      // Focus the close button
+      menuClose?.focus();
+    }
+
+    function closeSidebar() {
+      if (!isOpen) return;
+      isOpen = false;
+      panel.style.transform = "translateX(-100%)";
+      backdrop.style.opacity = "0";
+      setTimeout(() => {
+        overlay.classList.add("hidden");
+        document.body.style.overflow = "";
+        menuToggle?.focus();
+      }, 200);
+    }
+
+    // Listen for custom event from Navbar
+    document.addEventListener("toggle-mobile-sidebar", (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.open) {
+        openSidebar();
+      } else {
+        closeSidebar();
+      }
+    });
+
+    // Also wire up direct clicks
+    backdrop.addEventListener("click", closeSidebar);
+    menuClose?.addEventListener("click", closeSidebar);
+
+    // Close on Escape key
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isOpen) {
+        closeSidebar();
+      }
+    });
+
+    // Resize observer: close sidebar when viewport grows past lg breakpoint
+    const resizeObserver = new ResizeObserver(() => {
+      if (window.innerWidth >= 1024 && isOpen) {
+        closeSidebar();
+      }
+    });
+    resizeObserver.observe(document.documentElement);
+  });
+</script>

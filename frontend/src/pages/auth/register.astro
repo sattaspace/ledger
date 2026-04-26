@@ -1,0 +1,8 @@
+---
+import AuthLayout from "@/layouts/AuthLayout.astro";
+import RegisterForm from "@/components/vue/RegisterForm.vue";
+---
+
+<AuthLayout title="Create Account — Satta Ledger" description="Create a new Satta Ledger account.">
+  <RegisterForm client:only="vue" />
+</AuthLayout>

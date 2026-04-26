@@ -1,0 +1,8 @@
+---
+import AuthLayout from "@/layouts/AuthLayout.astro";
+import LoginForm from "@/components/vue/LoginForm.vue";
+---
+
+<AuthLayout title="Sign In — Satta Ledger" description="Sign in to your Satta Ledger account.">
+  <LoginForm client:only="vue" />
+</AuthLayout>

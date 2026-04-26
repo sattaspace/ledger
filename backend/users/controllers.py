@@ -1,4 +1,17 @@
-"""Ninja Extra controllers for the users app."""
+"""Ninja Extra controllers for the users app.
+
+Controllers handle HTTP routing and delegate business logic to services.
+They are auto-discovered by ninja_extra's `auto_discover_controllers()`.
+
+Each controller is decorated with @api_controller() which:
+- Registers it with the API router
+- Sets the URL prefix
+- Applies default auth and permissions
+- Generates OpenAPI documentation
+
+Controllers use async def where ORM operations are needed (via service
+async methods). This ensures non-blocking I/O when running under Daphne/uvicorn.
+"""
 
 import logging
 
@@ -32,12 +45,16 @@ from .schemas import (
     UserProfileUpdateInputSchema,
     ChangePasswordInputSchema,
     MessageSchema,
+    EmailVerifyRequestSchema,
+    EmailVerifyConfirmSchema,
 )
 from .services import AuthService, UserService
 from .models import User
 
 logger = logging.getLogger(__name__)
 
+# ninja_jwt's for_user() and blacklist() perform sync DB writes.
+# Wrap them so they can be safely called from async endpoints.
 async_token_for_user = sync_to_async(AccessToken.for_user)
 async_refresh_for_user = sync_to_async(RefreshToken.for_user)
 async_decode_refresh = sync_to_async(lambda t: RefreshToken(t))
@@ -45,12 +62,16 @@ async_blacklist = sync_to_async(lambda r: r.blacklist())
 
 
 # =============================================================================
-# JWT Authentication
+# JWT Authentication (for protecting endpoints)
 # =============================================================================
 
 
 class JWTAuth(HttpBearer):
-    """HTTP Bearer authentication using JWT access tokens."""
+    """HTTP Bearer authentication using JWT access tokens.
+
+    Validates the Bearer token from the Authorization header,
+    decodes it, and returns the authenticated user.
+    """
 
     async def authenticate(self, request, token):
         try:
@@ -58,6 +79,7 @@ class JWTAuth(HttpBearer):
             user_id = access_token.get("user_id")
             if not user_id:
                 return None
+
             user = await User.objects.filter(
                 id=user_id, is_active=True, is_deleted=False
             ).afirst()
@@ -71,13 +93,17 @@ class JWTAuth(HttpBearer):
 
 
 # =============================================================================
-# Auth Controller
+# Auth Controller — Registration, Login, Token Management, Password Reset
 # =============================================================================
 
 
 @api_controller("/auth", tags=["Authentication"], auth=None)
 class AuthController:
-    """Public authentication endpoints."""
+    """Public authentication endpoints.
+
+    All endpoints in this controller are public (no auth required).
+    They handle user registration, login, token management, and password reset.
+    """
 
     @http_post(
         "/register",
@@ -88,6 +114,7 @@ class AuthController:
             429: MessageSchema,
         },
         summary="Register a new account",
+        description="Create a new user account. A verification code will be sent to the provided email.",
     )
     async def register(self, request: HttpRequest, payload: RegisterInputSchema):
         client_ip = get_client_ip(request)
@@ -110,15 +137,26 @@ class AuthController:
                 first_name=payload.first_name,
                 last_name=payload.last_name or "",
             )
+
+            # Automatically send verification OTP after registration
+            try:
+                await AuthService.arequest_email_verification(payload.email)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to send verification OTP after registration: {e}"
+                )
+
             return 201, {
-                "message": "Registration successful. You can now log in.",
+                "message": "Registration successful. Please check your email for a verification code.",
                 "success": True,
             }
+
         except ValueError as e:
             msg = str(e)
             if "already exists" in msg:
                 return 409, {"message": msg, "success": False}
             return 400, {"message": msg, "success": False}
+
         except Exception as e:
             logger.error(f"Registration error: {e}")
             return 400, {
@@ -135,6 +173,7 @@ class AuthController:
             429: MessageSchema,
         },
         summary="Login with email and password",
+        description="Authenticate with email/password and receive JWT tokens.",
     )
     async def login(self, request: HttpRequest, payload: LoginInputSchema):
         client_ip = get_client_ip(request)
@@ -155,34 +194,52 @@ class AuthController:
             access = await async_token_for_user(user)
             refresh = await async_refresh_for_user(user)
 
+            # Track login IP
             try:
                 user.last_login_ip = client_ip
                 await user.asave(update_fields=["last_login_ip"])
             except Exception:
                 pass
 
-            return 200, {"access": str(access), "refresh": str(refresh)}
+            return 200, {
+                "access": str(access),
+                "refresh": str(refresh),
+            }
+
         except ValueError as e:
             msg = str(e)
             if "Invalid" in msg:
                 return 401, {"message": msg, "success": False}
             return 403, {"message": msg, "success": False}
 
-    @http_post("/token/refresh", response={200: TokenOutputSchema, 401: MessageSchema})
+    @http_post(
+        "/token/refresh",
+        response={200: TokenOutputSchema, 401: MessageSchema},
+        summary="Refresh access token",
+        description="Exchange a valid refresh token for a new access token pair.",
+    )
     async def refresh_token(self, payload: TokenRefreshInputSchema):
         try:
             refresh = await async_decode_refresh(payload.refresh)
+
             user_id = refresh.get("user_id")
             if not user_id:
                 raise ValueError("Invalid token payload")
+
             user = await User.objects.filter(
                 id=user_id, is_active=True, is_deleted=False
             ).afirst()
             if not user:
                 raise ValueError("User not found or inactive")
+
             new_access = await async_token_for_user(user)
             new_refresh = await async_refresh_for_user(user)
-            return 200, {"access": str(new_access), "refresh": str(new_refresh)}
+
+            return 200, {
+                "access": str(new_access),
+                "refresh": str(new_refresh),
+            }
+
         except ValueError as e:
             logger.debug(f"Token refresh failed: {e}")
             return 401, {
@@ -190,46 +247,81 @@ class AuthController:
                 "success": False,
             }
 
-    @http_post("/token/verify", response={200: MessageSchema, 401: MessageSchema})
+    @http_post(
+        "/token/verify",
+        response={200: MessageSchema, 401: MessageSchema},
+        summary="Verify access token",
+        description="Verify an access token is still valid.",
+    )
     async def verify_token(self, payload: TokenVerifyInputSchema):
         try:
             AccessToken(payload.token)
-            return 200, {"message": "Token is valid.", "success": True}
+            return 200, {
+                "message": "Token is valid.",
+                "success": True,
+            }
         except Exception:
-            return 401, {"message": "Token is invalid or expired.", "success": False}
+            return 401, {
+                "message": "Token is invalid or expired.",
+                "success": False,
+            }
 
-    @http_post("/token/blacklist", response={200: MessageSchema, 401: MessageSchema})
+    @http_post(
+        "/token/blacklist",
+        response={200: MessageSchema, 401: MessageSchema},
+        summary="Blacklist a refresh token",
+        description="Blacklist a refresh token so it cannot be used again.",
+    )
     async def blacklist_token(self, payload: TokenBlacklistInputSchema):
         try:
             refresh = await async_decode_refresh(payload.refresh)
             await async_blacklist(refresh)
-            return 200, {"message": "Token blacklisted successfully.", "success": True}
+            return 200, {
+                "message": "Token blacklisted successfully.",
+                "success": True,
+            }
         except Exception as e:
             logger.debug(f"Token blacklist failed: {e}")
-            return 401, {"message": "Failed to blacklist token.", "success": False}
+            return 401, {
+                "message": "Failed to blacklist token.",
+                "success": False,
+            }
 
     # =========================================================================
-    # Password Reset
+    # Password Reset Endpoints
     # =========================================================================
 
     @http_post(
-        "/password-reset/request", response={200: MessageSchema, 429: MessageSchema}
+        "/password-reset/request",
+        response={200: MessageSchema, 429: MessageSchema},
+        summary="Request password reset",
+        description=(
+            "Request a password reset email. "
+            "If an account with the given email exists, a reset token will be sent. "
+            "Always returns 200 to prevent email enumeration."
+        ),
     )
     async def request_password_reset(
         self, request: HttpRequest, payload: PasswordResetRequestSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"pwreset_req:{client_ip}"
+
         if not check_rate_limit(
-            f"pwreset_req:{client_ip}", max_attempts=5, window_seconds=3600
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
+            window_seconds=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_WINDOW", 3600),
         ):
             return 429, {
-                "message": "Too many password reset requests.",
+                "message": "Too many password reset requests. Please try again later.",
                 "success": False,
             }
+
         try:
             await AuthService.arequest_password_reset(payload.email)
         except ValueError:
             pass
+
         return 200, {
             "message": "If an account with this email exists, a reset link has been sent.",
             "success": True,
@@ -238,42 +330,138 @@ class AuthController:
     @http_post(
         "/password-reset/confirm",
         response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        summary="Confirm password reset",
+        description="Reset password using the token received via email.",
     )
     async def confirm_password_reset(
         self, request: HttpRequest, payload: PasswordResetConfirmSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"pwreset_confirm:{client_ip}"
+
         if not check_rate_limit(
-            f"pwreset_confirm:{client_ip}", max_attempts=5, window_seconds=3600
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
+            window_seconds=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_WINDOW", 3600),
         ):
             return 429, {
-                "message": "Too many password reset attempts.",
+                "message": "Too many password reset attempts. Please try again later.",
                 "success": False,
             }
+
         try:
             await AuthService.aconfirm_password_reset(
-                token=payload.token, new_password=payload.new_password
+                token=payload.token,
+                new_password=payload.new_password,
             )
-            return 200, {"message": "Password reset successfully.", "success": True}
+            return 200, {
+                "message": "Password reset successfully. You can now log in with your new password.",
+                "success": True,
+            }
         except ValueError as e:
             return 400, {"message": str(e), "success": False}
 
     # =========================================================================
-    # Email Change Confirm (Public)
+    # Email Verification (OTP)
+    # =========================================================================
+
+    @http_post(
+        "/verify-email/request",
+        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        summary="Request email verification OTP",
+        description=(
+            "Request a 6-digit verification code to be sent to the provided email. "
+            "The code expires in 10 minutes. Maximum 5 verification attempts."
+        ),
+    )
+    async def request_email_verification(
+        self, request: HttpRequest, payload: EmailVerifyRequestSchema
+    ):
+        client_ip = get_client_ip(request)
+        rl_key = f"email_verify_req:{client_ip}"
+
+        if not check_rate_limit(
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 5),
+            window_seconds=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_WINDOW", 300),
+        ):
+            return 429, {
+                "message": "Too many verification requests. Please try again later.",
+                "success": False,
+            }
+
+        try:
+            await AuthService.arequest_email_verification(payload.email)
+            return 200, {
+                "message": "Verification code sent to your email.",
+                "success": True,
+            }
+        except ValueError as e:
+            return 400, {"message": str(e), "success": False}
+
+    @http_post(
+        "/verify-email/confirm",
+        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        summary="Confirm email verification with OTP",
+        description=(
+            "Verify an email address using the 6-digit code sent via email. "
+            "Maximum 5 attempts per code. After 5 failed attempts, a new code must be requested."
+        ),
+    )
+    async def confirm_email_verification(
+        self, request: HttpRequest, payload: EmailVerifyConfirmSchema
+    ):
+        client_ip = get_client_ip(request)
+        rl_key = f"email_verify_confirm:{client_ip}"
+
+        if not check_rate_limit(
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 10),
+            window_seconds=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_WINDOW", 300),
+        ):
+            return 429, {
+                "message": "Too many verification attempts. Please try again later.",
+                "success": False,
+            }
+
+        try:
+            await AuthService.aconfirm_email_verification(payload.email, payload.otp)
+            return 200, {
+                "message": "Email verified successfully. You can now log in.",
+                "success": True,
+            }
+        except ValueError as e:
+            return 400, {"message": str(e), "success": False}
+
+    # =========================================================================
+    # Email Change Confirm (Public — uses token, no JWT needed)
     # =========================================================================
 
     @http_post(
         "/email-change/confirm",
         response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        summary="Confirm email change",
+        description=(
+            "Confirm an email change using the token sent to the current email. "
+            "No authentication required — the token itself is the proof."
+        ),
     )
     async def confirm_email_change_public(
         self, request: HttpRequest, payload: ChangeEmailConfirmSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"email_change_confirm:{client_ip}"
+
         if not check_rate_limit(
-            f"email_change_confirm:{client_ip}", max_attempts=10, window_seconds=3600
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
+            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
         ):
-            return 429, {"message": "Too many attempts.", "success": False}
+            return 429, {
+                "message": "Too many attempts. Please try again later.",
+                "success": False,
+            }
+
         try:
             new_email = await AuthService.aconfirm_email_change(payload.token)
             return 200, {
@@ -285,15 +473,32 @@ class AuthController:
 
 
 # =============================================================================
-# User Controller (Authenticated)
+# User Controller — Profile Management (authenticated)
 # =============================================================================
 
 
-@api_controller("/users", tags=["Users"], auth=JWTAuth(), permissions=[IsAuthenticated])
+@api_controller(
+    "/users",
+    tags=["Users"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated],
+)
 class UserController:
-    """Authenticated user profile endpoints."""
+    """Authenticated user profile endpoints.
 
-    @http_get("/me", response=UserOutputSchema, summary="Get current user profile")
+    All endpoints require a valid JWT access token.
+    """
+
+    # =========================================================================
+    # Profile (No extra confirmation needed)
+    # =========================================================================
+
+    @http_get(
+        "/me",
+        response=UserOutputSchema,
+        summary="Get current user profile",
+        description="Return the authenticated user's profile information.",
+    )
     def get_profile(self, request: HttpRequest):
         return request.user
 
@@ -301,6 +506,7 @@ class UserController:
         "/{slug}",
         response={200: UserOutputSchema, 404: MessageSchema},
         summary="Get user by slug",
+        description="Look up a user's public profile by their UUID slug.",
     )
     async def get_user_by_slug(self, slug: str):
         user = await UserService.aget_user_by_slug(slug)
@@ -308,7 +514,12 @@ class UserController:
             return 404, {"detail": "User not found.", "code": "not_found"}
         return user
 
-    @http_put("/me", response=UserOutputSchema, summary="Update user profile")
+    @http_put(
+        "/me",
+        response=UserOutputSchema,
+        summary="Update user profile",
+        description="Update the authenticated user's profile fields.",
+    )
     async def update_profile(
         self, request: HttpRequest, payload: UserProfileUpdateInputSchema
     ):
@@ -317,10 +528,15 @@ class UserController:
         )
         return user
 
+    # =========================================================================
+    # Password Change (current password required — already has it built in)
+    # =========================================================================
+
     @http_post(
         "/me/change-password",
         response={200: MessageSchema, 400: MessageSchema},
         summary="Change password",
+        description="Change the authenticated user's password. Requires current password.",
     )
     async def change_password(
         self, request: HttpRequest, payload: ChangePasswordInputSchema
@@ -331,36 +547,52 @@ class UserController:
                 current_password=payload.current_password,
                 new_password=payload.new_password,
             )
-            return 200, {"message": "Password changed successfully.", "success": True}
+            return 200, {
+                "message": "Password changed successfully.",
+                "success": True,
+            }
         except ValueError as e:
             return 400, {"message": str(e), "success": False}
 
     # =========================================================================
-    # Sensitive Actions — Current Password Re-Confirmation
+    # Sensitive Actions — Require Current Password Re-Confirmation
     # =========================================================================
 
     @http_post(
         "/me/confirm-identity",
         response={200: MessageSchema, 401: MessageSchema, 429: MessageSchema},
+        summary="Confirm identity",
+        description=(
+            "Verify identity by providing current password. "
+            "Use this before sensitive operations (email change, account deletion). "
+            "Returns success if password is correct — acts as a reusable identity gate."
+        ),
     )
     async def confirm_identity(
         self, request: HttpRequest, payload: PasswordConfirmSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"confirm_identity:{request.user.id}:{client_ip}"
+
         if not check_rate_limit(
-            f"confirm_identity:{request.user.id}:{client_ip}",
-            max_attempts=10,
-            window_seconds=3600,
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
+            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
         ):
             return 429, {
-                "message": "Too many identity confirmation attempts.",
+                "message": "Too many identity confirmation attempts. Please try again later.",
                 "success": False,
             }
+
         try:
             await AuthService.aconfirm_identity(
-                request.user, current_password=payload.current_password
+                request.user,
+                current_password=payload.current_password,
             )
-            return 200, {"message": "Identity confirmed.", "success": True}
+            return 200, {
+                "message": "Identity confirmed.",
+                "success": True,
+            }
         except ValueError as e:
             return 401, {"message": str(e), "success": False}
 
@@ -372,17 +604,29 @@ class UserController:
             401: MessageSchema,
             429: MessageSchema,
         },
+        summary="Request email change",
+        description=(
+            "Request to change email address. Requires current password. "
+            "A confirmation token will be sent to your CURRENT email. "
+            "Use POST /auth/email-change/confirm with the token to complete the change."
+        ),
     )
     async def request_email_change(
         self, request: HttpRequest, payload: ChangeEmailRequestSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"email_change:{request.user.id}:{client_ip}"
+
         if not check_rate_limit(
-            f"email_change:{request.user.id}:{client_ip}",
-            max_attempts=5,
-            window_seconds=3600,
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 5),
+            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
         ):
-            return 429, {"message": "Too many email change requests.", "success": False}
+            return 429, {
+                "message": "Too many email change requests. Please try again later.",
+                "success": False,
+            }
+
         try:
             await AuthService.arequest_email_change(
                 request.user,
@@ -390,7 +634,8 @@ class UserController:
                 new_email=payload.new_email,
             )
             return 200, {
-                "message": "Email change confirmation sent to your current email.",
+                "message": "Email change confirmation sent to your current email. "
+                "Please check your inbox and use the token to confirm.",
                 "success": True,
             }
         except ValueError as e:
@@ -402,23 +647,36 @@ class UserController:
     @http_post(
         "/me/delete-account",
         response={200: MessageSchema, 401: MessageSchema, 429: MessageSchema},
+        summary="Delete account",
+        description=(
+            "Soft-delete your account. Requires current password confirmation. "
+            "Your data will be retained but the account will be deactivated. "
+            "You will be logged out immediately — discard your JWT tokens."
+        ),
     )
     async def delete_account(
         self, request: HttpRequest, payload: DeleteAccountRequestSchema
     ):
         client_ip = get_client_ip(request)
+        rl_key = f"delete_account:{request.user.id}:{client_ip}"
+
         if not check_rate_limit(
-            f"delete_account:{request.user.id}:{client_ip}",
-            max_attempts=3,
-            window_seconds=3600,
+            rl_key,
+            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 3),
+            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
         ):
-            return 429, {"message": "Too many attempts.", "success": False}
+            return 429, {
+                "message": "Too many attempts. Please try again later.",
+                "success": False,
+            }
+
         try:
             await AuthService.adelete_account(
-                request.user, current_password=payload.current_password
+                request.user,
+                current_password=payload.current_password,
             )
             return 200, {
-                "message": "Account deleted successfully. Please discard your tokens.",
+                "message": "Account deleted successfully. Please discard your tokens and close this session.",
                 "success": True,
             }
         except ValueError as e:
@@ -428,7 +686,12 @@ class UserController:
     # Session
     # =========================================================================
 
-    @http_post("/me/logout", response={200: MessageSchema}, summary="Logout")
+    @http_post(
+        "/me/logout",
+        response={200: MessageSchema},
+        summary="Logout (client-side)",
+        description="Notify the server of logout. Client should discard JWT tokens.",
+    )
     def logout(self, request: HttpRequest):
         logger.info(f"User logout: {request.user.email}")
         return 200, {

@@ -48,3 +48,50 @@ docker-compose*.yml
 
 # Database
 *.sqlite3
+
+# dependencies
+node_modules
+/.pnp
+.pnp.*
+
+# testing
+/coverage
+
+# build
+dist/
+
+# astro
+.astro/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+.pnpm-debug.log*
+
+# env files
+.env
+.env.*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+
+# misc
+.claude
+.z-ai-config
+*.log
+dev.log
+dev.out.log
+server.log
+local-*
+test
+prompt

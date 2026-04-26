@@ -1,4 +1,8 @@
-"""Pydantic schemas for the users app."""
+"""Pydantic schemas for the users app.
+
+These schemas define the request/response contracts for all user-related API
+endpoints. They enforce validation and provide automatic OpenAPI documentation.
+"""
 
 import re
 from typing import Optional
@@ -14,7 +18,15 @@ from .models import User
 
 
 def _validate_password_strength(v: str) -> str:
-    """Validate password meets minimum strength requirements."""
+    """Validate password meets minimum strength requirements.
+
+    Requirements:
+    - At least 8 characters (enforced by min_length)
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 digit
+    - At least 1 special character
+    """
     if not any(c.isupper() for c in v):
         raise ValueError("Password must contain at least one uppercase letter.")
     if not any(c.islower() for c in v):
@@ -34,12 +46,30 @@ def _validate_password_strength(v: str) -> str:
 class RegisterInputSchema(Schema):
     """Schema for user registration request."""
 
-    email: str = Field(..., max_length=255, examples=["user@example.com"])
-    password: str = Field(
-        ..., min_length=8, max_length=128, examples=["SecurePass123!"]
+    email: str = Field(
+        ...,
+        max_length=255,
+        description="User's email address (used as login)",
+        examples=["user@example.com"],
     )
-    first_name: str = Field(..., min_length=1, max_length=150)
-    last_name: Optional[str] = Field(default="", max_length=150)
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="Password (min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special)",
+        examples=["SecurePass123!"],
+    )
+    first_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=150,
+        description="User's first name",
+    )
+    last_name: Optional[str] = Field(
+        default="",
+        max_length=150,
+        description="User's last name",
+    )
 
     @field_validator("email")
     @classmethod
@@ -55,8 +85,15 @@ class RegisterInputSchema(Schema):
 class LoginInputSchema(Schema):
     """Schema for email/password login request."""
 
-    email: str = Field(..., examples=["user@example.com"])
-    password: str = Field(...)
+    email: str = Field(
+        ...,
+        description="User's email address",
+        examples=["user@example.com"],
+    )
+    password: str = Field(
+        ...,
+        description="User's password",
+    )
 
 
 class TokenOutputSchema(Schema):
@@ -69,19 +106,19 @@ class TokenOutputSchema(Schema):
 class TokenRefreshInputSchema(Schema):
     """Schema for token refresh request."""
 
-    refresh: str = Field(...)
+    refresh: str = Field(..., description="Refresh token")
 
 
 class TokenVerifyInputSchema(Schema):
     """Schema for token verify request."""
 
-    token: str = Field(...)
+    token: str = Field(..., description="Access token to verify")
 
 
 class TokenBlacklistInputSchema(Schema):
     """Schema for token blacklist request."""
 
-    refresh: str = Field(...)
+    refresh: str = Field(..., description="Refresh token to blacklist")
 
 
 # =============================================================================
@@ -92,7 +129,12 @@ class TokenBlacklistInputSchema(Schema):
 class PasswordResetRequestSchema(Schema):
     """Schema for requesting a password reset."""
 
-    email: str = Field(..., max_length=255, examples=["user@example.com"])
+    email: str = Field(
+        ...,
+        max_length=255,
+        description="Email address associated with the account",
+        examples=["user@example.com"],
+    )
 
     @field_validator("email")
     @classmethod
@@ -103,9 +145,22 @@ class PasswordResetRequestSchema(Schema):
 class PasswordResetConfirmSchema(Schema):
     """Schema for confirming a password reset with token."""
 
-    token: str = Field(..., examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"])
-    new_password: str = Field(..., min_length=8, max_length=128)
-    confirm_password: str = Field(...)
+    token: str = Field(
+        ...,
+        description="Password reset token (UUID4) received via email",
+        examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"],
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special)",
+        examples=["NewSecurePass456!"],
+    )
+    confirm_password: str = Field(
+        ...,
+        description="Confirm new password",
+    )
 
     @field_validator("new_password")
     @classmethod
@@ -115,6 +170,7 @@ class PasswordResetConfirmSchema(Schema):
     @field_validator("token")
     @classmethod
     def token_must_be_uuid(cls, v: str) -> str:
+        """Validate that the token is a valid UUID4 format."""
         import uuid
 
         try:
@@ -136,16 +192,35 @@ class PasswordResetConfirmSchema(Schema):
 
 
 class PasswordConfirmSchema(Schema):
-    """Schema for confirming user identity via current password."""
+    """Schema for confirming user identity via current password.
 
-    current_password: str = Field(...)
+    Used as a gate before sensitive operations like email change,
+    account deletion, or security setting changes.
+    """
+
+    current_password: str = Field(
+        ...,
+        description="Current password to confirm identity",
+    )
 
 
 class ChangeEmailRequestSchema(Schema):
-    """Schema for requesting an email change (requires current password)."""
+    """Schema for requesting an email change.
 
-    current_password: str = Field(...)
-    new_email: str = Field(..., max_length=255, examples=["newemail@example.com"])
+    Requires current password verification. A 6-digit OTP will be
+    sent to the user's CURRENT email address.
+    """
+
+    current_password: str = Field(
+        ...,
+        description="Current password to confirm identity",
+    )
+    new_email: str = Field(
+        ...,
+        max_length=255,
+        description="The new email address to change to",
+        examples=["newemail@example.com"],
+    )
 
     @field_validator("new_email")
     @classmethod
@@ -153,14 +228,38 @@ class ChangeEmailRequestSchema(Schema):
         return v.lower().strip()
 
 
+class ChangeEmailConfirmOTPSchema(Schema):
+    """Schema for confirming an email change with OTP."""
+
+    otp: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        description="6-digit verification code sent to your current email",
+        examples=["123456"],
+    )
+
+    @field_validator("otp")
+    @classmethod
+    def otp_must_be_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP must be a 6-digit number.")
+        return v
+
+
 class ChangeEmailConfirmSchema(Schema):
     """Schema for confirming an email change with token."""
 
-    token: str = Field(..., examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"])
+    token: str = Field(
+        ...,
+        description="Email change confirmation token (UUID4) sent to current email",
+        examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"],
+    )
 
     @field_validator("token")
     @classmethod
     def token_must_be_uuid(cls, v: str) -> str:
+        """Validate that the token is a valid UUID4 format."""
         import uuid
 
         try:
@@ -171,9 +270,15 @@ class ChangeEmailConfirmSchema(Schema):
 
 
 class DeleteAccountRequestSchema(Schema):
-    """Schema for requesting account deletion (requires current password)."""
+    """Schema for requesting account deletion.
 
-    current_password: str = Field(...)
+    Requires current password verification. The account will be soft-deleted.
+    """
+
+    current_password: str = Field(
+        ...,
+        description="Current password to confirm identity",
+    )
 
 
 # =============================================================================
@@ -221,9 +326,14 @@ class UserProfileUpdateInputSchema(Schema):
 class ChangePasswordInputSchema(Schema):
     """Schema for changing password (authenticated user)."""
 
-    current_password: str = Field(...)
-    new_password: str = Field(..., min_length=8, max_length=128)
-    confirm_password: str = Field(...)
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special)",
+    )
+    confirm_password: str = Field(..., description="Confirm new password")
 
     @field_validator("new_password")
     @classmethod
@@ -235,6 +345,57 @@ class ChangePasswordInputSchema(Schema):
         if self.new_password != self.confirm_password:
             raise ValueError("New password and confirm password do not match.")
         return self
+
+
+# =============================================================================
+# Email Verification (OTP) Schemas
+# =============================================================================
+
+
+class EmailVerifyRequestSchema(Schema):
+    """Schema for requesting an email verification OTP."""
+
+    email: str = Field(
+        ...,
+        max_length=255,
+        description="Email address to send the verification code to",
+        examples=["user@example.com"],
+    )
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+
+class EmailVerifyConfirmSchema(Schema):
+    """Schema for confirming email verification with OTP."""
+
+    email: str = Field(
+        ...,
+        max_length=255,
+        description="The email address being verified",
+        examples=["user@example.com"],
+    )
+    otp: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        description="6-digit verification code sent to email",
+        examples=["123456"],
+    )
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+    @field_validator("otp")
+    @classmethod
+    def otp_must_be_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP must be a 6-digit number.")
+        return v
 
 
 # =============================================================================

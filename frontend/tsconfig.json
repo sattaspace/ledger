@@ -1,0 +1,16 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "jsxImportSource": "vue",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@components/*": ["src/components/*"],
+      "@layouts/*": ["src/layouts/*"],
+      "@vue/*": ["src/components/vue/*"],
+      "@astro/*": ["src/components/astro/*"],
+      "@styles/*": ["src/styles/*"]
+    }
+  }
+}
