@@ -124,3 +124,27 @@ Thumbs.db
 logs/
 media/
 staticfiles/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env.local
+.env.production
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Astro
+.astro/
+
+# Logs
+npm-debug.log*

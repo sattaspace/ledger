@@ -42,9 +42,11 @@ INSTALLED_APPS = [
     "django_celery_beat",
     "ninja_extra",
     "ninja_jwt",
+    'ninja_jwt.token_blacklist',
     "corsheaders",
     "users",
     "api",
+    "common",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = env("CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
@@ -315,16 +317,28 @@ LOGGING = {
 
 AUTH_USER_MODEL = "users.User"
 
+# --- JWT Configuration ---
 NINJA_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-    "ROTATE_REFRESH_TOKENS": False,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=env("JWT_ACCESS_TOKEN_MINUTES", default=60)
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env("JWT_REFRESH_TOKEN_DAYS", default=7)),
+    "ROTATE_REFRESH_TOKENS": env("JWT_ROTATE_REFRESH_TOKENS", default=True, cast=bool),
+    "BLACKLIST_AFTER_ROTATION": env(
+        "JWT_BLACKLIST_AFTER_ROTATION", default=True, cast=bool
+    ),
     "UPDATE_LAST_LOGIN": True,
     "ALGORITHM": env("JWT_ALGORITHM", default="HS256"),
-    "EXPIRATION_DELTA": timedelta(minutes=env("JWT_EXPIRATION_MINUTES", default=1440)),
-    "SIGNING_KEY": SECRET_KEY,
+    "SIGNING_KEY": env("JWT_SIGNING_KEY", default=SECRET_KEY),
     "USE_STATELESS_AUTH": True,
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
 }
+
+# --- OTP Configuration ---
+OTP_EXPIRY_MINUTES = env("OTP_EXPIRY_MINUTES", default=10, cast=int)
+OTP_MAX_REQUESTS_PER_HOUR = env("OTP_MAX_REQUESTS_PER_HOUR", default=5, cast=int)
+OTP_MAX_ATTEMPTS = env("OTP_MAX_ATTEMPTS", default=3, cast=int)
+
+# --- User Roles ---
+USER_ROLES = ["owner", "admin", "member"]
