@@ -13,6 +13,7 @@ import {
   getErrorMessage,
 } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
+import { getMediaUrl } from "@/lib/api";
 import type { UserProfile } from "@/lib/auth";
 import SearchableSelect from "@/components/vue/SearchableSelect.vue";
 import type { SelectOption } from "@/components/vue/SearchableSelect.vue";
@@ -420,7 +421,7 @@ function getLanguageLabel(code: string): string {
             class="mx-auto h-20 w-20 overflow-hidden rounded-full"
           >
             <img
-              :src="user.avatar"
+              :src="getMediaUrl(user.avatar) ?? undefined"
               :alt="`${user.full_name}'s avatar`"
               class="h-full w-full object-cover"
             />

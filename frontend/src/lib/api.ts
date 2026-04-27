@@ -293,6 +293,27 @@ function createApiError(response: Response, message: string): ApiError {
   return { status: response.status, message };
 }
 
+// ─── Media URL helper ─────────────────────────────────────────────────────
+
+/**
+ * Convert a relative media path (e.g. "/media/avatars/...") to a full URL
+ * pointing at the backend server. Returns null if path is falsy.
+ *
+ * Example:
+ *   getMediaUrl("/media/avatars/2026/04/photo.jpg")
+ *   → "https://xxx.ngrok-free.dev/media/avatars/2026/04/photo.jpg"
+ */
+export function getMediaUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  // Already an absolute URL (http/https) — return as-is
+  if (/^https?:\/\//i.test(path)) return path;
+  // Strip "/api/v1" from API_BASE_URL to get the backend origin
+  const origin = API_BASE_URL.replace(/\/api\/v\d+\/?$/, "");
+  // Ensure path starts with "/"
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${origin}${normalized}`;
+}
+
 // ─── Auth helpers ───────────────────────────────────────────────────────────
 
 export const authHelpers = {
