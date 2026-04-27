@@ -17,7 +17,7 @@ from django.contrib.auth import authenticate, get_user_model, hashers
 from django.utils import timezone
 from django.core.mail import send_mail
 
-from .models import User, PasswordResetToken, EmailChangeToken
+from .models import User, UserLoginHistory
 
 logger = logging.getLogger(__name__)
 UserModel = get_user_model()
@@ -33,7 +33,13 @@ class AuthService:
 
     @staticmethod
     def register_user(
-        email: str, password: str, first_name: str, last_name: str = ""
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str = "",
+        timezone: str = "UTC",
+        currency: str = "USD",
+        language: str = "en",
     ) -> User:
         """Register a new user account."""
         if UserModel.objects.email_exists(email):
@@ -44,6 +50,9 @@ class AuthService:
             password=password,
             first_name=first_name,
             last_name=last_name,
+            timezone=timezone,
+            currency=currency,
+            language=language,
             is_active=True,
             is_email_verified=False,
         )
@@ -52,7 +61,13 @@ class AuthService:
 
     @staticmethod
     async def aregister_user(
-        email: str, password: str, first_name: str, last_name: str = ""
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str = "",
+        timezone: str = "UTC",
+        currency: str = "USD",
+        language: str = "en",
     ) -> User:
         """Async version of register_user()."""
         if await UserModel.objects.aemail_exists(email):
@@ -63,11 +78,62 @@ class AuthService:
             password=password,
             first_name=first_name,
             last_name=last_name,
+            timezone=timezone,
+            currency=currency,
+            language=language,
             is_active=True,
             is_email_verified=False,
         )
         logger.info(f"User registered (async): {user.email}")
         return user
+
+    # =========================================================================
+    # Login History
+    # =========================================================================
+
+    @staticmethod
+    def record_login(
+        user: User, ip_address: str = None, user_agent: str = ""
+    ) -> UserLoginHistory:
+        """Record a login event and update the user's last_login field."""
+        from django.contrib.auth import update_session_auth_hash
+
+        # Update Django's built-in last_login field
+        user.last_login = timezone.now()
+        user.last_login_ip = ip_address
+        user.save(update_fields=["last_login", "last_login_ip"])
+
+        # Create login history record
+        history = UserLoginHistory.objects.create(
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent[:500],  # Truncate very long UAs
+        )
+        logger.info(
+            f"Login recorded: user={user.email}, ip={ip_address}, history_id={history.id}"
+        )
+        return history
+
+    @staticmethod
+    async def arecord_login(
+        user: User, ip_address: str = None, user_agent: str = ""
+    ) -> UserLoginHistory:
+        """Async version of record_login()."""
+        # Update Django's built-in last_login field
+        user.last_login = timezone.now()
+        user.last_login_ip = ip_address
+        await user.asave(update_fields=["last_login", "last_login_ip"])
+
+        # Create login history record
+        history = await UserLoginHistory.objects.acreate(
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent[:500],
+        )
+        logger.info(
+            f"Login recorded (async): user={user.email}, ip={ip_address}, history_id={history.id}"
+        )
+        return history
 
     @staticmethod
     def authenticate_user(email: str, password: str) -> User:
@@ -139,9 +205,9 @@ class AuthService:
     PASSWORD_RESET_OTP_EXPIRY = 600  # 10 minutes
     MAX_PASSWORD_RESET_ATTEMPTS = 5
 
-    @classmethod
-    def _generate_otp(cls) -> str:
-        """Generate a cryptographically random 6-digit OTP."""
+    @staticmethod
+    def _generate_otp() -> str:
+        """Generate a cryptographically random 6-digit OTP (zero-padded string)."""
         import secrets
 
         return str(secrets.randbelow(1_000_000)).zfill(6)
@@ -273,17 +339,6 @@ class AuthService:
             raise ValueError("Current password is incorrect.")
 
     # =========================================================================
-    # Email Change (Password + Email Confirmation)
-    # =========================================================================
-    @staticmethod
-    async def aactivate_user(user: User) -> None:
-        """Async version of activate_user()."""
-        user.is_active = True
-        user.is_email_verified = True
-        await user.asave(update_fields=["is_active", "is_email_verified"])
-        logger.info(f"User activated (async): {user.email}")
-
-    # =========================================================================
     # Email Change (OTP-Based)
     # =========================================================================
 
@@ -292,12 +347,18 @@ class AuthService:
     EMAIL_CHANGE_OTP_EXPIRY = 600  # 10 minutes
     MAX_EMAIL_CHANGE_ATTEMPTS = 5
 
-    @staticmethod
-    def _generate_otp() -> str:
-        """Generate a cryptographically random 6-digit OTP."""
-        import secrets
+    EMAIL_CHANGE_CACHE_PREFIX = "email_change_data"
+    EMAIL_CHANGE_ATTEMPTS_PREFIX = "email_change_attempts"
+    EMAIL_CHANGE_OTP_EXPIRY = 600  # 10 minutes
+    MAX_EMAIL_CHANGE_ATTEMPTS = 5
 
-        return secrets.randbelow(1_000_000)
+    @staticmethod
+    async def aactivate_user(user: User) -> None:
+        """Async version of activate_user()."""
+        user.is_active = True
+        user.is_email_verified = True
+        await user.asave(update_fields=["is_active", "is_email_verified"])
+        logger.info(f"User activated (async): {user.email}")
 
     @classmethod
     def request_email_change(
@@ -321,7 +382,6 @@ class AuthService:
 
         # Generate OTP
         otp = cls._generate_otp()
-        otp_padded = str(otp).zfill(6)
 
         # Store OTP + new_email in cache
         from django.core.cache import cache
@@ -329,7 +389,7 @@ class AuthService:
         cache_key = f"{cls.EMAIL_CHANGE_CACHE_PREFIX}:{user.id}"
         cache.set(
             cache_key,
-            {"otp": otp_padded, "new_email": new_email},
+            {"otp": otp, "new_email": new_email},
             cls.EMAIL_CHANGE_OTP_EXPIRY,
         )
 
@@ -345,7 +405,7 @@ class AuthService:
                 subject="Confirm Email Change - Satta Ledger",
                 message=(
                     f"You requested to change your email to: {new_email}\n\n"
-                    f"Your verification code is: {otp_padded}\n\n"
+                    f"Your verification code is: {otp}\n\n"
                     f"This code expires in 10 minutes.\n\n"
                     f"If you didn't request this, ignore this email — your email will NOT be changed."
                 ),
@@ -375,14 +435,13 @@ class AuthService:
             raise ValueError("An account with this email address already exists.")
 
         otp = cls._generate_otp()
-        otp_padded = str(otp).zfill(6)
 
         from django.core.cache import cache
 
         cache_key = f"{cls.EMAIL_CHANGE_CACHE_PREFIX}:{user.id}"
         await sync_to_async(cache.set)(
             cache_key,
-            {"otp": otp_padded, "new_email": new_email},
+            {"otp": otp, "new_email": new_email},
             cls.EMAIL_CHANGE_OTP_EXPIRY,
         )
 
@@ -396,7 +455,7 @@ class AuthService:
                 subject="Confirm Email Change - Satta Ledger",
                 message=(
                     f"You requested to change your email to: {new_email}\n\n"
-                    f"Your verification code is: {otp_padded}\n\n"
+                    f"Your verification code is: {otp}\n\n"
                     f"This code expires in 10 minutes.\n\n"
                     f"If you didn't request this, ignore this email — your email will NOT be changed."
                 ),
@@ -513,9 +572,6 @@ class AuthService:
         logger.info(f"Email changed via OTP (async): user={old_email} -> {new_email}")
         return new_email
 
-    # =============================================================================
-    # User Service
-    # =============================================================================
     # =========================================================================
     # Email Verification (OTP-Based)
     # =========================================================================
@@ -525,13 +581,6 @@ class AuthService:
     OTP_CACHE_ATTEMPTS_PREFIX = "email_verify_attempts"
     OTP_EXPIRY_SECONDS = 600  # 10 minutes
     MAX_OTP_ATTEMPTS = 5
-
-    @staticmethod
-    def _generate_otp() -> str:
-        """Generate a cryptographically random 6-digit OTP."""
-        import secrets
-
-        return secrets.randbelow(1_000_000)
 
     @staticmethod
     def _get_otp_cache_key(email: str) -> str:
@@ -569,21 +618,20 @@ class AuthService:
 
         from django.core.cache import cache
 
-        cache.set(cache_key, str(otp), cls.OTP_EXPIRY_SECONDS)
+        cache.set(cache_key, otp, cls.OTP_EXPIRY_SECONDS)
 
         # Reset attempt counter
         attempts_key = cls._get_attempts_cache_key(email)
         cache.delete(attempts_key)
 
         # Send OTP via email
-        otp_padded = str(otp).zfill(6)
         try:
             from django.conf import settings
 
             send_mail(
                 subject="Verify Your Email - Satta Ledger",
                 message=(
-                    f"Your email verification code is: {otp_padded}\n\n"
+                    f"Your email verification code is: {otp}\n\n"
                     f"This code expires in 10 minutes.\n\n"
                     f"If you didn't request this, ignore this email."
                 ),
@@ -615,19 +663,18 @@ class AuthService:
 
         from django.core.cache import cache
 
-        await sync_to_async(cache.set)(cache_key, str(otp), cls.OTP_EXPIRY_SECONDS)
+        await sync_to_async(cache.set)(cache_key, otp, cls.OTP_EXPIRY_SECONDS)
 
         attempts_key = cls._get_attempts_cache_key(email)
         await sync_to_async(cache.delete)(attempts_key)
 
-        otp_padded = str(otp).zfill(6)
         try:
             from django.conf import settings
 
             await sync_to_async(send_mail)(
                 subject="Verify Your Email - Satta Ledger",
                 message=(
-                    f"Your email verification code is: {otp_padded}\n\n"
+                    f"Your email verification code is: {otp}\n\n"
                     f"This code expires in 10 minutes.\n\n"
                     f"If you didn't request this, ignore this email."
                 ),
@@ -750,15 +797,18 @@ class AuthService:
         logger.info(f"Email verified (async): user={user.email}")
 
     # =========================================================================
-    # Account Deletion
+    # Account Deletion (Soft Delete)
     # =========================================================================
 
     @staticmethod
     def delete_account(user: User, current_password: str) -> None:
         """Soft-delete a user account after confirming current password.
 
-        The user is marked as is_deleted=True and is_active=False.
-        All JWT tokens should be discarded by the client after this.
+        Uses the SoftDeleteModel.soft_delete() method which sets:
+        - is_deleted = True
+        - deleted_at = current timestamp
+
+        Also sets is_active = False to prevent login.
 
         Args:
             user: The authenticated user.
@@ -770,10 +820,15 @@ class AuthService:
         if not user.check_password(current_password):
             raise ValueError("Current password is incorrect.")
 
+        # Use the SoftDeleteModel's soft_delete() method to properly set
+        # is_deleted=True and deleted_at=now
+        user.soft_delete()
+
+        # Also deactivate the account to prevent authentication
         user.is_active = False
-        user.is_deleted = True
-        user.save(update_fields=["is_active", "is_deleted"])
-        logger.info(f"Account deleted (soft): user={user.email}")
+        user.save(update_fields=["is_active"])
+
+        logger.info(f"Account soft-deleted: user={user.email}")
 
     @staticmethod
     async def adelete_account(user: User, current_password: str) -> None:
@@ -781,10 +836,14 @@ class AuthService:
         if not user.check_password(current_password):
             raise ValueError("Current password is incorrect.")
 
+        # Use the SoftDeleteModel's soft_delete() method
+        user.soft_delete()
+
+        # Also deactivate the account to prevent authentication
         user.is_active = False
-        user.is_deleted = True
-        await user.asave(update_fields=["is_active", "is_deleted"])
-        logger.info(f"Account deleted (soft, async): user={user.email}")
+        await user.asave(update_fields=["is_active"])
+
+        logger.info(f"Account soft-deleted (async): user={user.email}")
 
 
 # =============================================================================

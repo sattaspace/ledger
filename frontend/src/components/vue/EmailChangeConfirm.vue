@@ -3,8 +3,7 @@
 // Handles POST /auth/email-change/confirm via auth.ts
 
 import { ref, reactive, onMounted } from "vue";
-import { confirmEmailChange } from "@/lib/auth";
-import { getErrorMessage } from "@/lib/auth";
+import { confirmEmailChange, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 
 const props = defineProps<{

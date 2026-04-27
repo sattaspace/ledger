@@ -17,10 +17,10 @@ import logging
 
 from asgiref.sync import sync_to_async
 
-from ninja_extra import api_controller, http_post, http_get, http_put
+from ninja_extra import api_controller, http_post, http_get, http_put, http_delete
 from ninja.security import HttpBearer
 from ninja_jwt.tokens import AccessToken, RefreshToken
-
+from ninja import UploadedFile, File  # <-- Add this import
 from django.http import HttpRequest
 from django.conf import settings
 
@@ -39,7 +39,6 @@ from .schemas import (
     PasswordResetConfirmSchema,
     PasswordConfirmSchema,
     ChangeEmailRequestSchema,
-    ChangeEmailConfirmSchema,
     DeleteAccountRequestSchema,
     UserOutputSchema,
     UserProfileUpdateInputSchema,
@@ -47,7 +46,6 @@ from .schemas import (
     MessageSchema,
     EmailVerifyRequestSchema,
     EmailVerifyConfirmSchema,
-    ChangeEmailRequestSchema,
     ChangeEmailConfirmOTPSchema,
 )
 from .services import AuthService, UserService
@@ -138,6 +136,9 @@ class AuthController:
                 password=payload.password,
                 first_name=payload.first_name,
                 last_name=payload.last_name or "",
+                timezone=payload.timezone,
+                currency=payload.currency,
+                language=payload.language,
             )
 
             # Automatically send verification OTP after registration
@@ -196,12 +197,14 @@ class AuthController:
             access = await async_token_for_user(user)
             refresh = await async_refresh_for_user(user)
 
-            # Track login IP
+            # Record login in history table and update last_login/last_login_ip
+            user_agent = request.META.get("HTTP_USER_AGENT", "")
             try:
-                user.last_login_ip = client_ip
-                await user.asave(update_fields=["last_login_ip"])
-            except Exception:
-                pass
+                await AuthService.arecord_login(
+                    user, ip_address=client_ip, user_agent=user_agent
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record login history: {e}")
 
             return 200, {
                 "access": str(access),
@@ -436,44 +439,6 @@ class AuthController:
         except ValueError as e:
             return 400, {"message": str(e), "success": False}
 
-    # =========================================================================
-    # Email Change Confirm (Public — uses token, no JWT needed)
-    # =========================================================================
-
-    @http_post(
-        "/email-change/confirm",
-        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
-        summary="Confirm email change",
-        description=(
-            "Confirm an email change using the token sent to the current email. "
-            "No authentication required — the token itself is the proof."
-        ),
-    )
-    async def confirm_email_change_public(
-        self, request: HttpRequest, payload: ChangeEmailConfirmSchema
-    ):
-        client_ip = get_client_ip(request)
-        rl_key = f"email_change_confirm:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
-            max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
-            window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many attempts. Please try again later.",
-                "success": False,
-            }
-
-        try:
-            new_email = await AuthService.aconfirm_email_change(payload.token)
-            return 200, {
-                "message": f"Email changed successfully. You can now log in with {new_email}.",
-                "success": True,
-            }
-        except ValueError as e:
-            return 400, {"message": str(e), "success": False}
-
 
 # =============================================================================
 # User Controller — Profile Management (authenticated)
@@ -529,6 +494,91 @@ class UserController:
         user = await UserService.aupdate_profile(
             request.user, **payload.model_dump(exclude_none=True)
         )
+        return user
+
+    # =========================================================================
+    # Avatar Upload (current password required)
+    # =========================================================================
+
+    @http_put(
+        "/me/avatar",
+        response={200: UserOutputSchema, 400: MessageSchema},
+        summary="Upload avatar",
+        description="Upload or replace the authenticated user's avatar image. Accepts JPEG, PNG, GIF, WebP. Max 2 MB.",
+    )
+    async def update_avatar(
+        self,
+        request: HttpRequest,
+        file: UploadedFile = File(
+            ..., alias="avatar"
+        ),  # <-- This tells Ninja to parse multipart
+    ):
+        """
+        Handle avatar upload via multipart/form-data.
+        Django Ninja automatically parses file uploads from multipart requests.
+        The file is available as `request.FILES["avatar"]`.
+        """
+        if "avatar" not in request.FILES:
+            return 400, {
+                "message": "No file provided. Use the 'avatar' field.",
+                "success": False,
+            }
+
+        file = request.FILES["avatar"]
+
+        # Validate file type
+        ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        if file.content_type not in ALLOWED_TYPES:
+            return 400, {
+                "message": "Invalid file type. Allowed: JPEG, PNG, GIF, WebP.",
+                "success": False,
+            }
+
+        # Validate file size (2 MB)
+        MAX_SIZE = 2 * 1024 * 1024
+        if file.size > MAX_SIZE:
+            return 400, {
+                "message": "File too large. Maximum size is 2 MB.",
+                "success": False,
+            }
+
+        # Delete old avatar file if it exists
+        user = request.user
+        if user.avatar:
+            try:
+                user.avatar.delete(save=False)
+            except Exception as e:
+                logger.warning(f"Failed to delete old avatar: {e}")
+
+        # Save new avatar
+        user.avatar = file
+        await user.asave(update_fields=["avatar"])
+        logger.info(f"Avatar updated: user={user.email}")
+
+        return user
+
+    @http_delete(
+        "/me/avatar",
+        response={200: UserOutputSchema, 404: MessageSchema},
+        summary="Delete avatar",
+        description="Remove the authenticated user's avatar image.",
+    )
+    async def delete_avatar(self, request: HttpRequest):
+        """Remove the user's avatar file and clear the field."""
+        user = request.user
+
+        if not user.avatar:
+            return 404, {"message": "No avatar to delete.", "success": False}
+
+        try:
+            user.avatar.delete(save=False)
+        except Exception as e:
+            logger.warning(f"Failed to delete avatar file: {e}")
+
+        user.avatar = None
+        await user.asave(update_fields=["avatar"])
+        logger.info(f"Avatar deleted: user={user.email}")
+
         return user
 
     # =========================================================================

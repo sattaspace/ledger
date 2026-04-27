@@ -6,6 +6,8 @@ import { ref, reactive, onMounted } from "vue";
 import {
   getCurrentUser,
   updateProfile,
+  updateAvatar,
+  deleteAvatar,
   requestEmailVerification,
   requireAuth,
   getErrorMessage,
@@ -23,6 +25,10 @@ const error = ref("");
 const fieldErrors = ref<Record<string, string>>({});
 const resendLoading = ref(false);
 const resendCooldown = ref(0);
+const avatarUploading = ref(false);
+const avatarDeleting = ref(false);
+const avatarError = ref("");
+const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const form = reactive({
   first_name: "",
@@ -247,6 +253,55 @@ async function handleSave() {
   }
 }
 
+// ─── Avatar upload ───────────────────────────────────────────────────────
+
+function triggerAvatarUpload() {
+  avatarError.value = "";
+  fileInputRef.value?.click();
+}
+
+async function handleAvatarChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  avatarUploading.value = true;
+  avatarError.value = "";
+
+  try {
+    const updated = await updateAvatar(file);
+    user.value = updated;
+    showToast("Avatar updated successfully.", "success");
+  } catch (err: any) {
+    const msg = getErrorMessage(err);
+    avatarError.value = msg;
+    showToast(msg, "error");
+  } finally {
+    avatarUploading.value = false;
+    // Reset input so the same file can be selected again
+    if (fileInputRef.value) fileInputRef.value.value = "";
+  }
+}
+
+async function handleAvatarRemove() {
+  if (!user.value?.avatar) return;
+
+  avatarDeleting.value = true;
+  avatarError.value = "";
+
+  try {
+    const updated = await deleteAvatar();
+    user.value = updated;
+    showToast("Avatar removed.", "success");
+  } catch (err: any) {
+    const msg = getErrorMessage(err);
+    avatarError.value = msg;
+    showToast(msg, "error");
+  } finally {
+    avatarDeleting.value = false;
+  }
+}
+
 // ─── Resend verification ────────────────────────────────────────────────────
 
 async function handleResendVerification() {
@@ -376,19 +431,50 @@ function getLanguageLabel(code: string): string {
           >
             {{ getInitials() }}
           </div>
-          <!-- Avatar upload placeholder -->
+          <!-- Hidden file input for avatar upload -->
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            class="hidden"
+            @change="handleAvatarChange"
+          />
+          <!-- Upload button -->
           <button
             type="button"
-            disabled
-            class="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-white opacity-60 cursor-not-allowed transition-opacity"
-            aria-label="Upload avatar — coming soon"
-            title="Avatar upload coming soon"
+            @click="triggerAvatarUpload"
+            :disabled="avatarUploading"
+            class="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-white shadow-sm hover:bg-brand-700 transition-colors"
+            :class="{ 'opacity-50 cursor-wait': avatarUploading }"
+            aria-label="Upload avatar"
+            title="Upload avatar (JPEG, PNG, GIF, WebP — max 2 MB)"
           >
-            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg v-if="!avatarUploading" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
+            <svg v-else class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
           </button>
+          <!-- Remove avatar button (only shown when avatar exists) -->
+          <button
+            v-if="user.avatar && !avatarUploading"
+            type="button"
+            @click="handleAvatarRemove"
+            :disabled="avatarDeleting"
+            class="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm hover:bg-red-600 transition-colors"
+            :class="{ 'opacity-50 cursor-wait': avatarDeleting }"
+            aria-label="Remove avatar"
+            title="Remove avatar"
+          >
+            <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <!-- Avatar error -->
+          <p v-if="avatarError" class="mt-2 text-xs text-red-600 dark:text-red-400">{{ avatarError }}</p>
         </div>
         <h3 class="text-lg font-semibold">{{ user.full_name }}</h3>
         <p class="text-sm text-[var(--color-muted-foreground)]">{{ user.email }}</p>

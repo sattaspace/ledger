@@ -77,6 +77,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "ninja.compatibility.files.fix_request_files_middleware",  # <-- ADD THIS LINE
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -194,6 +195,10 @@ STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2_621_440  # 2.5 MB — max request body in memory
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440  # 2.5 MB — files below this stored in memory
+DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

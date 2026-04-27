@@ -11,6 +11,178 @@ from common.models import TimeStampedModel, SoftDeleteModel
 from .managers import CustomUserManager  # noqa: E402
 
 
+# =============================================================================
+# Choice Constants
+# =============================================================================
+
+
+# =============================================================================
+# Choice Constants
+# =============================================================================
+
+
+class RoleChoices(models.TextChoices):
+    """User role choices for SaaS multi-tenancy."""
+
+    OWNER = "owner", _("Owner")
+    ADMIN = "admin", _("Admin")
+    MEMBER = "member", _("Member")
+
+
+class TimezoneChoices(models.TextChoices):
+    """Common IANA timezone choices."""
+
+    # Americas
+    UTC = "UTC", _("UTC")
+    US_EASTERN = "America/New_York", _("Eastern Time (US)")
+    US_CENTRAL = "America/Chicago", _("Central Time (US)")
+    US_MOUNTAIN = "America/Denver", _("Mountain Time (US)")
+    US_PACIFIC = "America/Los_Angeles", _("Pacific Time (US)")
+    US_ALASKA = "America/Anchorage", _("Alaska Time (US)")
+    US_HAWAII = "Pacific/Honolulu", _("Hawaii Time (US)")
+    CA_EASTERN = "America/Toronto", _("Eastern Time (Canada)")
+    CA_PACIFIC = "America/Vancouver", _("Pacific Time (Canada)")
+    MX_CITY = "America/Mexico_City", _("Mexico City")
+    SA_PAULO = "America/Sao_Paulo", _("Sao Paulo")
+    AR_BUENOS = "America/Argentina/Buenos_Aires", _("Buenos Aires")
+    CO_BOGOTA = "America/Bogota", _("Bogota")
+    PE_LIMA = "America/Lima", _("Lima")
+    CL_SANTIAGO = "America/Santiago", _("Santiago")
+
+    # Europe
+    GB_LONDON = "Europe/London", _("London")
+    IE_DUBLIN = "Europe/Dublin", _("Dublin")
+    FR_PARIS = "Europe/Paris", _("Paris")
+    DE_BERLIN = "Europe/Berlin", _("Berlin")
+    ES_MADRID = "Europe/Madrid", _("Madrid")
+    IT_ROME = "Europe/Rome", _("Rome")
+    NL_AMSTERDAM = "Europe/Amsterdam", _("Amsterdam")
+    BE_BRUSSELS = "Europe/Brussels", _("Brussels")
+    AT_VIENNA = "Europe/Vienna", _("Vienna")
+    SE_STOCKHOLM = "Europe/Stockholm", _("Stockholm")
+    NO_OSLO = "Europe/Oslo", _("Oslo")
+    DK_COPENHAGEN = "Europe/Copenhagen", _("Copenhagen")
+    FI_HELSINKI = "Europe/Helsinki", _("Helsinki")
+    PL_WARSAW = "Europe/Warsaw", _("Warsaw")
+    PT_LISBON = "Europe/Lisbon", _("Lisbon")
+    GR_ATHENS = "Europe/Athens", _("Athens")
+    CZ_PRAGUE = "Europe/Prague", _("Prague")
+    HU_BUDAPEST = "Europe/Budapest", _("Budapest")
+    RO_BUCHAREST = "Europe/Bucharest", _("Bucharest")
+
+    # Asia
+    AE_DUBAI = "Asia/Dubai", _("Dubai")
+    SA_RIYADH = "Asia/Riyadh", _("Riyadh")
+    IN_KOLKATA = "Asia/Kolkata", _("India Standard Time")
+    PK_KARACHI = "Asia/Karachi", _("Karachi")
+    BD_DHAKA = "Asia/Dhaka", _("Dhaka")
+    LK_COLOMBO = "Asia/Colombo", _("Colombo")
+    NP_KATHMANDU = "Asia/Kathmandu", _("Kathmandu")
+    TH_BANGKOK = "Asia/Bangkok", _("Bangkok")
+    VN_HO_CHI = "Asia/Ho_Chi_Minh", _("Ho Chi Minh City")
+    ID_JAKARTA = "Asia/Jakarta", _("Jakarta")
+    MY_KUALA = "Asia/Kuala_Lumpur", _("Kuala Lumpur")
+    SG_SINGAPORE = "Asia/Singapore", _("Singapore")
+    PH_MANILA = "Asia/Manila", _("Manila")
+    CN_SHANGHAI = "Asia/Shanghai", _("Shanghai")
+    HK_HONG = "Asia/Hong_Kong", _("Hong Kong")
+    TW_TAIPEI = "Asia/Taipei", _("Taipei")
+    KR_SEOUL = "Asia/Seoul", _("Seoul")
+    JP_TOKYO = "Asia/Tokyo", _("Tokyo")
+
+    # Oceania
+    AU_SYDNEY = "Australia/Sydney", _("Sydney")
+    AU_MELBOURNE = "Australia/Melbourne", _("Melbourne")
+    AU_PERTH = "Australia/Perth", _("Perth")
+    NZ_AUCKLAND = "Pacific/Auckland", _("Auckland")
+
+    # Africa
+    ZA_JOHANNESBURG = "Africa/Johannesburg", _("Johannesburg")
+    KE_NAIROBI = "Africa/Nairobi", _("Nairobi")
+    EG_CAIRO = "Africa/Cairo", _("Cairo")
+    NG_LAGOS = "Africa/Lagos", _("Lagos")
+    MA_CASABLANCA = "Africa/Casablanca", _("Casablanca")
+
+
+class CurrencyChoices(models.TextChoices):
+    """ISO 4217 currency codes for common currencies."""
+
+    USD = "USD", _("US Dollar")
+    EUR = "EUR", _("Euro")
+    GBP = "GBP", _("British Pound")
+    JPY = "JPY", _("Japanese Yen")
+    CAD = "CAD", _("Canadian Dollar")
+    AUD = "AUD", _("Australian Dollar")
+    CHF = "CHF", _("Swiss Franc")
+    CNY = "CNY", _("Chinese Yuan")
+    HKD = "HKD", _("Hong Kong Dollar")
+    NZD = "NZD", _("New Zealand Dollar")
+    SEK = "SEK", _("Swedish Krona")
+    KRW = "KRW", _("South Korean Won")
+    SGD = "SGD", _("Singapore Dollar")
+    INR = "INR", _("Indian Rupee")
+    MXN = "MXN", _("Mexican Peso")
+    BRL = "BRL", _("Brazilian Real")
+    ZAR = "ZAR", _("South African Rand")
+    RUB = "RUB", _("Russian Ruble")
+    TRY = "TRY", _("Turkish Lira")
+    AED = "AED", _("UAE Dirham")
+    SAR = "SAR", _("Saudi Riyal")
+    BDT = "BDT", _("Bangladeshi Taka")
+    PKR = "PKR", _("Pakistani Rupee")
+    PHP = "PHP", _("Philippine Peso")
+    THB = "THB", _("Thai Baht")
+    MYR = "MYR", _("Malaysian Ringgit")
+    IDR = "IDR", _("Indonesian Rupiah")
+    VND = "VND", _("Vietnamese Dong")
+    NOK = "NOK", _("Norwegian Krone")
+    DKK = "DKK", _("Danish Krone")
+    PLN = "PLN", _("Polish Zloty")
+    TWD = "TWD", _("Taiwan Dollar")
+    NGN = "NGN", _("Nigerian Naira")
+    EGP = "EGP", _("Egyptian Pound")
+    KES = "KES", _("Kenyan Shilling")
+    COP = "COP", _("Colombian Peso")
+    CLP = "CLP", _("Chilean Peso")
+    PEN = "PEN", _("Peruvian Sol")
+    ARS = "ARS", _("Argentine Peso")
+
+
+class LanguageChoices(models.TextChoices):
+    """Common language codes (ISO 639-1)."""
+
+    EN = "en", _("English")
+    ES = "es", _("Spanish")
+    FR = "fr", _("French")
+    DE = "de", _("German")
+    PT = "pt", _("Portuguese")
+    IT = "it", _("Italian")
+    NL = "nl", _("Dutch")
+    RU = "ru", _("Russian")
+    JA = "ja", _("Japanese")
+    KO = "ko", _("Korean")
+    ZH = "zh", _("Chinese")
+    AR = "ar", _("Arabic")
+    HI = "hi", _("Hindi")
+    BN = "bn", _("Bengali")
+    TR = "tr", _("Turkish")
+    PL = "pl", _("Polish")
+    SV = "sv", _("Swedish")
+    DA = "da", _("Danish")
+    NO = "no", _("Norwegian")
+    FI = "fi", _("Finnish")
+    TH = "th", _("Thai")
+    VI = "vi", _("Vietnamese")
+    ID = "id", _("Indonesian")
+    MS = "ms", _("Malay")
+    TL = "tl", _("Filipino")
+    UK = "uk", _("Ukrainian")
+    CS = "cs", _("Czech")
+    HU = "hu", _("Hungarian")
+    RO = "ro", _("Romanian")
+    EL = "el", _("Greek")
+
+
 class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     """Custom User model with email-based authentication.
 
@@ -22,7 +194,6 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     - TimestampedModel (created_at, updated_at)
     """
 
-    # --- Remove username, use email ---
     username = models.CharField(
         max_length=150, null=True, blank=True, unique=False
     )  # Not used for auth
@@ -56,9 +227,28 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     )
 
     # --- Preferences ---
-    timezone = models.CharField(_("Timezone"), max_length=50, default="UTC")
-    currency = models.CharField(_("Preferred Currency"), max_length=3, default="USD")
-    language = models.CharField(_("Language"), max_length=10, default="en")
+    # --- Preferences (ChoiceFields) ---
+    timezone = models.CharField(
+        _("Timezone"),
+        max_length=50,
+        choices=TimezoneChoices.choices,
+        default=TimezoneChoices.UTC,
+        db_index=True,
+    )
+    currency = models.CharField(
+        _("Preferred Currency"),
+        max_length=3,
+        choices=CurrencyChoices.choices,
+        default=CurrencyChoices.USD,
+        db_index=True,
+    )
+    language = models.CharField(
+        _("Language"),
+        max_length=10,
+        choices=LanguageChoices.choices,
+        default=LanguageChoices.EN,
+        db_index=True,
+    )
 
     # --- Auth Status ---
     is_email_verified = models.BooleanField(
@@ -69,10 +259,12 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     )
 
     # --- SaaS / Tenant fields (foundation for future) ---
+    # --- SaaS / Tenant fields (foundation for future) ---
     role = models.CharField(
         _("Role"),
         max_length=20,
-        default="member",
+        choices=RoleChoices.choices,
+        default=RoleChoices.MEMBER,
         db_index=True,
         help_text=_("User role: owner, admin, member"),
     )
@@ -107,132 +299,49 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
 
 
 # =============================================================================
-# Token Models
+# Login History
 # =============================================================================
 
 
-class PasswordResetToken(models.Model):
-    """Token for password reset flow.
+class UserLoginHistory(models.Model):
+    """Tracks user login events for security auditing and analytics.
 
-    When a user requests a password reset, a unique token is generated and stored.
-    The token is single-use and expires after PASSWORD_RESET_TOKEN_EXPIRY_SECONDS.
+    Each successful login creates a record with timestamp, IP address,
+    and user agent. This model supplements Django's built-in `last_login`
+    field by maintaining a full history rather than just the most recent value.
     """
 
     id = models.BigAutoField(primary_key=True)
-    token = models.UUIDField(
-        default=uuid.uuid4,
-        unique=True,
-        db_index=True,
-        editable=False,
-        help_text="Unique reset token (UUID4). Sent to user's email.",
-    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="password_reset_tokens",
+        related_name="login_history",
         db_index=True,
     )
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    used_at = models.DateTimeField(null=True, blank=True)
+    ip_address = models.GenericIPAddressField(
+        _("IP Address"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_("IP address from which the login originated."),
+    )
+    user_agent = models.TextField(
+        _("User Agent"),
+        blank=True,
+        default="",
+        help_text=_("Browser/client user agent string."),
+    )
+    created_at = models.DateTimeField(
+        _("Login Time"),
+        auto_now_add=True,
+        db_index=True,
+    )
 
     class Meta:
-        db_table = "users_password_reset_token"
-        verbose_name = "Password Reset Token"
-        verbose_name_plural = "Password Reset Tokens"
+        db_table = "users_login_history"
+        verbose_name = _("Login History")
+        verbose_name_plural = _("Login History")
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
-        return f"ResetToken({self.token}, user={self.user.email})"
-
-    @property
-    def is_expired(self) -> bool:
-        """Check if the token has expired."""
-        from django.utils import timezone
-
-        expiry_seconds = getattr(settings, "PASSWORD_RESET_TOKEN_EXPIRY_SECONDS", 900)
-        return (timezone.now() - self.created_at).total_seconds() > expiry_seconds
-
-    @property
-    def is_used(self) -> bool:
-        """Check if the token has already been used."""
-        return self.used_at is not None
-
-    @property
-    def is_valid(self) -> bool:
-        """Check if the token is still valid (not expired and not used)."""
-        return not self.is_expired and not self.is_used
-
-    def mark_used(self) -> None:
-        """Mark the token as used."""
-        from django.utils import timezone
-
-        self.used_at = timezone.now()
-        self.save(update_fields=["used_at"])
-
-
-class EmailChangeToken(models.Model):
-    """Token for email change confirmation.
-
-    When a user requests an email change (with current password verification),
-    a token is generated and sent to their CURRENT email. The user must
-    confirm by clicking the link or entering the token within the expiry window.
-
-    This prevents an attacker with a stolen session from silently changing
-    the email (and thus taking over the account via password reset).
-    """
-
-    id = models.BigAutoField(primary_key=True)
-    token = models.UUIDField(
-        default=uuid.uuid4,
-        unique=True,
-        db_index=True,
-        editable=False,
-        help_text="Unique email change token (UUID4). Sent to current email.",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="email_change_tokens",
-        db_index=True,
-    )
-    new_email = models.EmailField(
-        _("New Email"),
-        max_length=255,
-        help_text="The pending new email address.",
-    )
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    used_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = "users_email_change_token"
-        verbose_name = "Email Change Token"
-        verbose_name_plural = "Email Change Tokens"
-        ordering = ["-created_at"]
-
-    def __str__(self) -> str:
-        return f"EmailChangeToken({self.token}, user={self.user.email} -> {self.new_email})"
-
-    @property
-    def is_expired(self) -> bool:
-        """Check if the token has expired."""
-        from django.utils import timezone
-
-        expiry_seconds = getattr(settings, "EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS", 3600)
-        return (timezone.now() - self.created_at).total_seconds() > expiry_seconds
-
-    @property
-    def is_used(self) -> bool:
-        """Check if the token has already been used."""
-        return self.used_at is not None
-
-    @property
-    def is_valid(self) -> bool:
-        """Check if the token is still valid (not expired and not used)."""
-        return not self.is_expired and not self.is_used
-
-    def mark_used(self) -> None:
-        """Mark the token as used."""
-        from django.utils import timezone
-
-        self.used_at = timezone.now()
-        self.save(update_fields=["used_at"])
+        return f"Login({self.user.email}, {self.created_at})"

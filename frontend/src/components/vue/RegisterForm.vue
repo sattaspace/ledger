@@ -2,9 +2,16 @@
 // Register form — Vue interactive island
 // Handles POST /auth/register via auth.ts
 
-import { ref, reactive, computed } from "vue";
-import { register } from "@/lib/auth";
-import { getErrorMessage } from "@/lib/auth";
+import { ref, reactive, computed, onMounted } from "vue";
+import {
+  register,
+  getErrorMessage,
+  TIMEZONE_OPTIONS,
+  CURRENCY_OPTIONS,
+  LANGUAGE_OPTIONS,
+  detectUserTimezone,
+  detectUserLanguage,
+} from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import type { ApiError } from "@/lib/api";
 
@@ -14,6 +21,9 @@ const form = reactive({
   email: "",
   password: "",
   confirm_password: "",
+  timezone: "UTC",
+  currency: "USD",
+  language: "en",
   agree_terms: false,
 });
 
@@ -27,6 +37,15 @@ const fieldErrors = reactive<Record<string, string>>({
   confirm_password: "",
   agree_terms: "",
 });
+
+// Auto-detect preferences on mount
+onMounted(() => {
+  form.timezone = detectUserTimezone();
+  form.language = detectUserLanguage();
+});
+
+// Collapsible preferences section
+const showPreferences = ref(false);
 
 // Password strength computation
 const passwordChecks = computed(() => {
@@ -110,6 +129,9 @@ async function handleSubmit() {
       password: form.password,
       first_name: form.first_name.trim(),
       last_name: form.last_name.trim(),
+      timezone: form.timezone,
+      currency: form.currency,
+      language: form.language,
     });
 
     showToast("Account created successfully! Please verify your email.", "success");
@@ -346,6 +368,83 @@ async function handleSubmit() {
         >
           Passwords do not match
         </p>
+      </div>
+
+      <!-- Preferences (Collapsible) -->
+      <div class="rounded-lg border border-[var(--color-border)]">
+        <button
+          type="button"
+          @click="showPreferences = !showPreferences"
+          class="flex w-full items-center justify-between px-4 py-3 text-sm font-medium transition-colors hover:bg-[var(--color-accent)]"
+          :disabled="loading"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            Preferences
+          </span>
+          <svg
+            class="h-4 w-4 text-[var(--color-muted-foreground)] transition-transform duration-200"
+            :class="{ 'rotate-180': showPreferences }"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <div v-show="showPreferences" class="border-t border-[var(--color-border)] px-4 py-3 space-y-3">
+          <!-- Timezone -->
+          <div class="space-y-1">
+            <label for="reg-timezone" class="label-text text-xs">Timezone</label>
+            <select
+              id="reg-timezone"
+              v-model="form.timezone"
+              class="input-field"
+              :disabled="loading"
+            >
+              <optgroup label="Americas">
+                <option value="UTC">UTC</option>
+                <option v-for="tz in TIMEZONE_OPTIONS" :key="tz.value" :value="tz.value">
+                  {{ tz.label }}
+                </option>
+              </optgroup>
+            </select>
+          </div>
+
+          <!-- Currency & Language Row -->
+          <div class="grid grid-cols-2 gap-3">
+            <div class="space-y-1">
+              <label for="reg-currency" class="label-text text-xs">Currency</label>
+              <select
+                id="reg-currency"
+                v-model="form.currency"
+                class="input-field"
+                :disabled="loading"
+              >
+                <option v-for="c in CURRENCY_OPTIONS" :key="c.value" :value="c.value">
+                  {{ c.label }}
+                </option>
+              </select>
+            </div>
+            <div class="space-y-1">
+              <label for="reg-language" class="label-text text-xs">Language</label>
+              <select
+                id="reg-language"
+                v-model="form.language"
+                class="input-field"
+                :disabled="loading"
+              >
+                <option v-for="l in LANGUAGE_OPTIONS" :key="l.value" :value="l.value">
+                  {{ l.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Terms -->

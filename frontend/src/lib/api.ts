@@ -60,6 +60,13 @@ function buildHeaders(custom?: Record<string, string>): Record<string, string> {
     ...custom,
   };
 
+  // If Content-Type was explicitly overridden to empty string,
+  // remove it so the browser auto-sets multipart boundary for FormData uploads.
+  if (headers["Content-Type"] === "") {
+    delete headers["Content-Type"];
+  }
+
+
   const token = getAccessToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -161,6 +168,29 @@ export const apiClient = {
    */
   async delete<T = unknown>(path: string, options?: RequestInit): Promise<T> {
     return request<T>(path, { method: "DELETE", ...options });
+  },
+
+  /**
+   * Upload files using multipart/form-data.
+   * Do NOT set Content-Type — the browser auto-sets the boundary header.
+   */
+  async upload<T = unknown>(path: string, formData: FormData): Promise<T> {
+    return request<T>(path, {
+      method: "POST",
+      body: formData,
+      headers: { "Content-Type": "" }, // Override to let browser set multipart boundary
+    });
+  },
+
+  /**
+   * PUT with file upload using multipart/form-data.
+   */
+  async uploadPut<T = unknown>(path: string, formData: FormData): Promise<T> {
+    return request<T>(path, {
+      method: "PUT",
+      body: formData,
+      headers: { "Content-Type": "" }, // Override to let browser set multipart boundary
+    });
   },
 };
 
