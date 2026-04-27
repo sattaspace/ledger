@@ -23,7 +23,9 @@ class User(AbstractUser, TimeStampedModel, SoftDeleteModel):
     """
 
     # --- Remove username, use email ---
-    username = None
+    username = models.CharField(
+        max_length=150, null=True, blank=True, unique=False
+    )  # Not used for auth
     slug = models.UUIDField(
         _("Slug"),
         default=uuid.uuid4,
