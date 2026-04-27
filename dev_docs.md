@@ -445,6 +445,8 @@ LanguageType = Literal["en", "es", "fr", ...]            # 30 values
 |---|---|---|
 | `TokenOutputSchema` | access, refresh | Login, token refresh |
 | `UserOutputSchema` | id, slug, email, first_name, last_name, phone, avatar, timezone, currency, language, is_email_verified, is_active, role, created_at, full_name, display_name | All user profile endpoints |
+| `ChoicesSchema` | timezones: ChoiceItemSchema[], currencies: ChoiceItemSchema[], languages: ChoiceItemSchema[] | `GET /auth/choices` |
+| `ChoiceItemSchema` | value: str, label: str | Used inside ChoicesSchema |
 | `MessageSchema` | message, success | All action endpoints |
 
 ### Password Validation
@@ -533,6 +535,7 @@ All endpoints are documented in the auto-generated OpenAPI spec at `/api/v1/docs
 
 | Method | Path | Description | Request Body | Response |
 |---|---|---|---|---|
+| GET | `/auth/choices` | Get timezone/currency/language choices | — | 200: `ChoicesSchema` |
 | POST | `/auth/register` | Register new account | `RegisterInputSchema` | 201: `MessageSchema` |
 | POST | `/auth/login` | Login with credentials | `LoginInputSchema` | 200: `TokenOutputSchema` |
 | POST | `/auth/token/refresh` | Refresh access token | `TokenRefreshInputSchema` | 200: `TokenOutputSchema` |
@@ -711,12 +714,22 @@ interface UserProfile { id, slug, email, first_name, last_name, phone, avatar,
                         created_at, full_name, display_name }
 ```
 
-**Exported constants:**
+**Choice options (served from backend via API):**
+
+Timezone, currency, and language choices are **not hardcoded** in the frontend. They are fetched from the backend `GET /auth/choices` endpoint, which reads directly from Django model enums (`TimezoneChoices`, `CurrencyChoices`, `LanguageChoices`). This ensures the frontend and backend always stay in sync — the same pattern used for user roles.
 
 ```typescript
-TIMEZONE_OPTIONS   // 55 timezones with value/label
-CURRENCY_OPTIONS   // 40 currencies with value/label
-LANGUAGE_OPTIONS   // 30 languages with value/label
+interface ChoiceOption { value: string; label: string; }
+interface Choices {
+  timezones: ChoiceOption[];
+  currencies: ChoiceOption[];
+  languages: ChoiceOption[];
+}
+```
+
+```typescript
+fetchChoices(): Promise<Choices>        // Fetches from GET /auth/choices, caches in-memory
+getCachedChoices(): Choices | null       // Returns cached data without API call
 ```
 
 **Exported functions:**
@@ -741,8 +754,10 @@ LANGUAGE_OPTIONS   // 30 languages with value/label
 | `isAuthenticated()` | — | Check localStorage for token |
 | `requireAuth()` | — | Redirect to login if unauthenticated |
 | `getErrorMessage(error)` | — | Extract user-friendly error string |
-| `detectUserTimezone()` | — | Auto-detect browser timezone |
-| `detectUserLanguage()` | — | Auto-detect browser language |
+| `fetchChoices()` | GET /auth/choices | Fetch timezone/currency/language choices (cached) |
+| `getCachedChoices()` | — | Return cached choices if already fetched |
+| `detectUserTimezone(choices?)` | — | Auto-detect browser timezone, validate against choices |
+| `detectUserLanguage(choices?)` | — | Auto-detect browser language, validate against choices |
 
 ### Toast System (`src/lib/toast.ts`)
 
@@ -971,6 +986,22 @@ API errors are displayed via:
 2. Form-level error banners above forms
 3. Toast notifications for action feedback (`showToast()`)
 4. The `getErrorMessage()` utility extracts human-readable messages from error objects
+
+**Backend-Served Choices (Single Source of Truth)**
+
+Timezone, currency, and language options are defined exclusively in the Django model enums (`users/models.py`) and exposed to the frontend via `GET /auth/choices`. The frontend calls `fetchChoices()` from `auth.ts` — results are cached in-memory for the page lifetime. Both `RegisterForm.vue` and `ProfileCard.vue` consume these choices. This eliminates option duplication between frontend and backend and guarantees they are always in sync.
+
+**Django TextChoices Serialization**
+
+Django's `models.TextChoices` stores labels as lazy translation proxies (`gettext_lazy`). When returning choices in API responses consumed by Pydantic schemas, labels must be explicitly cast with `str()` to resolve the proxy into a plain string. Without this, Pydantic validation rejects the lazy proxy as non-string input.
+
+```python
+# Correct: str(l) resolves the lazy proxy
+{"value": v, "label": str(l)} for v, l in TimezoneChoices.choices
+
+# Incorrect: l is a lazy.__proxy__, Pydantic rejects it
+{"value": v, "label": l} for v, l in TimezoneChoices.choices
+```
 
 **Tailwind CSS v4**
 

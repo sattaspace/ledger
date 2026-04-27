@@ -47,9 +47,17 @@ from .schemas import (
     EmailVerifyRequestSchema,
     EmailVerifyConfirmSchema,
     ChangeEmailConfirmOTPSchema,
+    ChoicesSchema,
+    ChoiceItemSchema,
 )
 from .services import AuthService, UserService
-from .models import User
+from .models import (
+    User,
+    RoleChoices,
+    TimezoneChoices,
+    CurrencyChoices,
+    LanguageChoices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +112,32 @@ class AuthController:
     All endpoints in this controller are public (no auth required).
     They handle user registration, login, token management, and password reset.
     """
+
+    @http_get(
+        "/choices",
+        response=ChoicesSchema,
+        summary="Get field choices",
+        description="Return available timezone, currency, and language choices. Used by registration and profile forms.",
+    )
+    async def get_choices(self):
+        """Return available timezone, currency, and language choices.
+
+        Labels are explicitly cast to ``str`` because Django's
+        ``TextChoices`` stores labels as lazy translation proxies
+        (``gettext_lazy``).  Pydantic requires plain ``str`` values,
+        so ``str(l)`` resolves the proxy eagerly.
+        """
+        return {
+            "timezones": [
+                {"value": v, "label": str(l)} for v, l in TimezoneChoices.choices
+            ],
+            "currencies": [
+                {"value": v, "label": str(l)} for v, l in CurrencyChoices.choices
+            ],
+            "languages": [
+                {"value": v, "label": str(l)} for v, l in LanguageChoices.choices
+            ],
+        }
 
     @http_post(
         "/register",

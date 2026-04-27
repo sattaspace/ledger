@@ -2,7 +2,7 @@
 // Profile card — Vue interactive island
 // GET /users/me (display) + PUT /users/me (update)
 
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import {
   getCurrentUser,
   updateProfile,
@@ -11,7 +11,9 @@ import {
   requestEmailVerification,
   requireAuth,
   getErrorMessage,
+  fetchChoices,
 } from "@/lib/auth";
+import type { Choices, ChoiceOption } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { getMediaUrl } from "@/lib/api";
 import type { UserProfile } from "@/lib/auth";
@@ -40,153 +42,187 @@ const form = reactive({
   language: "en",
 });
 
-// ─── Data for searchable selects ────────────────────────────────────────────
+// ─── Choices from API (synced with backend enums) ────────────────────────────
 
-const currencyOptions: SelectOption[] = [
-  { value: "USD", label: "US Dollar", secondary: "USD", group: "Americas" },
-  { value: "CAD", label: "Canadian Dollar", secondary: "CAD", group: "Americas" },
-  { value: "MXN", label: "Mexican Peso", secondary: "MXN", group: "Americas" },
-  { value: "BRL", label: "Brazilian Real", secondary: "BRL", group: "Americas" },
-  { value: "ARS", label: "Argentine Peso", secondary: "ARS", group: "Americas" },
-  { value: "EUR", label: "Euro", secondary: "EUR", group: "Europe" },
-  { value: "GBP", label: "British Pound", secondary: "GBP", group: "Europe" },
-  { value: "CHF", label: "Swiss Franc", secondary: "CHF", group: "Europe" },
-  { value: "SEK", label: "Swedish Krona", secondary: "SEK", group: "Europe" },
-  { value: "NOK", label: "Norwegian Krone", secondary: "NOK", group: "Europe" },
-  { value: "DKK", label: "Danish Krone", secondary: "DKK", group: "Europe" },
-  { value: "PLN", label: "Polish Zloty", secondary: "PLN", group: "Europe" },
-  { value: "CZK", label: "Czech Koruna", secondary: "CZK", group: "Europe" },
-  { value: "RUB", label: "Russian Ruble", secondary: "RUB", group: "Europe" },
-  { value: "TRY", label: "Turkish Lira", secondary: "TRY", group: "Europe" },
-  { value: "JPY", label: "Japanese Yen", secondary: "JPY", group: "Asia" },
-  { value: "CNY", label: "Chinese Yuan", secondary: "CNY", group: "Asia" },
-  { value: "KRW", label: "South Korean Won", secondary: "KRW", group: "Asia" },
-  { value: "INR", label: "Indian Rupee", secondary: "INR", group: "Asia" },
-  { value: "BDT", label: "Bangladeshi Taka", secondary: "BDT", group: "Asia" },
-  { value: "PKR", label: "Pakistani Rupee", secondary: "PKR", group: "Asia" },
-  { value: "SGD", label: "Singapore Dollar", secondary: "SGD", group: "Asia" },
-  { value: "THB", label: "Thai Baht", secondary: "THB", group: "Asia" },
-  { value: "VND", label: "Vietnamese Dong", secondary: "VND", group: "Asia" },
-  { value: "IDR", label: "Indonesian Rupiah", secondary: "IDR", group: "Asia" },
-  { value: "MYR", label: "Malaysian Ringgit", secondary: "MYR", group: "Asia" },
-  { value: "PHP", label: "Philippine Peso", secondary: "PHP", group: "Asia" },
-  { value: "AUD", label: "Australian Dollar", secondary: "AUD", group: "Oceania" },
-  { value: "NZD", label: "New Zealand Dollar", secondary: "NZD", group: "Oceania" },
-  { value: "ZAR", label: "South African Rand", secondary: "ZAR", group: "Africa" },
-  { value: "NGN", label: "Nigerian Naira", secondary: "NGN", group: "Africa" },
-  { value: "EGP", label: "Egyptian Pound", secondary: "EGP", group: "Africa" },
-  { value: "AED", label: "UAE Dirham", secondary: "AED", group: "Middle East" },
-  { value: "SAR", label: "Saudi Riyal", secondary: "SAR", group: "Middle East" },
-];
+const choices = ref<Choices>({ timezones: [], currencies: [], languages: [] });
 
-const languageOptions: SelectOption[] = [
-  { value: "en", label: "English", group: "Popular" },
-  { value: "es", label: "Spanish", group: "Popular" },
-  { value: "fr", label: "French", group: "Popular" },
-  { value: "de", label: "German", group: "Popular" },
-  { value: "pt", label: "Portuguese", group: "Popular" },
-  { value: "hi", label: "Hindi", group: "Asia" },
-  { value: "bn", label: "Bengali", group: "Asia" },
-  { value: "ur", label: "Urdu", group: "Asia" },
-  { value: "zh", label: "Chinese (Simplified)", group: "Asia" },
-  { value: "ja", label: "Japanese", group: "Asia" },
-  { value: "ko", label: "Korean", group: "Asia" },
-  { value: "ar", label: "Arabic", group: "Middle East" },
-  { value: "tr", label: "Turkish", group: "Europe" },
-  { value: "ru", label: "Russian", group: "Europe" },
-  { value: "it", label: "Italian", group: "Europe" },
-  { value: "nl", label: "Dutch", group: "Europe" },
-  { value: "pl", label: "Polish", group: "Europe" },
-  { value: "sv", label: "Swedish", group: "Europe" },
-  { value: "da", label: "Danish", group: "Europe" },
-  { value: "fi", label: "Finnish", group: "Europe" },
-  { value: "no", label: "Norwegian", group: "Europe" },
-  { value: "vi", label: "Vietnamese", group: "Asia" },
-  { value: "th", label: "Thai", group: "Asia" },
-  { value: "id", label: "Indonesian", group: "Asia" },
-  { value: "ms", label: "Malay", group: "Asia" },
-  { value: "tl", label: "Filipino", group: "Asia" },
-  { value: "sw", label: "Swahili", group: "Africa" },
-  { value: "uk", label: "Ukrainian", group: "Europe" },
-  { value: "cs", label: "Czech", group: "Europe" },
-];
+function toSelectOptions(items: ChoiceOption[]): SelectOption[] {
+  return items.map((item) => ({ value: item.value, label: item.label }));
+}
 
-const timezoneOptions: SelectOption[] = [
-  { value: "UTC", label: "UTC", group: "Global" },
-  // Americas
-  { value: "America/New_York", label: "Eastern Time", secondary: "New York", group: "Americas" },
-  { value: "America/Chicago", label: "Central Time", secondary: "Chicago", group: "Americas" },
-  { value: "America/Denver", label: "Mountain Time", secondary: "Denver", group: "Americas" },
-  { value: "America/Los_Angeles", label: "Pacific Time", secondary: "Los Angeles", group: "Americas" },
-  { value: "America/Anchorage", label: "Alaska Time", secondary: "Anchorage", group: "Americas" },
-  { value: "Pacific/Honolulu", label: "Hawaii-Aleutian", secondary: "Honolulu", group: "Americas" },
-  { value: "America/Toronto", label: "Eastern Time", secondary: "Toronto", group: "Americas" },
-  { value: "America/Vancouver", label: "Pacific Time", secondary: "Vancouver", group: "Americas" },
-  { value: "America/Mexico_City", label: "Central Time", secondary: "Mexico City", group: "Americas" },
-  { value: "America/Sao_Paulo", label: "Brasilia Time", secondary: "Sao Paulo", group: "Americas" },
-  { value: "America/Argentina/Buenos_Aires", label: "Argentina Time", secondary: "Buenos Aires", group: "Americas" },
-  { value: "America/Bogota", label: "Colombia Time", secondary: "Bogota", group: "Americas" },
-  { value: "America/Lima", label: "Peru Time", secondary: "Lima", group: "Americas" },
-  { value: "America/Santiago", label: "Chile Time", secondary: "Santiago", group: "Americas" },
-  // Europe
-  { value: "Europe/London", label: "Greenwich Mean Time", secondary: "London", group: "Europe" },
-  { value: "Europe/Paris", label: "Central European Time", secondary: "Paris", group: "Europe" },
-  { value: "Europe/Berlin", label: "Central European Time", secondary: "Berlin", group: "Europe" },
-  { value: "Europe/Madrid", label: "Central European Time", secondary: "Madrid", group: "Europe" },
-  { value: "Europe/Rome", label: "Central European Time", secondary: "Rome", group: "Europe" },
-  { value: "Europe/Amsterdam", label: "Central European Time", secondary: "Amsterdam", group: "Europe" },
-  { value: "Europe/Zurich", label: "Central European Time", secondary: "Zurich", group: "Europe" },
-  { value: "Europe/Stockholm", label: "Central European Time", secondary: "Stockholm", group: "Europe" },
-  { value: "Europe/Oslo", label: "Central European Time", secondary: "Oslo", group: "Europe" },
-  { value: "Europe/Copenhagen", label: "Central European Time", secondary: "Copenhagen", group: "Europe" },
-  { value: "Europe/Warsaw", label: "Central European Time", secondary: "Warsaw", group: "Europe" },
-  { value: "Europe/Prague", label: "Central European Time", secondary: "Prague", group: "Europe" },
-  { value: "Europe/Budapest", label: "Central European Time", secondary: "Budapest", group: "Europe" },
-  { value: "Europe/Athens", label: "Eastern European Time", secondary: "Athens", group: "Europe" },
-  { value: "Europe/Bucharest", label: "Eastern European Time", secondary: "Bucharest", group: "Europe" },
-  { value: "Europe/Helsinki", label: "Eastern European Time", secondary: "Helsinki", group: "Europe" },
-  { value: "Europe/Istanbul", label: "Turkey Time", secondary: "Istanbul", group: "Europe" },
-  { value: "Europe/Moscow", label: "Moscow Time", secondary: "Moscow", group: "Europe" },
-  // Asia
-  { value: "Asia/Dhaka", label: "Bangladesh Standard Time", secondary: "Dhaka", group: "Asia" },
-  { value: "Asia/Kolkata", label: "India Standard Time", secondary: "Kolkata", group: "Asia" },
-  { value: "Asia/Karachi", label: "Pakistan Time", secondary: "Karachi", group: "Asia" },
-  { value: "Asia/Kathmandu", label: "Nepal Time", secondary: "Kathmandu", group: "Asia" },
-  { value: "Asia/Colombo", label: "Sri Lanka Time", secondary: "Colombo", group: "Asia" },
-  { value: "Asia/Dubai", label: "Gulf Standard Time", secondary: "Dubai", group: "Asia" },
-  { value: "Asia/Riyadh", label: "Arabia Standard Time", secondary: "Riyadh", group: "Asia" },
-  { value: "Asia/Tehran", label: "Iran Time", secondary: "Tehran", group: "Asia" },
-  { value: "Asia/Kabul", label: "Afghanistan Time", secondary: "Kabul", group: "Asia" },
-  { value: "Asia/Bangkok", label: "Indochina Time", secondary: "Bangkok", group: "Asia" },
-  { value: "Asia/Singapore", label: "Singapore Time", secondary: "Singapore", group: "Asia" },
-  { value: "Asia/Kuala_Lumpur", label: "Malaysia Time", secondary: "Kuala Lumpur", group: "Asia" },
-  { value: "Asia/Jakarta", label: "Western Indonesia Time", secondary: "Jakarta", group: "Asia" },
-  { value: "Asia/Manila", label: "Philippine Time", secondary: "Manila", group: "Asia" },
-  { value: "Asia/Ho_Chi_Minh", label: "Indochina Time", secondary: "Ho Chi Minh", group: "Asia" },
-  { value: "Asia/Shanghai", label: "China Standard Time", secondary: "Shanghai", group: "Asia" },
-  { value: "Asia/Hong_Kong", label: "Hong Kong Time", secondary: "Hong Kong", group: "Asia" },
-  { value: "Asia/Taipei", label: "Taipei Time", secondary: "Taipei", group: "Asia" },
-  { value: "Asia/Tokyo", label: "Japan Standard Time", secondary: "Tokyo", group: "Asia" },
-  { value: "Asia/Seoul", label: "Korea Standard Time", secondary: "Seoul", group: "Asia" },
-  // Oceania
-  { value: "Australia/Perth", label: "AWST", secondary: "Perth", group: "Oceania" },
-  { value: "Australia/Adelaide", label: "ACST", secondary: "Adelaide", group: "Oceania" },
-  { value: "Australia/Sydney", label: "AEST/AEDT", secondary: "Sydney", group: "Oceania" },
-  { value: "Australia/Melbourne", label: "AEST/AEDT", secondary: "Melbourne", group: "Oceania" },
-  { value: "Pacific/Auckland", label: "New Zealand Time", secondary: "Auckland", group: "Oceania" },
-  // Africa
-  { value: "Africa/Cairo", label: "Eastern European Time", secondary: "Cairo", group: "Africa" },
-  { value: "Africa/Lagos", label: "West Africa Time", secondary: "Lagos", group: "Africa" },
-  { value: "Africa/Johannesburg", label: "South Africa Time", secondary: "Johannesburg", group: "Africa" },
-  { value: "Africa/Nairobi", label: "East Africa Time", secondary: "Nairobi", group: "Africa" },
-  { value: "Africa/Casablanca", label: "Western European Time", secondary: "Casablanca", group: "Africa" },
-];
+const currencyOptions = computed(() => toSelectOptions(choices.value.currencies));
+const languageOptions = computed(() => toSelectOptions(choices.value.languages));
+const timezoneOptions = computed(() => toSelectOptions(choices.value.timezones));
+
+
+// // ─── Data for searchable selects ────────────────────────────────────────────
+
+// const currencyOptions: SelectOption[] = [
+//   { value: "USD", label: "US Dollar", secondary: "USD", group: "Americas" },
+//   { value: "CAD", label: "Canadian Dollar", secondary: "CAD", group: "Americas" },
+//   { value: "MXN", label: "Mexican Peso", secondary: "MXN", group: "Americas" },
+//   { value: "BRL", label: "Brazilian Real", secondary: "BRL", group: "Americas" },
+//   { value: "ARS", label: "Argentine Peso", secondary: "ARS", group: "Americas" },
+//   { value: "EUR", label: "Euro", secondary: "EUR", group: "Europe" },
+//   { value: "GBP", label: "British Pound", secondary: "GBP", group: "Europe" },
+//   { value: "CHF", label: "Swiss Franc", secondary: "CHF", group: "Europe" },
+//   { value: "SEK", label: "Swedish Krona", secondary: "SEK", group: "Europe" },
+//   { value: "NOK", label: "Norwegian Krone", secondary: "NOK", group: "Europe" },
+//   { value: "DKK", label: "Danish Krone", secondary: "DKK", group: "Europe" },
+//   { value: "PLN", label: "Polish Zloty", secondary: "PLN", group: "Europe" },
+//   { value: "CZK", label: "Czech Koruna", secondary: "CZK", group: "Europe" },
+//   { value: "RUB", label: "Russian Ruble", secondary: "RUB", group: "Europe" },
+//   { value: "TRY", label: "Turkish Lira", secondary: "TRY", group: "Europe" },
+//   { value: "JPY", label: "Japanese Yen", secondary: "JPY", group: "Asia" },
+//   { value: "CNY", label: "Chinese Yuan", secondary: "CNY", group: "Asia" },
+//   { value: "KRW", label: "South Korean Won", secondary: "KRW", group: "Asia" },
+//   { value: "INR", label: "Indian Rupee", secondary: "INR", group: "Asia" },
+//   { value: "BDT", label: "Bangladeshi Taka", secondary: "BDT", group: "Asia" },
+//   { value: "PKR", label: "Pakistani Rupee", secondary: "PKR", group: "Asia" },
+//   { value: "SGD", label: "Singapore Dollar", secondary: "SGD", group: "Asia" },
+//   { value: "THB", label: "Thai Baht", secondary: "THB", group: "Asia" },
+//   { value: "VND", label: "Vietnamese Dong", secondary: "VND", group: "Asia" },
+//   { value: "IDR", label: "Indonesian Rupiah", secondary: "IDR", group: "Asia" },
+//   { value: "MYR", label: "Malaysian Ringgit", secondary: "MYR", group: "Asia" },
+//   { value: "PHP", label: "Philippine Peso", secondary: "PHP", group: "Asia" },
+//   { value: "AUD", label: "Australian Dollar", secondary: "AUD", group: "Oceania" },
+//   { value: "NZD", label: "New Zealand Dollar", secondary: "NZD", group: "Oceania" },
+//   { value: "ZAR", label: "South African Rand", secondary: "ZAR", group: "Africa" },
+//   { value: "NGN", label: "Nigerian Naira", secondary: "NGN", group: "Africa" },
+//   { value: "EGP", label: "Egyptian Pound", secondary: "EGP", group: "Africa" },
+//   { value: "AED", label: "UAE Dirham", secondary: "AED", group: "Middle East" },
+//   { value: "SAR", label: "Saudi Riyal", secondary: "SAR", group: "Middle East" },
+// ];
+
+// const languageOptions: SelectOption[] = [
+//   { value: "en", label: "English", group: "Popular" },
+//   { value: "es", label: "Spanish", group: "Popular" },
+//   { value: "fr", label: "French", group: "Popular" },
+//   { value: "de", label: "German", group: "Popular" },
+//   { value: "pt", label: "Portuguese", group: "Popular" },
+//   { value: "hi", label: "Hindi", group: "Asia" },
+//   { value: "bn", label: "Bengali", group: "Asia" },
+//   { value: "ur", label: "Urdu", group: "Asia" },
+//   { value: "zh", label: "Chinese (Simplified)", group: "Asia" },
+//   { value: "ja", label: "Japanese", group: "Asia" },
+//   { value: "ko", label: "Korean", group: "Asia" },
+//   { value: "ar", label: "Arabic", group: "Middle East" },
+//   { value: "tr", label: "Turkish", group: "Europe" },
+//   { value: "ru", label: "Russian", group: "Europe" },
+//   { value: "it", label: "Italian", group: "Europe" },
+//   { value: "nl", label: "Dutch", group: "Europe" },
+//   { value: "pl", label: "Polish", group: "Europe" },
+//   { value: "sv", label: "Swedish", group: "Europe" },
+//   { value: "da", label: "Danish", group: "Europe" },
+//   { value: "fi", label: "Finnish", group: "Europe" },
+//   { value: "no", label: "Norwegian", group: "Europe" },
+//   { value: "vi", label: "Vietnamese", group: "Asia" },
+//   { value: "th", label: "Thai", group: "Asia" },
+//   { value: "id", label: "Indonesian", group: "Asia" },
+//   { value: "ms", label: "Malay", group: "Asia" },
+//   { value: "tl", label: "Filipino", group: "Asia" },
+//   { value: "sw", label: "Swahili", group: "Africa" },
+//   { value: "uk", label: "Ukrainian", group: "Europe" },
+//   { value: "cs", label: "Czech", group: "Europe" },
+// ];
+
+// const timezoneOptions: SelectOption[] = [
+//   { value: "UTC", label: "UTC", group: "Global" },
+//   // Americas
+//   { value: "America/New_York", label: "Eastern Time", secondary: "New York", group: "Americas" },
+//   { value: "America/Chicago", label: "Central Time", secondary: "Chicago", group: "Americas" },
+//   { value: "America/Denver", label: "Mountain Time", secondary: "Denver", group: "Americas" },
+//   { value: "America/Los_Angeles", label: "Pacific Time", secondary: "Los Angeles", group: "Americas" },
+//   { value: "America/Anchorage", label: "Alaska Time", secondary: "Anchorage", group: "Americas" },
+//   { value: "Pacific/Honolulu", label: "Hawaii-Aleutian", secondary: "Honolulu", group: "Americas" },
+//   { value: "America/Toronto", label: "Eastern Time", secondary: "Toronto", group: "Americas" },
+//   { value: "America/Vancouver", label: "Pacific Time", secondary: "Vancouver", group: "Americas" },
+//   { value: "America/Mexico_City", label: "Central Time", secondary: "Mexico City", group: "Americas" },
+//   { value: "America/Sao_Paulo", label: "Brasilia Time", secondary: "Sao Paulo", group: "Americas" },
+//   { value: "America/Argentina/Buenos_Aires", label: "Argentina Time", secondary: "Buenos Aires", group: "Americas" },
+//   { value: "America/Bogota", label: "Colombia Time", secondary: "Bogota", group: "Americas" },
+//   { value: "America/Lima", label: "Peru Time", secondary: "Lima", group: "Americas" },
+//   { value: "America/Santiago", label: "Chile Time", secondary: "Santiago", group: "Americas" },
+//   // Europe
+//   { value: "Europe/London", label: "Greenwich Mean Time", secondary: "London", group: "Europe" },
+//   { value: "Europe/Paris", label: "Central European Time", secondary: "Paris", group: "Europe" },
+//   { value: "Europe/Berlin", label: "Central European Time", secondary: "Berlin", group: "Europe" },
+//   { value: "Europe/Madrid", label: "Central European Time", secondary: "Madrid", group: "Europe" },
+//   { value: "Europe/Rome", label: "Central European Time", secondary: "Rome", group: "Europe" },
+//   { value: "Europe/Amsterdam", label: "Central European Time", secondary: "Amsterdam", group: "Europe" },
+//   { value: "Europe/Zurich", label: "Central European Time", secondary: "Zurich", group: "Europe" },
+//   { value: "Europe/Stockholm", label: "Central European Time", secondary: "Stockholm", group: "Europe" },
+//   { value: "Europe/Oslo", label: "Central European Time", secondary: "Oslo", group: "Europe" },
+//   { value: "Europe/Copenhagen", label: "Central European Time", secondary: "Copenhagen", group: "Europe" },
+//   { value: "Europe/Warsaw", label: "Central European Time", secondary: "Warsaw", group: "Europe" },
+//   { value: "Europe/Prague", label: "Central European Time", secondary: "Prague", group: "Europe" },
+//   { value: "Europe/Budapest", label: "Central European Time", secondary: "Budapest", group: "Europe" },
+//   { value: "Europe/Athens", label: "Eastern European Time", secondary: "Athens", group: "Europe" },
+//   { value: "Europe/Bucharest", label: "Eastern European Time", secondary: "Bucharest", group: "Europe" },
+//   { value: "Europe/Helsinki", label: "Eastern European Time", secondary: "Helsinki", group: "Europe" },
+//   { value: "Europe/Istanbul", label: "Turkey Time", secondary: "Istanbul", group: "Europe" },
+//   { value: "Europe/Moscow", label: "Moscow Time", secondary: "Moscow", group: "Europe" },
+//   // Asia
+//   { value: "Asia/Dhaka", label: "Bangladesh Standard Time", secondary: "Dhaka", group: "Asia" },
+//   { value: "Asia/Kolkata", label: "India Standard Time", secondary: "Kolkata", group: "Asia" },
+//   { value: "Asia/Karachi", label: "Pakistan Time", secondary: "Karachi", group: "Asia" },
+//   { value: "Asia/Kathmandu", label: "Nepal Time", secondary: "Kathmandu", group: "Asia" },
+//   { value: "Asia/Colombo", label: "Sri Lanka Time", secondary: "Colombo", group: "Asia" },
+//   { value: "Asia/Dubai", label: "Gulf Standard Time", secondary: "Dubai", group: "Asia" },
+//   { value: "Asia/Riyadh", label: "Arabia Standard Time", secondary: "Riyadh", group: "Asia" },
+//   { value: "Asia/Tehran", label: "Iran Time", secondary: "Tehran", group: "Asia" },
+//   { value: "Asia/Kabul", label: "Afghanistan Time", secondary: "Kabul", group: "Asia" },
+//   { value: "Asia/Bangkok", label: "Indochina Time", secondary: "Bangkok", group: "Asia" },
+//   { value: "Asia/Singapore", label: "Singapore Time", secondary: "Singapore", group: "Asia" },
+//   { value: "Asia/Kuala_Lumpur", label: "Malaysia Time", secondary: "Kuala Lumpur", group: "Asia" },
+//   { value: "Asia/Jakarta", label: "Western Indonesia Time", secondary: "Jakarta", group: "Asia" },
+//   { value: "Asia/Manila", label: "Philippine Time", secondary: "Manila", group: "Asia" },
+//   { value: "Asia/Ho_Chi_Minh", label: "Indochina Time", secondary: "Ho Chi Minh", group: "Asia" },
+//   { value: "Asia/Shanghai", label: "China Standard Time", secondary: "Shanghai", group: "Asia" },
+//   { value: "Asia/Hong_Kong", label: "Hong Kong Time", secondary: "Hong Kong", group: "Asia" },
+//   { value: "Asia/Taipei", label: "Taipei Time", secondary: "Taipei", group: "Asia" },
+//   { value: "Asia/Tokyo", label: "Japan Standard Time", secondary: "Tokyo", group: "Asia" },
+//   { value: "Asia/Seoul", label: "Korea Standard Time", secondary: "Seoul", group: "Asia" },
+//   // Oceania
+//   { value: "Australia/Perth", label: "AWST", secondary: "Perth", group: "Oceania" },
+//   { value: "Australia/Adelaide", label: "ACST", secondary: "Adelaide", group: "Oceania" },
+//   { value: "Australia/Sydney", label: "AEST/AEDT", secondary: "Sydney", group: "Oceania" },
+//   { value: "Australia/Melbourne", label: "AEST/AEDT", secondary: "Melbourne", group: "Oceania" },
+//   { value: "Pacific/Auckland", label: "New Zealand Time", secondary: "Auckland", group: "Oceania" },
+//   // Africa
+//   { value: "Africa/Cairo", label: "Eastern European Time", secondary: "Cairo", group: "Africa" },
+//   { value: "Africa/Lagos", label: "West Africa Time", secondary: "Lagos", group: "Africa" },
+//   { value: "Africa/Johannesburg", label: "South Africa Time", secondary: "Johannesburg", group: "Africa" },
+//   { value: "Africa/Nairobi", label: "East Africa Time", secondary: "Nairobi", group: "Africa" },
+//   { value: "Africa/Casablanca", label: "Western European Time", secondary: "Casablanca", group: "Africa" },
+// ];
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
+// onMounted(async () => {
+//   if (!requireAuth()) return;
+
+//   try {
+//     user.value = await getCurrentUser();
+//     populateForm();
+//   } catch (err) {
+//     showToast(getErrorMessage(err), "error");
+//   } finally {
+//     loading.value = false;
+//   }
+// });
 onMounted(async () => {
   if (!requireAuth()) return;
 
+  // Fetch choices first (public endpoint, no auth issues)
+  try {
+    choices.value = await fetchChoices();
+  } catch (err) {
+    console.error("Failed to load choices:", err);
+    // choices.value stays at default empty arrays
+  }
+
+  // Fetch user profile separately (requires auth)
   try {
     user.value = await getCurrentUser();
     populateForm();
@@ -351,16 +387,27 @@ function getFieldError(field: string): string {
   return fieldErrors.value[field] || "";
 }
 
+// function getCurrencyLabel(code: string): string {
+//   return currencyOptions.find((c) => c.value === code)?.label || code;
+// }
+
+// function getTimezoneLabel(tz: string): string {
+//   return timezoneOptions.find((t) => t.value === tz)?.label || tz;
+// }
+
+// function getLanguageLabel(code: string): string {
+//   return languageOptions.find((l) => l.value === code)?.label || code;
+// }
 function getCurrencyLabel(code: string): string {
-  return currencyOptions.find((c) => c.value === code)?.label || code;
+  return Array.isArray(currencyOptions) ? currencyOptions.find((c) => c.value === code)?.label || code : code;
 }
 
 function getTimezoneLabel(tz: string): string {
-  return timezoneOptions.find((t) => t.value === tz)?.label || tz;
+  return Array.isArray(timezoneOptions) ? timezoneOptions.find((t) => t.value === tz)?.label || tz : tz;
 }
 
 function getLanguageLabel(code: string): string {
-  return languageOptions.find((l) => l.value === code)?.label || code;
+  return Array.isArray(languageOptions) ? languageOptions.find((l) => l.value === code)?.label || code : code;
 }
 </script>
 

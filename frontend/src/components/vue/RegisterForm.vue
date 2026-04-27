@@ -6,12 +6,14 @@ import { ref, reactive, computed, onMounted } from "vue";
 import {
   register,
   getErrorMessage,
-  TIMEZONE_OPTIONS,
-  CURRENCY_OPTIONS,
-  LANGUAGE_OPTIONS,
+  // TIMEZONE_OPTIONS,
+  // CURRENCY_OPTIONS,
+  // LANGUAGE_OPTIONS,
+  fetchChoices,
   detectUserTimezone,
   detectUserLanguage,
 } from "@/lib/auth";
+import type { Choices } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import type { ApiError } from "@/lib/api";
 
@@ -28,6 +30,9 @@ const form = reactive({
 });
 
 const loading = ref(false);
+const choicesLoading = ref(true);
+const choices = ref<Choices>({ timezones: [], currencies: [], languages: [] });
+
 const generalError = ref("");
 const fieldErrors = reactive<Record<string, string>>({
   first_name: "",
@@ -38,10 +43,18 @@ const fieldErrors = reactive<Record<string, string>>({
   agree_terms: "",
 });
 
+
 // Auto-detect preferences on mount
-onMounted(() => {
-  form.timezone = detectUserTimezone();
-  form.language = detectUserLanguage();
+onMounted(async () => {
+  try {
+    choices.value = await fetchChoices();
+    form.timezone = detectUserTimezone(choices.value.timezones);
+    form.language = detectUserLanguage(choices.value.languages);
+  } catch (err) {
+    console.error("Failed to load choices:", err);
+  } finally {
+    choicesLoading.value = false;
+  }
 });
 
 // Collapsible preferences section
@@ -398,24 +411,22 @@ async function handleSubmit() {
 
         <div v-show="showPreferences" class="border-t border-[var(--color-border)] px-4 py-3 space-y-3">
           <!-- Timezone -->
+          
           <div class="space-y-1">
             <label for="reg-timezone" class="label-text text-xs">Timezone</label>
             <select
               id="reg-timezone"
               v-model="form.timezone"
               class="input-field"
-              :disabled="loading"
+              :disabled="loading || choicesLoading"
             >
-              <optgroup label="Americas">
-                <option value="UTC">UTC</option>
-                <option v-for="tz in TIMEZONE_OPTIONS" :key="tz.value" :value="tz.value">
-                  {{ tz.label }}
-                </option>
-              </optgroup>
+              <option v-for="tz in choices.timezones" :key="tz.value" :value="tz.value">
+                {{ tz.label }}
+              </option>
             </select>
           </div>
-
           <!-- Currency & Language Row -->
+         
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1">
               <label for="reg-currency" class="label-text text-xs">Currency</label>
@@ -423,9 +434,9 @@ async function handleSubmit() {
                 id="reg-currency"
                 v-model="form.currency"
                 class="input-field"
-                :disabled="loading"
+                :disabled="loading || choicesLoading"
               >
-                <option v-for="c in CURRENCY_OPTIONS" :key="c.value" :value="c.value">
+                <option v-for="c in choices.currencies" :key="c.value" :value="c.value">
                   {{ c.label }}
                 </option>
               </select>
@@ -436,14 +447,15 @@ async function handleSubmit() {
                 id="reg-language"
                 v-model="form.language"
                 class="input-field"
-                :disabled="loading"
+                :disabled="loading || choicesLoading"
               >
-                <option v-for="l in LANGUAGE_OPTIONS" :key="l.value" :value="l.value">
+                <option v-for="l in choices.languages" :key="l.value" :value="l.value">
                   {{ l.label }}
                 </option>
               </select>
             </div>
           </div>
+
         </div>
       </div>
 

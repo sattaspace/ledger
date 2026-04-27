@@ -417,6 +417,26 @@ class EmailVerifyConfirmSchema(Schema):
 
 
 # =============================================================================
+# Choices Schemas
+# =============================================================================
+
+
+class ChoiceItemSchema(Schema):
+    """Single choice item (value + label)."""
+
+    value: str
+    label: str
+
+
+class ChoicesSchema(Schema):
+    """All field choices served to the frontend."""
+
+    timezones: list[ChoiceItemSchema]
+    currencies: list[ChoiceItemSchema]
+    languages: list[ChoiceItemSchema]
+
+
+# =============================================================================
 # Message Schemas
 # =============================================================================
 
