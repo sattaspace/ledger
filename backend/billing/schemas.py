@@ -57,6 +57,16 @@ class PlanOutputSchema(ModelSchema):
 
     display_price: str
     is_free: bool
+    # Currency conversion fields — populated when ?currency= param is provided
+    converted_price_cents: Optional[int] = Field(
+        None, description="Price converted to user's currency (cents)"
+    )
+    user_currency: Optional[str] = Field(
+        None, description="ISO 4217 code of the user's preferred currency"
+    )
+    exchange_rate: Optional[str] = Field(
+        None, description="Exchange rate used for conversion"
+    )
 
     class Meta:
         model = Plan
@@ -149,6 +159,9 @@ class SubscriptionOutputSchema(Schema):
     id: int
     user_id: int
     status: str
+    currency: Optional[str] = Field(
+        None, description="Billing currency denormalized from user profile"
+    )
     current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     trial_start: Optional[datetime] = None
@@ -213,13 +226,24 @@ class CheckoutInputSchema(Schema):
         description="Billing cycle override (if plan supports multiple cycles)",
         examples=["monthly", "yearly"],
     )
+    tos_accepted: bool = Field(
+        False,
+        description="Whether the user has accepted the Terms of Service",
+    )
 
 
 class CheckoutOutputSchema(Schema):
     """Schema for Stripe checkout session response."""
 
-    checkout_url: str = Field(
-        ..., description="Stripe Checkout URL to redirect user to"
+    checkout_url: Optional[str] = Field(
+        None,
+        description="Stripe Checkout URL to redirect user to. "
+        "None when the existing subscription was reactivated directly.",
+    )
+    reactivated: bool = Field(
+        False,
+        description="True when an existing cancelled subscription was "
+        "reactivated instead of creating a new checkout.",
     )
 
 
@@ -261,3 +285,59 @@ class ChangePlanInputSchema(Schema):
         description="Slug of the new plan to switch to",
         examples=["pro"],
     )
+    proration_behavior: str = Field(
+        default="create_prorations",
+        description=(
+            "How to handle proration: 'create_prorations' (immediate with credit), "
+            "'none' (change at next billing period), 'always_invoice' (immediate invoice)"
+        ),
+        examples=["create_prorations"],
+    )
+
+
+# =============================================================================
+# Refund Schemas
+# =============================================================================
+
+
+class RefundInputSchema(Schema):
+    """Schema for initiating a refund."""
+
+    amount_cents: Optional[int] = Field(
+        None,
+        description=(
+            "Refund amount in cents. If not provided, refunds the full amount "
+            "of the latest invoice payment."
+        ),
+        examples=[900],
+    )
+    reason: str = Field(
+        "",
+        description="Reason for the refund (visible to customer)",
+        examples=["Customer requested cancellation within 14-day period"],
+    )
+
+
+class RefundOutputSchema(Schema):
+    """Schema for refund response."""
+
+    refund_id: int = Field(..., description="Local refund record ID")
+    stripe_refund_id: str = Field(..., description="Stripe Refund ID (re_...)")
+    amount_cents: int = Field(..., description="Refund amount in cents")
+    currency: str = Field(..., description="ISO 4217 currency code")
+    status: str = Field(..., description="Refund status (pending/completed/failed)")
+
+
+# =============================================================================
+# Proration Preview Schema
+# =============================================================================
+
+
+class ProrationPreviewOutputSchema(Schema):
+    """Schema for proration preview response."""
+
+    subtotal: float = Field(..., description="Prorated subtotal (before tax)")
+    tax: float = Field(..., description="Estimated tax amount")
+    total: float = Field(..., description="Total charge/credit amount")
+    next_billing: float = Field(..., description="Amount due at next billing cycle")
+    currency: str = Field(..., description="ISO 4217 currency code")

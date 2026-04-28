@@ -1,14 +1,18 @@
 <script setup lang="ts">
 // Dashboard home — Vue interactive island
-// Shows user greeting, quick stats, quick actions, recent transactions, and getting started checklist
+// Shows user greeting, subscription card, quick stats, quick actions, recent transactions, and getting started checklist
 
 import { ref, onMounted } from "vue";
 import { getCurrentUser, requireAuth, getErrorMessage } from "@/lib/auth";
+import { getSubscriptions, createPortalSession, getStatusStyle, formatPrice, formatDate, formatCycle } from "@/lib/billing";
 import { showToast } from "@/lib/toast";
 import type { UserProfile } from "@/lib/auth";
+import type { SubscriptionOutputSchema } from "@/lib/billing";
 
 const user = ref<UserProfile | null>(null);
 const loading = ref(true);
+const subs = ref<SubscriptionOutputSchema[]>([]);
+const portalLoading = ref(false);
 
 const stats = ref([
   { label: "Total Balance", value: "--", icon: "wallet" },
@@ -24,11 +28,25 @@ const gettingStartedItems = ref([
   { id: "transaction", label: "Add your first transaction", description: "Start tracking income and expenses" },
 ]);
 
+const hasActiveSub = ref(false);
+const hasPaidSub = ref(false);
+
 onMounted(async () => {
   if (!requireAuth()) return;
 
   try {
     user.value = await getCurrentUser();
+
+    // Fetch subscriptions to show billing card
+    try {
+      subs.value = await getSubscriptions();
+      hasActiveSub.value = subs.value.some(
+        (s) => s.status === "active" || s.status === "trialing"
+      );
+      hasPaidSub.value = subs.value.some((s) => s.status !== "canceled" && s.status !== "expired");
+    } catch {
+      // Billing not available — show upgrade card instead
+    }
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -41,6 +59,20 @@ function getGreeting(): string {
   if (hour < 12) return "Good morning";
   if (hour < 17) return "Good afternoon";
   return "Good evening";
+}
+
+async function openPortal() {
+  portalLoading.value = true;
+  try {
+    const result = await createPortalSession();
+    if (result.portal_url) {
+      window.location.href = result.portal_url;
+    }
+  } catch (err) {
+    showToast(getErrorMessage(err), "error");
+  } finally {
+    portalLoading.value = false;
+  }
 }
 </script>
 
@@ -92,6 +124,19 @@ function getGreeting(): string {
 
     <!-- Loading Skeleton -->
     <template v-if="loading">
+      <div class="mb-8 animate-pulse">
+        <div class="card p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div class="h-5 w-40 rounded bg-[var(--color-muted)]" />
+            <div class="h-8 w-32 rounded-lg bg-[var(--color-muted)]" />
+          </div>
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="h-4 w-24 rounded bg-[var(--color-muted)]" />
+            <div class="h-4 w-32 rounded bg-[var(--color-muted)]" />
+            <div class="h-4 w-28 rounded bg-[var(--color-muted)]" />
+          </div>
+        </div>
+      </div>
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <div v-for="i in 4" :key="i" class="card p-6 animate-pulse">
           <div class="flex items-center justify-between">
@@ -99,14 +144,6 @@ function getGreeting(): string {
             <div class="h-8 w-8 rounded-lg bg-[var(--color-muted)]" />
           </div>
           <div class="mt-3 h-7 w-20 rounded bg-[var(--color-muted)]" />
-        </div>
-      </div>
-      <div class="card animate-pulse mb-8">
-        <div class="flex items-center justify-between border-b border-[var(--color-border)] px-6 py-4">
-          <div class="h-5 w-40 rounded bg-[var(--color-muted)]" />
-        </div>
-        <div class="flex flex-col items-center justify-center py-16">
-          <div class="h-12 w-12 rounded-full bg-[var(--color-muted)]" />
         </div>
       </div>
       <div class="grid gap-6 lg:grid-cols-3">
@@ -125,6 +162,91 @@ function getGreeting(): string {
     </template>
 
     <template v-else>
+      <!-- Subscription & Billing Card -->
+      <div class="mb-8">
+        <!-- Active/Paid subscriptions — show status + manage button -->
+        <div v-if="hasPaidSub" class="card p-6">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-start gap-4">
+              <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-brand-100 dark:bg-brand-950">
+                <svg class="h-6 w-6 text-brand-600 dark:text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                </svg>
+              </div>
+              <div>
+                <h2 class="text-base font-semibold">Subscription &amp; Billing</h2>
+                <div class="mt-1 flex flex-wrap items-center gap-2">
+                  <template v-for="sub in subs.filter(s => s.status !== 'expired')" :key="sub.id">
+                    <span class="inline-flex items-center gap-1.5 text-sm">
+                      <span class="font-medium">{{ sub.plan_name }}</span>
+                      <span
+                        class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                        :class="getStatusStyle(sub.status)"
+                      >{{ sub.status }}</span>
+                    </span>
+                    <span v-if="sub.current_period_end" class="text-xs text-[var(--color-muted-foreground)]">
+                      &middot; Renews {{ formatDate(sub.current_period_end) }}
+                    </span>
+                  </template>
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <a
+                href="/dashboard/billing"
+                class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium transition-colors hover:bg-accent"
+              >
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                </svg>
+                View Plans
+              </a>
+              <button
+                type="button"
+                :disabled="portalLoading"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+                @click="openPortal"
+              >
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span v-if="portalLoading">Opening...</span>
+                <span v-else>Manage Billing</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- No paid subscription — show upgrade CTA -->
+        <div v-else class="card p-6">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-start gap-4">
+              <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-brand-100 dark:bg-brand-950">
+                <svg class="h-6 w-6 text-brand-600 dark:text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div>
+                <h2 class="text-base font-semibold">Upgrade Your Plan</h2>
+                <p class="mt-1 text-sm text-[var(--color-muted-foreground)]">
+                  Unlock premium features with a paid subscription. Manage invoices, set budgets, and get detailed reports.
+                </p>
+              </div>
+            </div>
+            <a
+              href="/dashboard/billing/plans/finance"
+              class="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand-700"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+              View Plans
+            </a>
+          </div>
+        </div>
+      </div>
+
       <!-- Stats Grid -->
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <div

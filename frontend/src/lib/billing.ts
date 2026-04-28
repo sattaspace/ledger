@@ -35,6 +35,10 @@ export interface PlanSchema {
   is_featured: boolean;
   display_price: string;
   is_free: boolean;
+  // Currency conversion fields — populated when ?currency= is passed
+  converted_price_cents?: number | null;
+  user_currency?: string | null;
+  exchange_rate?: string | null;
 }
 
 export interface PlanDetailSchema extends PlanSchema {
@@ -77,6 +81,7 @@ export interface SubscriptionOutputSchema {
   id: number;
   user_id: number;
   status: string;
+  currency?: string | null;
   current_period_start: string | null;
   current_period_end: string | null;
   trial_start: string | null;
@@ -105,10 +110,61 @@ export interface AuthMeSchema {
 export interface CheckoutInputSchema {
   plan_slug: string;
   billing_cycle?: string;
+  tos_accepted?: boolean;
+}
+
+// ─── Refund Schemas ───────────────────────────────────────────────────────
+
+export interface RefundInputSchema {
+  amount_cents?: number;
+  reason: string;
+}
+
+export interface RefundOutputSchema {
+  refund_id: number;
+  stripe_refund_id: string;
+  amount_cents: number;
+  currency: string;
+  status: string;
+}
+
+// ─── Proration Preview ───────────────────────────────────────────────────
+
+export interface ProrationPreviewOutputSchema {
+  subtotal: number;
+  tax: number;
+  total: number;
+  next_billing: number;
+  currency: string;
+}
+
+// ─── Transaction History (F11 — pulled from Stripe) ────────────────────
+
+export interface TransactionItemSchema {
+  id: string;
+  type: string;
+  number: string | null;
+  status: string;
+  amount_paid: number;
+  amount_due: number;
+  tax: number;
+  currency: string;
+  description: string;
+  hosted_url: string | null;
+  pdf_url: string | null;
+  created: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  paid: boolean;
+  attempt_count: number;
+  charge_id: string;
+  payment_method: string;
+  card_brand: string;
 }
 
 export interface ChangePlanInputSchema {
   plan_slug: string;
+  proration_behavior?: string;
 }
 
 // ─── API Functions ───────────────────────────────────────────────────────────
@@ -120,12 +176,16 @@ export const billingApi = {
     return apiClient.get<ProductSchema[]>("/billing/products");
   },
 
-  async getProductBySlug(slug: string): Promise<ProductDetailSchema> {
-    return apiClient.get<ProductDetailSchema>(`/billing/products/${slug}`);
+  async getProductBySlug(slug: string, userCurrency?: string): Promise<ProductDetailSchema> {
+    const params: Record<string, string> = {};
+    if (userCurrency) params.currency = userCurrency;
+    return apiClient.get<ProductDetailSchema>(`/billing/products/${slug}`, { params });
   },
 
-  async getPlansForProduct(slug: string): Promise<PlanSchema[]> {
-    return apiClient.get<PlanSchema[]>(`/billing/products/${slug}/plans`);
+  async getPlansForProduct(slug: string, userCurrency?: string): Promise<PlanSchema[]> {
+    const params: Record<string, string> = {};
+    if (userCurrency) params.currency = userCurrency;
+    return apiClient.get<PlanSchema[]>(`/billing/products/${slug}/plans`, { params });
   },
 
   // ── Protected endpoints ──
@@ -154,17 +214,17 @@ export const billingApi = {
     return apiClient.post<{ message: string }>(`/billing/subscriptions/${productSlug}/reactivate`);
   },
 
-  async changePlan(productSlug: string, planSlug: string): Promise<{ message: string }> {
-    const body: ChangePlanInputSchema = { plan_slug: planSlug };
+  async changePlan(productSlug: string, planSlug: string, prorationBehavior: string = "create_prorations"): Promise<{ message: string }> {
+    const body: ChangePlanInputSchema = { plan_slug: planSlug, proration_behavior: prorationBehavior };
     return apiClient.post<{ message: string }>(
       `/billing/subscriptions/${productSlug}/change-plan`,
       body,
     );
   },
 
-  async createCheckout(productSlug: string, planSlug: string, billingCycle?: string): Promise<{ checkout_url: string }> {
-    const body: CheckoutInputSchema = { plan_slug: planSlug, billing_cycle: billingCycle };
-    return apiClient.post<{ checkout_url: string }>(
+  async createCheckout(productSlug: string, planSlug: string, billingCycle?: string, tosAccepted?: boolean): Promise<{ checkout_url: string | null; reactivated: boolean }> {
+    const body: CheckoutInputSchema = { plan_slug: planSlug, billing_cycle: billingCycle, tos_accepted: tosAccepted };
+    return apiClient.post<{ checkout_url: string | null; reactivated: boolean }>(
       `/billing/subscriptions/${productSlug}/checkout`,
       body,
     );
@@ -183,20 +243,96 @@ export const billingApi = {
   async createPortalSession(): Promise<{ portal_url: string }> {
     return apiClient.post<{ portal_url: string }>("/billing/portal");
   },
+
+  // ── Refund (F1: admin-only endpoint) ──
+
+  async refundSubscription(productSlug: string, payload: RefundInputSchema): Promise<RefundOutputSchema> {
+    return apiClient.post<RefundOutputSchema>(
+      `/billing/admin/subscriptions/${productSlug}/refund`,
+      payload,
+    );
+  },
+
+  // ── Proration Preview ──
+
+  async previewPlanChange(productSlug: string, planSlug: string, prorationBehavior: string = "create_prorations"): Promise<ProrationPreviewOutputSchema> {
+    return apiClient.post<ProrationPreviewOutputSchema>(
+      `/billing/subscriptions/${productSlug}/preview-plan-change`,
+      { plan_slug: planSlug, proration_behavior: prorationBehavior },
+    );
+  },
+
+  // ── Transaction History (F11) ──
+
+  async getTransactionHistory(limit: number = 25, startingAfter?: string): Promise<{
+    transactions: TransactionItemSchema[];
+    has_more: boolean;
+    currency: string;
+  }> {
+    const params: Record<string, string | number> = { limit: String(limit) };
+    if (startingAfter) {
+      params.starting_after = startingAfter;
+    }
+    return apiClient.get<{
+      transactions: TransactionItemSchema[];
+      has_more: boolean;
+      currency: string;
+    }>("/billing/admin/transactions", { params });
+  },
+
+  // ── Customer Sync (F8) ──
+
+  async syncCustomerData(): Promise<{
+    synced: boolean;
+    email?: string;
+    name?: string;
+    currency?: string;
+  }> {
+    return apiClient.post<{
+      synced: boolean;
+      email?: string;
+      name?: string;
+      currency?: string;
+    }>("/billing/admin/sync-customer");
+  },
 };
+
+// ─── User Currency Store (F13) ──────────────────────────────────────────────
+
+/** Default currency used when none is specified. Fetched from auth/me user profile. */
+let _userCurrency: string = "USD";
+
+/**
+ * Set the user's preferred currency. Called after auth/me fetch.
+ * Falls back to "USD" if the profile has no currency field.
+ */
+export function setUserCurrency(currency: string | null | undefined): void {
+  _userCurrency = (currency && currency.length === 3) ? currency.toUpperCase() : "USD";
+}
+
+/**
+ * Get the user's preferred currency code (e.g. "USD", "EUR", "BDT").
+ */
+export function getUserCurrency(): string {
+  return _userCurrency;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
  * Format price from cents to human-readable string.
+ * Defaults to the user's profile currency (F13), falling back to "USD".
+ * Explicit currency param overrides the user's profile currency.
+ *
  * Example: 900 → "$9.00"
  */
-export function formatPrice(cents: number, currency: string = "USD"): string {
+export function formatPrice(cents: number, currency?: string | null): string {
   if (cents === 0) return "Free";
+  const effectiveCurrency = (currency && currency.length === 3) ? currency : _userCurrency;
   const amount = cents / 100;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: currency.toUpperCase(),
+    currency: effectiveCurrency.toUpperCase(),
     minimumFractionDigits: 2,
   }).format(amount);
 }

@@ -283,6 +283,16 @@ class Plan(TimeStampedModel):
         default=False,
         help_text=_("Highlight this plan in comparison UI"),
     )
+    tax_inclusive = models.BooleanField(
+        _("Tax Inclusive"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "Whether the displayed price already includes tax. "
+            "If True, Stripe will use tax_behavior='inclusive'. "
+            "If False, tax_behavior='exclusive' (tax added at checkout)."
+        ),
+    )
 
     class Meta:
         db_table = "billing_plan"
@@ -301,7 +311,7 @@ class Plan(TimeStampedModel):
 
     @property
     def display_price(self) -> str:
-        """Human-readable price string, e.g. '$9.00/mo'."""
+        """Human-readable price string using the plan's currency, e.g. '$9.00/mo'."""
         amount = self.price_cents / 100
         if self.price_cents == 0:
             return str(_("Free"))
@@ -312,7 +322,27 @@ class Plan(TimeStampedModel):
             BillingCycle.LIFETIME: "",
         }
         cycle = cycle_labels.get(self.billing_cycle, "")
-        return f"${amount:.2f}{cycle}"
+
+        # Use locale-aware currency formatting based on plan's currency
+        import locale
+
+        currency_symbols = {
+            "USD": "$",
+            "EUR": "\u20ac",
+            "GBP": "\u00a3",
+            "INR": "\u20b9",
+            "BDT": "\u09f3",
+            "CAD": "C$",
+            "AUD": "A$",
+            "SGD": "S$",
+            "JPY": "\u00a5",
+            "CNY": "\u00a5",
+            "KRW": "\u20a9",
+        }
+        symbol = currency_symbols.get(
+            self.currency.upper(), self.currency.upper() + " "
+        )
+        return f"{symbol}{amount:.2f}{cycle}"
 
     @property
     def is_free(self) -> bool:
@@ -511,6 +541,33 @@ class Subscription(TimeStampedModel):
             "product. Prevents trial abuse via repeated plan cycling."
         ),
     )
+    tos_accepted_at = models.DateTimeField(
+        _("ToS Accepted At"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "When the user accepted the Terms of Service for this subscription"
+        ),
+    )
+    tos_version = models.CharField(
+        _("ToS Version"),
+        max_length=20,
+        blank=True,
+        default="",
+        help_text=_("Version of the Terms of Service the user accepted (e.g. '1.0')"),
+    )
+    currency = models.CharField(
+        _("Billing Currency"),
+        max_length=3,
+        default="",
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "ISO 4217 currency code denormalized from the user's profile "
+            "at checkout time. Used for frontend price display. "
+            "Empty = fallback to plan.currency."
+        ),
+    )
 
     class Meta:
         db_table = "billing_subscription"
@@ -575,6 +632,172 @@ class Subscription(TimeStampedModel):
         if self.status != SubscriptionStatus.TRIALING:
             self.status = SubscriptionStatus.ACTIVE
         self.save(update_fields=["plan", "status", "updated_at"])
+
+
+# =============================================================================
+# Refund
+# =============================================================================
+
+
+class RefundStatus(models.TextChoices):
+    """Refund lifecycle states."""
+
+    PENDING = "pending", _("Pending")
+    COMPLETED = "completed", _("Completed")
+    FAILED = "failed", _("Failed")
+
+
+class Refund(TimeStampedModel):
+    """Tracks refund requests for a subscription.
+
+    Each refund is initiated by an admin and creates a corresponding
+    Stripe Refund object. The stripe_refund_id links back to the
+    Stripe API record for reconciliation. Refund amounts are capped
+    at the most recent invoice payment amount to prevent over-refunding.
+
+    EU consumers have a 14-day right of withdrawal — this model
+    provides the audit trail for compliance.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.CASCADE,
+        related_name="refunds",
+        db_index=True,
+        verbose_name=_("Subscription"),
+        help_text=_("The subscription this refund is for"),
+    )
+    stripe_refund_id = models.CharField(
+        _("Stripe Refund ID"),
+        max_length=100,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text=_("Stripe Refund ID (e.g. re_...)"),
+    )
+    stripe_charge_id = models.CharField(
+        _("Stripe Charge ID"),
+        max_length=100,
+        blank=True,
+        default="",
+        help_text=_("The Stripe Charge/PaymentIntent ID that was refunded"),
+    )
+    amount_cents = models.PositiveIntegerField(
+        _("Amount (cents)"),
+        help_text=_("Refund amount in cents (e.g. 900 = $9.00)"),
+    )
+    currency = models.CharField(
+        _("Currency"),
+        max_length=3,
+        default="USD",
+        help_text=_("ISO 4217 currency code"),
+    )
+    reason = models.CharField(
+        _("Reason"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_(
+            "Reason for the refund (visible to customer on their bank statement)"
+        ),
+    )
+    status = models.CharField(
+        _("Status"),
+        max_length=20,
+        choices=RefundStatus.choices,
+        default=RefundStatus.PENDING,
+        db_index=True,
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_("Initiated By"),
+        help_text=_("Admin user who initiated this refund"),
+    )
+    stripe_response = models.JSONField(
+        _("Stripe Response"),
+        default=dict,
+        blank=True,
+        help_text=_("Full Stripe Refund API response for audit"),
+    )
+
+    class Meta:
+        db_table = "billing_refund"
+        verbose_name = _("Refund")
+        verbose_name_plural = _("Refunds")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Refund {self.amount_cents/100:.2f} {self.currency} ({self.status}) for sub {self.subscription_id}"
+
+
+# =============================================================================
+# ExchangeRate
+# =============================================================================
+
+
+class ExchangeRate(models.Model):
+    """Stores daily exchange rates for currency conversion.
+
+    Rates are fetched from a free exchange rate API (e.g. open.er-api.com)
+    and stored in the database. Each row represents the rate for converting
+    from BASE_CURRENCY (default USD) to a target currency.
+
+    Example: rate=109.85 for BDT means 1 USD = 109.85 BDT.
+
+    Updated daily by the ``update_exchange_rates`` Celery task. Cached in
+    the database so that the conversion API does not depend on an external
+    service being available at request time.
+
+    When BASE_CURRENCY == target_currency, the rate is always 1.0 and
+    this row may not exist in the DB — the conversion service handles it.
+    """
+
+    base_currency = models.CharField(
+        _("Base Currency"),
+        max_length=3,
+        default="USD",
+        db_index=True,
+        help_text=_("ISO 4217 code of the source currency (e.g. USD)"),
+    )
+    target_currency = models.CharField(
+        _("Target Currency"),
+        max_length=3,
+        db_index=True,
+        help_text=_("ISO 4217 code of the target currency (e.g. BDT)"),
+    )
+    rate = models.DecimalField(
+        _("Rate"),
+        max_digits=18,
+        decimal_places=6,
+        help_text=_(
+            "Exchange rate: 1 unit of base_currency = ? units of target_currency"
+        ),
+    )
+    fetched_at = models.DateTimeField(
+        _("Fetched At"),
+        auto_now_add=True,
+        help_text=_("When this rate was last fetched from the API"),
+    )
+
+    class Meta:
+        db_table = "billing_exchange_rate"
+        verbose_name = _("Exchange Rate")
+        verbose_name_plural = _("Exchange Rates")
+        ordering = ["target_currency"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["base_currency", "target_currency"],
+                name="unique_exchange_rate_pair",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"1 {self.base_currency} = {self.rate} {self.target_currency}"
 
 
 # =============================================================================

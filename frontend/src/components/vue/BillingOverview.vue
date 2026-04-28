@@ -18,16 +18,23 @@ import {
   formatCycle,
   formatDate,
   getStatusStyle,
+  getUserCurrency,
+  setUserCurrency,
 } from "@/lib/billing";
 import type {
   ProductSchema,
   SubscriptionOutputSchema,
+  TransactionItemSchema,
 } from "@/lib/billing";
 
 const loading = ref(true);
 const products = ref<ProductSchema[]>([]);
 const subscriptions = ref<SubscriptionOutputSchema[]>([]);
 const actionLoading = ref<string | null>(null);
+const transactions = ref<TransactionItemSchema[]>([]);
+const transactionsLoading = ref(false);
+const transactionsHasMore = ref(false);
+const userCurrency = ref("USD");
 
 const activeSubscriptions = computed(() =>
   subscriptions.value.filter((s) => ["active", "trialing", "past_due", "canceled"].includes(s.status)),
@@ -37,6 +44,14 @@ const hasPaidSubscription = computed(() =>
   subscriptions.value.some(
     (s) => ["active", "trialing", "past_due"].includes(s.status) && s.plan_slug !== "free",
   ),
+);
+
+const pastDueSubscriptions = computed(() =>
+  subscriptions.value.filter((s) => s.status === "past_due"),
+);
+
+const pausedSubscriptions = computed(() =>
+  subscriptions.value.filter((s) => s.status === "paused"),
 );
 
 const stats = computed(() => {
@@ -90,6 +105,19 @@ onMounted(async () => {
     ]);
     products.value = productsData;
     subscriptions.value = subsData;
+
+    // Fetch user's preferred currency from auth/me (F13)
+    try {
+      const authData = await billingApi.getAuthMe();
+      if (authData?.user?.currency) {
+        const cur = authData.user.currency as string;
+        userCurrency.value = cur;
+        // Also update the global default so PlanComparison etc. benefit
+        setUserCurrency(cur);
+      }
+    } catch {
+      // Non-critical — falls back to "USD"
+    }
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -143,6 +171,35 @@ async function handleManageBilling() {
     actionLoading.value = null;
   }
 }
+
+async function handleFixPayment(productSlug: string) {
+  showToast(
+    "Your payment method needs updating. You'll be redirected to Stripe to update your payment information.",
+    "warning",
+    { duration: 5000 }
+  );
+  try {
+    await billingApi.createPortalSession().then((result) => {
+      window.location.href = result.portal_url;
+    });
+  } catch (err) {
+    showToast(getErrorMessage(err), "error");
+  }
+}
+
+async function loadTransactions() {
+  transactionsLoading.value = true;
+  try {
+    const lastId = transactions.value.length > 0 ? transactions.value[transactions.value.length - 1].id : undefined;
+    const result = await billingApi.getTransactionHistory(20, lastId);
+    transactions.value = [...transactions.value, ...result.transactions];
+    transactionsHasMore.value = result.has_more;
+  } catch (err) {
+    showToast(getErrorMessage(err), "error");
+  } finally {
+    transactionsLoading.value = false;
+  }
+}
 </script>
 
 <template>
@@ -192,6 +249,64 @@ async function handleManageBilling() {
     </template>
 
     <template v-else>
+      <!-- PAST_DUE Warning Banner (H2: Dunning) -->
+      <div
+        v-if="pastDueSubscriptions.length > 0"
+        class="mb-6 rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 p-4"
+      >
+        <div class="flex items-start gap-3">
+          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/50">
+            <svg class="h-4 w-4 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-semibold text-red-800 dark:text-red-300">Payment Failed</h3>
+            <p class="mt-1 text-sm text-red-700 dark:text-red-400">
+              Your payment method was declined. Please update your payment information to avoid losing access.
+            </p>
+            <div class="mt-3 flex items-center gap-2">
+              <button
+                :disabled="actionLoading === 'fix-payment'"
+                class="btn-primary text-xs !bg-red-600 hover:!bg-red-700 dark:!bg-red-700 dark:hover:!bg-red-800"
+                @click="handleFixPayment(pastDueSubscriptions[0].product_slug)"
+              >
+                {{ actionLoading === 'fix-payment' ? 'Opening...' : 'Update Payment Method' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Paused Subscription Banner (I1) -->
+      <div
+        v-if="pausedSubscriptions.length > 0"
+        class="mb-6 rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50 p-4"
+      >
+        <div class="flex items-start gap-3">
+          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700">
+            <svg class="h-4 w-4 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-300">Subscription Paused</h3>
+            <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+              Your subscription is currently paused. You can resume it from the billing portal.
+            </p>
+            <div class="mt-3">
+              <button
+                :disabled="actionLoading === 'portal'"
+                class="btn-secondary text-xs"
+                @click="handleManageBilling"
+              >
+                Manage in Portal
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Stats Row -->
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <!-- Active Subscriptions -->
@@ -378,10 +493,11 @@ async function handleManageBilling() {
 
                 <button
                   v-if="sub.status === 'past_due'"
-                  disabled
-                  class="btn-ghost text-xs cursor-not-allowed opacity-60"
+                  :disabled="actionLoading === `fix-${sub.product_slug}`"
+                  class="btn-ghost text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium"
+                  @click="handleFixPayment(sub.product_slug)"
                 >
-                  Payment Due
+                  {{ actionLoading === `fix-${sub.product_slug}` ? 'Opening...' : 'Fix Payment' }}
                 </button>
               </div>
             </div>
@@ -425,6 +541,82 @@ async function handleManageBilling() {
               </div>
             </div>
           </a>
+        </div>
+      </div>
+
+      <!-- Billing History (F11 — pulled from Stripe) -->
+      <div v-if="hasPaidSubscription" class="mt-8">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold">Billing History</h2>
+          <button
+            v-if="transactionsHasMore"
+            :disabled="transactionsLoading"
+            class="btn-secondary text-xs"
+            @click="loadTransactions"
+          >
+            {{ transactionsLoading ? 'Loading...' : 'Load More' }}
+          </button>
+        </div>
+
+        <div v-if="transactions.length === 0 && !transactionsLoading" class="card flex flex-col items-center justify-center py-12 text-center px-6">
+          <p class="text-sm text-[var(--color-muted-foreground)]">
+            No billing history available yet.
+          </p>
+        </div>
+
+        <div v-else class="space-y-2">
+          <div
+            v-for="tx in transactions"
+            :key="tx.id"
+            class="card p-4 flex items-center justify-between gap-4"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 mb-1">
+                <span
+                  class="text-sm font-medium truncate"
+                  :class="{
+                    'text-green-700 dark:text-green-400': tx.status === 'paid',
+                    'text-orange-600 dark:text-orange-400': tx.status === 'open',
+                    'text-red-600 dark:text-red-400': tx.status === 'uncollectible',
+                    'text-[var(--color-muted-foreground)]': tx.status === 'draft',
+                  }"
+                >
+                  {{ tx.status === 'paid' ? 'Paid' : tx.status === 'draft' ? 'Pending' : tx.status }}
+                </span>
+                <span v-if="tx.number" class="text-xs text-[var(--color-muted-foreground)]">
+                  #{{ tx.number }}
+                </span>
+                <span v-if="tx.card_brand" class="text-xs text-[var(--color-muted-foreground)]">
+                  • {{ tx.card_brand }} **** {{ tx.payment_method }}
+                </span>
+              </div>
+              <div class="text-sm text-[var(--color-muted-foreground)]">
+                {{ tx.description || (tx.type === 'invoice' ? 'Invoice' : 'Charge') }}
+                <span v-if="tx.period_start" class="ml-2 text-xs">
+                  ({{ formatDate(tx.period_start) }} – {{ formatDate(tx.period_end) }})
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 shrink-0">
+              <div class="text-right">
+                <span class="text-sm font-semibold">
+                  {{ formatPrice(Math.round(tx.amount_paid * 100), tx.currency) }}
+                </span>
+                <span v-if="tx.tax > 0" class="text-xs text-[var(--color-muted-foreground)] ml-1">
+                  + {{ formatPrice(Math.round(tx.tax * 100), tx.currency) }} tax
+                </span>
+              </div>
+              <div v-if="tx.hosted_url" class="shrink-0">
+                <a
+                  :href="tx.hosted_url"
+                  target="_blank"
+                  class="btn-ghost text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700"
+                >
+                  View
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </template>

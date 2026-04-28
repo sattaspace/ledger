@@ -409,3 +409,28 @@ STRIPE_CANCEL_URL = env(
     "SF_STRIPE_CANCEL_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing?checkout=canceled",
 )
+
+# --- F6: Tax Control ---
+# Must be explicitly set to True when Stripe Tax is activated in Dashboard.
+# If False, automatic_tax will be disabled at checkout to prevent
+# silently charging without tax (regulatory non-compliance).
+STRIPE_TAX_ENABLED = env("SF_STRIPE_TAX_ENABLED", default=False, cast=bool)
+
+# --- Base Currency for Billing ---
+# All plan prices are stored in this currency. When displaying prices to
+# users, the frontend sends the user's preferred currency and the backend
+# converts using the exchange rates stored in ExchangeRate model.
+BASE_CURRENCY = env("SF_BASE_CURRENCY", default="USD")
+
+# --- Exchange Rate API ---
+# Free API for fetching daily exchange rates. No API key required.
+# Used by the update_exchange_rates Celery task.
+EXCHANGE_RATE_API_URL = env(
+    "SF_EXCHANGE_RATE_API_URL",
+    default="https://open.er-api.com/v6/latest",
+)
+
+# --- F7: Terms of Service Version ---
+# Increment this when updating Terms of Service. Used to track which
+# version the user accepted. Displayed in the ToS acceptance audit trail.
+TOS_VERSION = env("SF_TOS_VERSION", default="1.0")

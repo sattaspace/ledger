@@ -152,7 +152,9 @@ class BillingService:
         if not product:
             return None
         try:
-            return product.plans.get(slug=plan_slug, is_active=True)
+            return product.plans.select_related("product").get(
+                slug=plan_slug, is_active=True
+            )
         except Plan.DoesNotExist:
             return None
 
@@ -163,7 +165,9 @@ class BillingService:
         if not product:
             return None
         try:
-            return await product.plans.aget(slug=plan_slug, is_active=True)
+            return await product.plans.select_related("product").aget(
+                slug=plan_slug, is_active=True
+            )
         except Plan.DoesNotExist:
             return None
 

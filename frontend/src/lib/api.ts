@@ -124,16 +124,19 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export const apiClient = {
   /**
-   * GET request
+   * GET request. Supports `params` for query string parameters.
+   *
+   * @example
+   * apiClient.get("/billing/products/finance", { params: { currency: "BDT" } })
    */
-  async get<T = unknown>(path: string, options?: RequestInit): Promise<T> {
+  async get<T = unknown>(path: string, options?: RequestOptions): Promise<T> {
     return request<T>(path, { method: "GET", ...options });
   },
 
   /**
    * POST request
    */
-  async post<T = unknown>(path: string, body?: unknown, options?: RequestInit): Promise<T> {
+  async post<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return request<T>(path, {
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
@@ -144,7 +147,7 @@ export const apiClient = {
   /**
    * PUT request
    */
-  async put<T = unknown>(path: string, body?: unknown, options?: RequestInit): Promise<T> {
+  async put<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return request<T>(path, {
       method: "PUT",
       body: body ? JSON.stringify(body) : undefined,
@@ -155,7 +158,7 @@ export const apiClient = {
   /**
    * PATCH request
    */
-  async patch<T = unknown>(path: string, body?: unknown, options?: RequestInit): Promise<T> {
+  async patch<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return request<T>(path, {
       method: "PATCH",
       body: body ? JSON.stringify(body) : undefined,
@@ -166,7 +169,7 @@ export const apiClient = {
   /**
    * DELETE request
    */
-  async delete<T = unknown>(path: string, options?: RequestInit): Promise<T> {
+  async delete<T = unknown>(path: string, options?: RequestOptions): Promise<T> {
     return request<T>(path, { method: "DELETE", ...options });
   },
 
@@ -196,13 +199,42 @@ export const apiClient = {
 
 // ─── Core request handler ───────────────────────────────────────────────────
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE_URL}${path}`;
+/**
+ * Supported extra options beyond standard RequestInit.
+ * These are extracted before passing to fetch() and applied separately.
+ */
+interface RequestOptions extends RequestInit {
+  /** Query parameters to append to the URL. NOT a standard fetch option. */
+  params?: Record<string, string | number | boolean>;
+}
+
+function buildUrl(path: string, params?: Record<string, string | number | boolean>): string {
+  let url = `${API_BASE_URL}${path}`;
+  if (params && Object.keys(params).length > 0) {
+    const qs = new URLSearchParams();
+    for (const [key, val] of Object.entries(params)) {
+      if (val !== undefined && val !== null && val !== "") {
+        qs.append(key, String(val));
+      }
+    }
+    const qsStr = qs.toString();
+    if (qsStr) url += (url.includes("?") ? "&" : "?") + qsStr;
+  }
+  return url;
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { params, ...restOptions } = options;
+  const url = buildUrl(path, params);
   const headers = buildHeaders(
-    options.headers as Record<string, string> | undefined,
+    restOptions.headers as Record<string, string> | undefined,
   );
 
-  let response = await fetch(url, { ...options, headers });
+  // Prevent browser/CDN from caching API responses — every request
+  // must hit the server so currency conversions and auth state are fresh.
+  const fetchOptions: RequestInit = { ...restOptions, headers, cache: "no-store" };
+
+  let response = await fetch(url, fetchOptions);
 
   // ── 401 → try token refresh ──
   if (response.status === 401 && getRefreshToken()) {
@@ -214,7 +246,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       // The refreshAccessToken already stored the new token,
       // but getAccessToken() will read it
       retryHeaders["Authorization"] = `Bearer ${newToken}`;
-      response = await fetch(url, { ...options, headers: retryHeaders });
+      response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
     } else {
       // Refresh failed — redirect to login
       clearTokens();

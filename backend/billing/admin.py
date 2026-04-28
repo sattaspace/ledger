@@ -16,7 +16,10 @@ from .models import (
     Plan,
     AccessEntry,
     Subscription,
+    ExchangeRate,
     WebhookEventLog,
+    Refund,
+    RefundStatus,
     BillingCycle,
     SubscriptionStatus,
     AccessValueType,
@@ -237,6 +240,7 @@ class PlanAdmin(admin.ModelAdmin):
                 "fields": (
                     "price_cents",
                     "currency",
+                    "tax_inclusive",
                     "billing_cycle",
                     "trial_days",
                     "sort_order",
@@ -418,6 +422,9 @@ class SubscriptionAdmin(admin.ModelAdmin):
                     "trial_end",
                     "canceled_at",
                     "expires_at",
+                    "has_used_trial",
+                    "tos_accepted_at",
+                    "tos_version",
                 )
             },
         ),
@@ -617,3 +624,175 @@ class WebhookEventLogAdmin(admin.ModelAdmin):
         """Mark selected events as processed."""
         count = queryset.update(processed=True, error_message="")
         self.message_user(request, _(f"Marked {count} event(s) as processed."))
+
+
+# =============================================================================
+# Refund Admin
+# =============================================================================
+
+
+@admin.register(Refund)
+class RefundAdmin(admin.ModelAdmin):
+    """Admin configuration for refund records."""
+
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "subscription",
+                    "status",
+                    "amount_cents",
+                    "currency",
+                    "reason",
+                    "initiated_by",
+                )
+            },
+        ),
+        (
+            _("Stripe"),
+            {
+                "fields": (
+                    "stripe_refund_id",
+                    "stripe_charge_id",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            _("Debug"),
+            {
+                "fields": ("stripe_response",),
+                "classes": ("wide", "collapse"),
+            },
+        ),
+    )
+
+    list_display = (
+        "subscription_link",
+        "amount_display",
+        "currency",
+        "status",
+        "reason_short",
+        "initiated_by",
+        "created_at",
+    )
+    list_filter = ("status", "currency", "created_at")
+    search_fields = (
+        "stripe_refund_id",
+        "stripe_charge_id",
+        "reason",
+        "subscription__user__email",
+    )
+    ordering = ("-created_at",)
+    readonly_fields = (
+        "subscription",
+        "stripe_refund_id",
+        "stripe_charge_id",
+        "stripe_response",
+        "created_at",
+        "updated_at",
+    )
+
+    @admin.display(description=_("Subscription"))
+    def subscription_link(self, obj):
+        """Show subscription as a link."""
+        url = reverse("admin:billing_subscription_change", args=[obj.subscription.id])
+        return format_html(
+            '<a href="{}">sub #{} — {}</a>',
+            url,
+            obj.subscription.id,
+            obj.subscription.plan.name,
+        )
+
+    @admin.display(description=_("Amount"))
+    def amount_display(self, obj):
+        """Show formatted amount."""
+        symbols = {
+            "USD": "$",
+            "EUR": "\u20ac",
+            "GBP": "\u00a3",
+            "INR": "\u20b9",
+            "BDT": "\u09f3",
+        }
+        sym = symbols.get(obj.currency.upper(), obj.currency.upper() + " ")
+        return f"{sym}{obj.amount_cents / 100:.2f}"
+
+    @admin.display(description=_("Reason"))
+    def reason_short(self, obj):
+        """Show truncated reason."""
+        return obj.reason[:60] + "..." if len(obj.reason) > 60 else obj.reason
+
+    def has_add_permission(self, request):
+        """Prevent manual creation — refunds created via admin action or API."""
+        return False
+
+
+# =============================================================================
+# ExchangeRate Admin
+# =============================================================================
+
+
+@admin.register(ExchangeRate)
+class ExchangeRateAdmin(admin.ModelAdmin):
+    """Admin configuration for exchange rate records.
+
+    Rates are auto-populated by the update_exchange_rates Celery task.
+    Admin can manually trigger the task or view rates for debugging.
+    """
+
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "base_currency",
+                    "target_currency",
+                    "rate",
+                )
+            },
+        ),
+        (
+            _("Metadata"),
+            {
+                "fields": ("fetched_at",),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    list_display = (
+        "target_currency",
+        "rate_display",
+        "base_currency",
+        "fetched_at",
+    )
+    list_filter = ("base_currency", "fetched_at")
+    search_fields = ("target_currency", "base_currency")
+    ordering = ("target_currency",)
+    readonly_fields = (
+        "base_currency",
+        "fetched_at",
+    )
+
+    @admin.display(description=_("Rate"))
+    def rate_display(self, obj):
+        """Show rate with 6 decimal places."""
+        return f"{obj.rate:.6f}"
+
+    actions = ["refresh_selected_rates"]
+
+    @admin.action(description=_("Re-fetch selected exchange rates"))
+    def refresh_selected_rates(self, request, queryset):
+        """Manually refresh selected rates by calling the update function."""
+        from .currency_service import fetch_exchange_rates, update_exchange_rates
+
+        count = queryset.count()
+        try:
+            result = update_exchange_rates()
+            self.message_user(
+                request,
+                _(f"Refreshed all rates: {result['updated']} updated."),
+            )
+        except Exception as e:
+            self.message_user(request, f"Refresh failed: {e}", level="error")
