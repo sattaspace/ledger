@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "users",
     "api",
     "common",
+    "billing",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = env("CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
@@ -389,3 +390,22 @@ NINJA_JWT = {
 
 # --- User Roles ---
 USER_ROLES = ["owner", "admin", "member"]
+
+
+# --- Stripe Configuration ---
+STRIPE_SECRET_KEY = env("SF_STRIPE_SECRET_KEY", default="")
+STRIPE_PUBLISHABLE_KEY = env("SF_STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("SF_STRIPE_WEBHOOK_SECRET", default="")
+STRIPE_APP_DOMAIN = env("SF_STRIPE_APP_DOMAIN", default="http://localhost:8000")
+STRIPE_PORTAL_RETURN_URL = env(
+    "SF_STRIPE_PORTAL_RETURN_URL",
+    default=f"{STRIPE_APP_DOMAIN}/dashboard/billing",
+)
+STRIPE_SUCCESS_URL = env(
+    "SF_STRIPE_SUCCESS_URL",
+    default=f"{STRIPE_APP_DOMAIN}/dashboard/billing?checkout=success",
+)
+STRIPE_CANCEL_URL = env(
+    "SF_STRIPE_CANCEL_URL",
+    default=f"{STRIPE_APP_DOMAIN}/dashboard/billing?checkout=canceled",
+)

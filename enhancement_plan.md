@@ -58,16 +58,31 @@ A new Django app `billing` will house all subscription-related models, services,
 
 ## 3. Data Models (Detailed)
 
-### 3.1 Product
+### 3.1 ServiceDomain
 
-Represents a service domain. Each product maps to exactly one subdomain or custom domain.
+Represents a connected service domain (e.g., `finance.sattabase.tld`). Each service domain maps to one product via FK. A product can have multiple domains (e.g., subdomain + custom domain).
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `domain` | CharField(255) | unique, db_index | Service domain, e.g. "finance.sattabase.tld" |
+| `product` | ForeignKey(Product) | CASCADE, db_index | The product this domain serves |
+| `is_primary` | BooleanField | default False, db_index | Primary domain for the product |
+| `is_active` | BooleanField | default True, db_index | Whether domain is accepting requests |
+| `created_at` | DateTimeField | auto_now_add | Creation timestamp |
+| `updated_at` | DateTimeField | auto_now | Last modification |
+
+**Database table:** `billing_service_domain`
+
+### 3.2 Product
+
+Represents a product managed by Sattabase. A product is a logical grouping of plans and access entries. Service domains link to a product via FK.
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `id` | BigAutoField | PK | Auto primary key |
 | `name` | CharField(100) | unique | Display name, e.g. "Satta Finance" |
 | `slug` | SlugField(50) | unique, db_index | URL-safe identifier, e.g. "finance" |
-| `domain` | CharField(255) | unique, db_index | Service domain, e.g. "finance.sattabase.tld" |
 | `description` | TextField | blank | Product description |
 | `is_active` | BooleanField | default True | Whether product is accepting new signups |
 | `icon` | ImageField | blank, null | Product icon/logo |
@@ -78,10 +93,11 @@ Represents a service domain. Each product maps to exactly one subdomain or custo
 **Database table:** `billing_product`
 
 **Methods:**
+- `get_primary_domain()` → Returns the primary ServiceDomain for this product
 - `get_free_plan()` → Returns the plan where `price=0` for this product
 - `get_plans()` → Returns ordered queryset of active plans (by price ascending)
 
-### 3.2 Plan
+### 3.3 Plan
 
 Represents a subscription tier within a product. Each product has multiple plans (Free, Standard, Pro, Enterprise, etc.).
 
@@ -118,7 +134,7 @@ class BillingCycle(models.TextChoices):
 - `display_price` → Human-readable price string, e.g. "$9.00/mo"
 - `is_free` → `self.price_cents == 0`
 
-### 3.3 AccessEntry
+### 3.4 AccessEntry
 
 Key-value pairs defining what a plan grants. This is the core mechanism for feature gating.
 
@@ -159,7 +175,7 @@ class AccessValueType(models.TextChoices):
 | priority_support | false | boolean | Priority customer support |
 | data_retention_days | 365 | integer | Historical data retention period |
 
-### 3.4 Subscription
+### 3.5 Subscription
 
 The join between a user and a plan. One subscription per user per product.
 
@@ -344,10 +360,13 @@ async def get_auth_me(request):
         # No domain → return plain user profile (backward compatible)
         return {"user": user, "subscription": None, "access": {}}
 
-    # 3. Look up product by domain
-    product = await Product.objects.filter(domain=domain, is_active=True).afirst()
-    if not product:
+    # 3. Look up service domain → product
+    service_domain = await ServiceDomain.objects.filter(
+        domain=domain, is_active=True
+    ).select_related("product").afirst()
+    if not service_domain or not service_domain.product.is_active:
         return {"user": user, "subscription": None, "access": {}}
+    product = service_domain.product
 
     # 4. Get user's subscription for this product (or free plan)
     subscription = await Subscription.get_or_create_free(user, product)

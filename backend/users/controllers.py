@@ -1,16 +1,27 @@
 """Ninja Extra controllers for the users app.
 
 Controllers handle HTTP routing and delegate business logic to services.
-They are auto-discovered by ninja_extra's `auto_discover_controllers()`.
+They are auto-discovered by ninja_extra's ``auto_discover_controllers()``.
 
-Each controller is decorated with @api_controller() which:
-- Registers it with the API router
-- Sets the URL prefix
-- Applies default auth and permissions
-- Generates OpenAPI documentation
+Each controller is decorated with ``@api_controller()`` which registers it
+with the API router, sets the URL prefix, applies default auth and
+permissions, and generates OpenAPI documentation.
 
-Controllers use async def where ORM operations are needed (via service
-async methods). This ensures non-blocking I/O when running under Daphne/uvicorn.
+Controllers use ``async def`` where ORM operations are needed (via service
+async methods) for non-blocking I/O under Daphne/uvicorn.
+
+Security features utilised from ``common``:
+
+- **Exceptions**: ``NotFoundException``, ``BadRequestException``,
+  ``UnauthorizedException``, ``ForbiddenException``, ``ConflictException``,
+  ``TooManyRequestsException``, ``AccountNotActiveException`` — raised
+  instead of returning tuple responses, caught by registered exception
+  handlers in ``api/views.py``.
+- **Rate limiting**: ``check_rate_limit_or_raise()`` from
+  ``common.rate_limit`` — raises ``TooManyRequestsException`` when
+  exceeded.
+- **Schemas**: ``MessageResponse`` from ``common.schemas`` for
+  standardised success responses.
 """
 
 import logging
@@ -20,13 +31,20 @@ from asgiref.sync import sync_to_async
 from ninja_extra import api_controller, http_post, http_get, http_put, http_delete
 from ninja.security import HttpBearer
 from ninja_jwt.tokens import AccessToken, RefreshToken
-from ninja import UploadedFile, File  # <-- Add this import
+from ninja import UploadedFile, File
 from django.http import HttpRequest
 from django.conf import settings
 
-from common.permissions import IsAuthenticated, IsAdmin
-from common.rate_limit import check_rate_limit, get_client_ip
-from common.exceptions import TooManyRequestsException
+from common.permissions import IsAuthenticated
+from common.rate_limit import check_rate_limit_or_raise
+from common.schemas import MessageResponse
+from common.exceptions import (
+    BadRequestException,
+    UnauthorizedException,
+    ForbiddenException,
+    NotFoundException,
+    ConflictException,
+)
 
 from .schemas import (
     RegisterInputSchema,
@@ -43,12 +61,10 @@ from .schemas import (
     UserOutputSchema,
     UserProfileUpdateInputSchema,
     ChangePasswordInputSchema,
-    MessageSchema,
     EmailVerifyRequestSchema,
     EmailVerifyConfirmSchema,
     ChangeEmailConfirmOTPSchema,
     ChoicesSchema,
-    ChoiceItemSchema,
 )
 from .services import AuthService, UserService
 from .models import (
@@ -78,7 +94,8 @@ class JWTAuth(HttpBearer):
     """HTTP Bearer authentication using JWT access tokens.
 
     Validates the Bearer token from the Authorization header,
-    decodes it, and returns the authenticated user.
+    decodes it, and returns the authenticated user.  Shared across
+    all apps — billing controllers import this class.
     """
 
     async def authenticate(self, request, token):
@@ -110,7 +127,8 @@ class AuthController:
     """Public authentication endpoints.
 
     All endpoints in this controller are public (no auth required).
-    They handle user registration, login, token management, and password reset.
+    They handle user registration, login, token management, and
+    password reset / email verification via OTP.
     """
 
     @http_get(
@@ -119,7 +137,7 @@ class AuthController:
         summary="Get field choices",
         description="Return available timezone, currency, and language choices. Used by registration and profile forms.",
     )
-    async def get_choices(self):
+    def get_choices(self):
         """Return available timezone, currency, and language choices.
 
         Labels are explicitly cast to ``str`` because Django's
@@ -141,28 +159,18 @@ class AuthController:
 
     @http_post(
         "/register",
-        response={
-            201: MessageSchema,
-            409: MessageSchema,
-            400: MessageSchema,
-            429: MessageSchema,
-        },
+        response={201: MessageResponse, 409: dict, 400: dict, 429: dict},
         summary="Register a new account",
         description="Create a new user account. A verification code will be sent to the provided email.",
     )
     async def register(self, request: HttpRequest, payload: RegisterInputSchema):
-        client_ip = get_client_ip(request)
-        rl_key = f"register:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Register a new user and send email verification OTP."""
+        check_rate_limit_or_raise(
+            request,
+            "register",
             max_attempts=getattr(settings, "RATE_LIMIT_REGISTER_ATTEMPTS", 5),
             window_seconds=getattr(settings, "RATE_LIMIT_REGISTER_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many registration attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             user = await AuthService.aregister_user(
@@ -183,48 +191,34 @@ class AuthController:
                     f"Failed to send verification OTP after registration: {e}"
                 )
 
-            return 201, {
-                "message": "Registration successful. Please check your email for a verification code.",
-                "success": True,
-            }
+            return 201, MessageResponse(
+                message="Registration successful. Please check your email for a verification code."
+            )
 
         except ValueError as e:
             msg = str(e)
             if "already exists" in msg:
-                return 409, {"message": msg, "success": False}
-            return 400, {"message": msg, "success": False}
+                raise ConflictException(msg)
+            raise BadRequestException(msg)
 
         except Exception as e:
             logger.error(f"Registration error: {e}")
-            return 400, {
-                "message": "Registration failed. Please try again.",
-                "success": False,
-            }
+            raise BadRequestException("Registration failed. Please try again.")
 
     @http_post(
         "/login",
-        response={
-            200: TokenOutputSchema,
-            401: MessageSchema,
-            403: MessageSchema,
-            429: MessageSchema,
-        },
+        response={200: TokenOutputSchema, 401: dict, 403: dict, 429: dict},
         summary="Login with email and password",
         description="Authenticate with email/password and receive JWT tokens.",
     )
     async def login(self, request: HttpRequest, payload: LoginInputSchema):
-        client_ip = get_client_ip(request)
-        rl_key = f"login:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Authenticate and return JWT access + refresh tokens."""
+        check_rate_limit_or_raise(
+            request,
+            "login",
             max_attempts=getattr(settings, "RATE_LIMIT_LOGIN_ATTEMPTS", 10),
             window_seconds=getattr(settings, "RATE_LIMIT_LOGIN_WINDOW", 900),
-        ):
-            return 429, {
-                "message": "Too many login attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             user = await AuthService.aauthenticate_user(payload.email, payload.password)
@@ -232,6 +226,9 @@ class AuthController:
             refresh = await async_refresh_for_user(user)
 
             # Record login in history table and update last_login/last_login_ip
+            from common.rate_limit import get_client_ip
+
+            client_ip = get_client_ip(request)
             user_agent = request.META.get("HTTP_USER_AGENT", "")
             try:
                 await AuthService.arecord_login(
@@ -240,24 +237,22 @@ class AuthController:
             except Exception as e:
                 logger.warning(f"Failed to record login history: {e}")
 
-            return 200, {
-                "access": str(access),
-                "refresh": str(refresh),
-            }
+            return TokenOutputSchema(access=str(access), refresh=str(refresh))
 
         except ValueError as e:
             msg = str(e)
             if "Invalid" in msg:
-                return 401, {"message": msg, "success": False}
-            return 403, {"message": msg, "success": False}
+                raise UnauthorizedException(msg)
+            raise ForbiddenException(msg)
 
     @http_post(
         "/token/refresh",
-        response={200: TokenOutputSchema, 401: MessageSchema},
+        response={200: TokenOutputSchema, 401: dict},
         summary="Refresh access token",
         description="Exchange a valid refresh token for a new access token pair.",
     )
     async def refresh_token(self, payload: TokenRefreshInputSchema):
+        """Exchange a refresh token for a new token pair."""
         try:
             refresh = await async_decode_refresh(payload.refresh)
 
@@ -274,57 +269,41 @@ class AuthController:
             new_access = await async_token_for_user(user)
             new_refresh = await async_refresh_for_user(user)
 
-            return 200, {
-                "access": str(new_access),
-                "refresh": str(new_refresh),
-            }
+            return TokenOutputSchema(access=str(new_access), refresh=str(new_refresh))
 
         except ValueError as e:
             logger.debug(f"Token refresh failed: {e}")
-            return 401, {
-                "message": "Invalid or expired refresh token.",
-                "success": False,
-            }
+            raise UnauthorizedException("Invalid or expired refresh token.")
 
     @http_post(
         "/token/verify",
-        response={200: MessageSchema, 401: MessageSchema},
+        response={200: MessageResponse, 401: dict},
         summary="Verify access token",
         description="Verify an access token is still valid.",
     )
     async def verify_token(self, payload: TokenVerifyInputSchema):
+        """Check if an access token is valid."""
         try:
             AccessToken(payload.token)
-            return 200, {
-                "message": "Token is valid.",
-                "success": True,
-            }
+            return MessageResponse(message="Token is valid.")
         except Exception:
-            return 401, {
-                "message": "Token is invalid or expired.",
-                "success": False,
-            }
+            raise UnauthorizedException("Token is invalid or expired.")
 
     @http_post(
         "/token/blacklist",
-        response={200: MessageSchema, 401: MessageSchema},
+        response={200: MessageResponse, 401: dict},
         summary="Blacklist a refresh token",
         description="Blacklist a refresh token so it cannot be used again.",
     )
     async def blacklist_token(self, payload: TokenBlacklistInputSchema):
+        """Add a refresh token to the blacklist."""
         try:
             refresh = await async_decode_refresh(payload.refresh)
             await async_blacklist(refresh)
-            return 200, {
-                "message": "Token blacklisted successfully.",
-                "success": True,
-            }
+            return MessageResponse(message="Token blacklisted successfully.")
         except Exception as e:
             logger.debug(f"Token blacklist failed: {e}")
-            return 401, {
-                "message": "Failed to blacklist token.",
-                "success": False,
-            }
+            raise UnauthorizedException("Failed to blacklist token.")
 
     # =========================================================================
     # Password Reset Endpoints
@@ -332,61 +311,51 @@ class AuthController:
 
     @http_post(
         "/password-reset/request",
-        response={200: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 429: dict},
         summary="Request password reset",
         description=(
             "Request a password reset email. "
-            "If an account with the given email exists, a reset token will be sent. "
+            "If an account with the given email exists, a reset code will be sent. "
             "Always returns 200 to prevent email enumeration."
         ),
     )
     async def request_password_reset(
         self, request: HttpRequest, payload: PasswordResetRequestSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"pwreset_req:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Request a password reset OTP via email."""
+        check_rate_limit_or_raise(
+            request,
+            "pwreset_req",
             max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
             window_seconds=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many password reset requests. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.arequest_password_reset(payload.email)
         except ValueError:
+            # Always return 200 to prevent email enumeration
             pass
 
-        return 200, {
-            "message": "If an account with this email exists, a reset link has been sent.",
-            "success": True,
-        }
+        return MessageResponse(
+            message="If an account with this email exists, a reset code has been sent."
+        )
 
     @http_post(
         "/password-reset/confirm",
-        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 400: dict, 429: dict},
         summary="Confirm password reset with OTP",
         description="Reset password using the 6-digit code received via email.",
     )
     async def confirm_password_reset(
         self, request: HttpRequest, payload: PasswordResetConfirmSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"pwreset_confirm:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Confirm password reset with OTP and set new password."""
+        check_rate_limit_or_raise(
+            request,
+            "pwreset_confirm",
             max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
             window_seconds=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many password reset attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.aconfirm_password_reset(
@@ -394,12 +363,11 @@ class AuthController:
                 otp=payload.otp,
                 new_password=payload.new_password,
             )
-            return 200, {
-                "message": "Password reset successfully. You can now log in with your new password.",
-                "success": True,
-            }
+            return MessageResponse(
+                message="Password reset successfully. You can now log in with your new password."
+            )
         except ValueError as e:
-            return 400, {"message": str(e), "success": False}
+            raise BadRequestException(str(e))
 
     # =========================================================================
     # Email Verification (OTP)
@@ -407,7 +375,7 @@ class AuthController:
 
     @http_post(
         "/verify-email/request",
-        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 400: dict, 429: dict},
         summary="Request email verification OTP",
         description=(
             "Request a 6-digit verification code to be sent to the provided email. "
@@ -417,31 +385,23 @@ class AuthController:
     async def request_email_verification(
         self, request: HttpRequest, payload: EmailVerifyRequestSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"email_verify_req:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Request an email verification OTP."""
+        check_rate_limit_or_raise(
+            request,
+            "email_verify_req",
             max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 5),
             window_seconds=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_WINDOW", 300),
-        ):
-            return 429, {
-                "message": "Too many verification requests. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.arequest_email_verification(payload.email)
-            return 200, {
-                "message": "Verification code sent to your email.",
-                "success": True,
-            }
+            return MessageResponse(message="Verification code sent to your email.")
         except ValueError as e:
-            return 400, {"message": str(e), "success": False}
+            raise BadRequestException(str(e))
 
     @http_post(
         "/verify-email/confirm",
-        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 400: dict, 429: dict},
         summary="Confirm email verification with OTP",
         description=(
             "Verify an email address using the 6-digit code sent via email. "
@@ -451,27 +411,21 @@ class AuthController:
     async def confirm_email_verification(
         self, request: HttpRequest, payload: EmailVerifyConfirmSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"email_verify_confirm:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Confirm email verification with OTP."""
+        check_rate_limit_or_raise(
+            request,
+            "email_verify_confirm",
             max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 10),
             window_seconds=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_WINDOW", 300),
-        ):
-            return 429, {
-                "message": "Too many verification attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.aconfirm_email_verification(payload.email, payload.otp)
-            return 200, {
-                "message": "Email verified successfully. You can now log in.",
-                "success": True,
-            }
+            return MessageResponse(
+                message="Email verified successfully. You can now log in."
+            )
         except ValueError as e:
-            return 400, {"message": str(e), "success": False}
+            raise BadRequestException(str(e))
 
 
 # =============================================================================
@@ -506,14 +460,14 @@ class UserController:
 
     @http_get(
         "/{slug}",
-        response={200: UserOutputSchema, 404: MessageSchema},
+        response={200: UserOutputSchema, 404: dict},
         summary="Get user by slug",
         description="Look up a user's public profile by their UUID slug.",
     )
     async def get_user_by_slug(self, slug: str):
         user = await UserService.aget_user_by_slug(slug)
         if not user:
-            return 404, {"detail": "User not found.", "code": "not_found"}
+            raise NotFoundException("User not found.")
         return user
 
     @http_put(
@@ -531,50 +485,37 @@ class UserController:
         return user
 
     # =========================================================================
-    # Avatar Upload (current password required)
+    # Avatar Upload
     # =========================================================================
 
     @http_put(
         "/me/avatar",
-        response={200: UserOutputSchema, 400: MessageSchema},
+        response={200: UserOutputSchema, 400: dict},
         summary="Upload avatar",
         description="Upload or replace the authenticated user's avatar image. Accepts JPEG, PNG, GIF, WebP. Max 2 MB.",
     )
     async def update_avatar(
         self,
         request: HttpRequest,
-        file: UploadedFile = File(
-            ..., alias="avatar"
-        ),  # <-- This tells Ninja to parse multipart
+        file: UploadedFile = File(..., alias="avatar"),
     ):
-        """
-        Handle avatar upload via multipart/form-data.
-        Django Ninja automatically parses file uploads from multipart requests.
-        The file is available as `request.FILES["avatar"]`.
-        """
+        """Handle avatar upload via multipart/form-data."""
         if "avatar" not in request.FILES:
-            return 400, {
-                "message": "No file provided. Use the 'avatar' field.",
-                "success": False,
-            }
+            raise BadRequestException("No file provided. Use the 'avatar' field.")
 
         file = request.FILES["avatar"]
 
         # Validate file type
         ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
         if file.content_type not in ALLOWED_TYPES:
-            return 400, {
-                "message": "Invalid file type. Allowed: JPEG, PNG, GIF, WebP.",
-                "success": False,
-            }
+            raise BadRequestException(
+                "Invalid file type. Allowed: JPEG, PNG, GIF, WebP."
+            )
 
         # Validate file size (2 MB)
         MAX_SIZE = 2 * 1024 * 1024
         if file.size > MAX_SIZE:
-            return 400, {
-                "message": "File too large. Maximum size is 2 MB.",
-                "success": False,
-            }
+            raise BadRequestException("File too large. Maximum size is 2 MB.")
 
         # Delete old avatar file if it exists
         user = request.user
@@ -593,7 +534,7 @@ class UserController:
 
     @http_delete(
         "/me/avatar",
-        response={200: UserOutputSchema, 404: MessageSchema},
+        response={200: UserOutputSchema, 404: dict},
         summary="Delete avatar",
         description="Remove the authenticated user's avatar image.",
     )
@@ -602,7 +543,7 @@ class UserController:
         user = request.user
 
         if not user.avatar:
-            return 404, {"message": "No avatar to delete.", "success": False}
+            raise NotFoundException("No avatar to delete.")
 
         try:
             user.avatar.delete(save=False)
@@ -616,30 +557,28 @@ class UserController:
         return user
 
     # =========================================================================
-    # Password Change (current password required — already has it built in)
+    # Password Change
     # =========================================================================
 
     @http_post(
         "/me/change-password",
-        response={200: MessageSchema, 400: MessageSchema},
+        response={200: MessageResponse, 400: dict},
         summary="Change password",
         description="Change the authenticated user's password. Requires current password.",
     )
     async def change_password(
         self, request: HttpRequest, payload: ChangePasswordInputSchema
     ):
+        """Change password after verifying current password."""
         try:
             await AuthService.achange_password(
                 request.user,
                 current_password=payload.current_password,
                 new_password=payload.new_password,
             )
-            return 200, {
-                "message": "Password changed successfully.",
-                "success": True,
-            }
+            return MessageResponse(message="Password changed successfully.")
         except ValueError as e:
-            return 400, {"message": str(e), "success": False}
+            raise BadRequestException(str(e))
 
     # =========================================================================
     # Sensitive Actions — Require Current Password Re-Confirmation
@@ -647,7 +586,7 @@ class UserController:
 
     @http_post(
         "/me/confirm-identity",
-        response={200: MessageSchema, 401: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 401: dict, 429: dict},
         summary="Confirm identity",
         description=(
             "Verify identity by providing current password. "
@@ -658,39 +597,26 @@ class UserController:
     async def confirm_identity(
         self, request: HttpRequest, payload: PasswordConfirmSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"confirm_identity:{request.user.id}:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Verify the user's current password as an identity gate."""
+        check_rate_limit_or_raise(
+            request,
+            "confirm_identity",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
             window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many identity confirmation attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.aconfirm_identity(
                 request.user,
                 current_password=payload.current_password,
             )
-            return 200, {
-                "message": "Identity confirmed.",
-                "success": True,
-            }
+            return MessageResponse(message="Identity confirmed.")
         except ValueError as e:
-            return 401, {"message": str(e), "success": False}
+            raise UnauthorizedException(str(e))
 
     @http_post(
         "/me/change-email",
-        response={
-            200: MessageSchema,
-            400: MessageSchema,
-            401: MessageSchema,
-            429: MessageSchema,
-        },
+        response={200: MessageResponse, 400: dict, 401: dict, 429: dict},
         summary="Request email change (OTP)",
         description=(
             "Request to change email address. Requires current password. "
@@ -701,18 +627,13 @@ class UserController:
     async def request_email_change(
         self, request: HttpRequest, payload: ChangeEmailRequestSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"email_change:{request.user.id}:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Request email change — sends OTP to current email."""
+        check_rate_limit_or_raise(
+            request,
+            "email_change",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 5),
             window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many email change requests. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.arequest_email_change(
@@ -720,19 +641,18 @@ class UserController:
                 current_password=payload.current_password,
                 new_email=payload.new_email,
             )
-            return 200, {
-                "message": "A verification code has been sent to your current email.",
-                "success": True,
-            }
+            return MessageResponse(
+                message="A verification code has been sent to your current email."
+            )
         except ValueError as e:
             msg = str(e)
             if "password" in msg.lower():
-                return 401, {"message": msg, "success": False}
-            return 400, {"message": msg, "success": False}
+                raise UnauthorizedException(msg)
+            raise BadRequestException(msg)
 
     @http_post(
         "/me/change-email/confirm",
-        response={200: MessageSchema, 400: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 400: dict, 429: dict},
         summary="Confirm email change with OTP",
         description=(
             "Confirm an email change using the 6-digit OTP sent to your current email. "
@@ -742,33 +662,27 @@ class UserController:
     async def confirm_email_change_otp(
         self, request: HttpRequest, payload: ChangeEmailConfirmOTPSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"email_change_confirm:{request.user.id}:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Confirm email change with OTP from current email."""
+        check_rate_limit_or_raise(
+            request,
+            "email_change_confirm",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
             window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             new_email = await AuthService.aconfirm_email_change_otp(
                 request.user, payload.otp
             )
-            return 200, {
-                "message": f"Email changed to {new_email}. Please log in with your new email.",
-                "success": True,
-            }
+            return MessageResponse(
+                message=f"Email changed to {new_email}. Please log in with your new email."
+            )
         except ValueError as e:
-            return 400, {"message": str(e), "success": False}
+            raise BadRequestException(str(e))
 
     @http_post(
         "/me/delete-account",
-        response={200: MessageSchema, 401: MessageSchema, 429: MessageSchema},
+        response={200: MessageResponse, 401: dict, 429: dict},
         summary="Delete account",
         description=(
             "Soft-delete your account. Requires current password confirmation. "
@@ -779,30 +693,24 @@ class UserController:
     async def delete_account(
         self, request: HttpRequest, payload: DeleteAccountRequestSchema
     ):
-        client_ip = get_client_ip(request)
-        rl_key = f"delete_account:{request.user.id}:{client_ip}"
-
-        if not check_rate_limit(
-            rl_key,
+        """Soft-delete the account after password confirmation."""
+        check_rate_limit_or_raise(
+            request,
+            "delete_account",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 3),
             window_seconds=getattr(settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600),
-        ):
-            return 429, {
-                "message": "Too many attempts. Please try again later.",
-                "success": False,
-            }
+        )
 
         try:
             await AuthService.adelete_account(
                 request.user,
                 current_password=payload.current_password,
             )
-            return 200, {
-                "message": "Account deleted successfully. Please discard your tokens and close this session.",
-                "success": True,
-            }
+            return MessageResponse(
+                message="Account deleted successfully. Please discard your tokens and close this session."
+            )
         except ValueError as e:
-            return 401, {"message": str(e), "success": False}
+            raise UnauthorizedException(str(e))
 
     # =========================================================================
     # Session
@@ -810,13 +718,12 @@ class UserController:
 
     @http_post(
         "/me/logout",
-        response={200: MessageSchema},
+        response=MessageResponse,
         summary="Logout (client-side)",
         description="Notify the server of logout. Client should discard JWT tokens.",
     )
     def logout(self, request: HttpRequest):
         logger.info(f"User logout: {request.user.email}")
-        return 200, {
-            "message": "Logged out successfully. Please discard your tokens.",
-            "success": True,
-        }
+        return MessageResponse(
+            message="Logged out successfully. Please discard your tokens."
+        )
