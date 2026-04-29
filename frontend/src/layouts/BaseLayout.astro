@@ -1,5 +1,6 @@
 ---
 import "@/styles/global.css";
+import { ClientRouter } from "astro:transitions";
 
 interface Props {
   title?: string;
@@ -58,6 +59,9 @@ const ogImage = `${Astro.site || "https://satta.ledger"}/og-image.png`;
     <!-- Title -->
     <title>{title}</title>
 
+    <!-- Client Router — enables SPA-like navigation, persistent sidebar/navbar -->
+    <ClientRouter />
+
     <!-- Dark mode initialization — inline in head to prevent flash -->
     <script is:inline>
       (function () {
@@ -69,7 +73,7 @@ const ogImage = `${Astro.site || "https://satta.ledger"}/og-image.png`;
       })();
     </script>
   </head>
-  <body class="flex min-h-screen flex-col bg-background text-foreground antialiased">
+  <body class="h-dvh flex flex-col overflow-hidden bg-background text-foreground antialiased">
     <slot />
   </body>
 </html>

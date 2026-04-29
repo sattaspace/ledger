@@ -92,6 +92,7 @@ from .schemas import (
     ProrationPreviewOutputSchema,
     ConfirmPlanChangeInputSchema,
     ConfirmPlanChangeOutputSchema,
+    RefundInputSchema,
 )
 from .services import BillingService
 from .stripe_errors import handle_stripe_error
@@ -1183,7 +1184,7 @@ class BillingAdminController:
         request: HttpRequest,
         product_slug: str,
         # CTR-09: Use proper schema instead of raw dict
-        payload: "RefundInputSchema",  # type: ignore[valid-type]
+        payload: RefundInputSchema,
     ):
         """Issue a refund for a subscription payment. Admin only.
 
