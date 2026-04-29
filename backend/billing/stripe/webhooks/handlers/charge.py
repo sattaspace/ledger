@@ -161,3 +161,5 @@ def handle_customer_updated(event: dict) -> None:
 
     except Exception as e:
         logger.error(f"customer.updated sync failed for {customer_id}: {e}")
+
+# lat done
