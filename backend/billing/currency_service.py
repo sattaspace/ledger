@@ -173,6 +173,7 @@ def fetch_exchange_rates() -> Dict[str, Any]:
     """Fetch latest exchange rates from the configured API.
 
     Uses the free open.er-api.com endpoint (no API key required).
+    Falls back to frankfurter.app if the primary API fails.
     Returns the full JSON response dict on success, or raises an
     exception on failure.
 
@@ -180,17 +181,43 @@ def fetch_exchange_rates() -> Dict[str, Any]:
     the URL path, e.g. /v6/latest/USD returns all rates relative to USD.
     """
     base = getattr(settings, "BASE_CURRENCY", "USD").upper()
+
+    # CC-03: Try primary API first, then fallback
+    primary_err = None
+    try:
+        data = _fetch_from_primary_api(base)
+        return data
+    except Exception as _primary_err:
+        primary_err = _primary_err
+        logger.warning(f"Primary exchange rate API failed: {primary_err}")
+
+    # Fallback to frankfurter.app
+    try:
+        data = _fetch_from_fallback_api(base)
+        logger.info("Successfully fetched rates from fallback API (frankfurter.app)")
+        return data
+    except Exception as fallback_err:
+        logger.error(f"Fallback exchange rate API also failed: {fallback_err}")
+        # CC-03: Alert admins that rates are stale
+        _alert_stale_rates(str(primary_err))
+        raise ValueError(
+            f"All exchange rate APIs failed. Primary: {primary_err}, "
+            f"Fallback: {fallback_err}"
+        )
+
+
+def _fetch_from_primary_api(base: str) -> Dict[str, Any]:
+    """Fetch rates from the primary open.er-api.com endpoint."""
     api_url = getattr(
         settings, "EXCHANGE_RATE_API_URL", "https://open.er-api.com/v6/latest"
     )
-
     url = f"{api_url}/{base}"
 
     req = urllib.request.Request(url)
     req.add_header("Accept", "application/json")
     req.add_header("User-Agent", "Sattabase/1.0")
 
-    logger.info(f"Fetching exchange rates from {url}")
+    logger.info(f"Fetching exchange rates from primary API: {url}")
 
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -201,6 +228,46 @@ def fetch_exchange_rates() -> Dict[str, Any]:
         )
 
     return data
+
+
+def _fetch_from_fallback_api(base: str) -> Dict[str, Any]:
+    """Fetch rates from fallback frankfurter.app endpoint (CC-03)."""
+    url = f"https://api.frankfurter.app/latest?from={base}"
+
+    req = urllib.request.Request(url)
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "Sattabase/1.0")
+
+    logger.info(f"Fetching exchange rates from fallback API: {url}")
+
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    # Normalize frankfurter response to match primary API format
+    return {
+        "result": "success",
+        "base": data.get("base", base),
+        "rates": data.get("rates", {}),
+    }
+
+
+def _alert_stale_rates(error_detail: str):
+    """Send admin alert when exchange rates cannot be updated (CC-03)."""
+    try:
+        from django.core.mail import mail_admins
+
+        mail_admins(
+            "Exchange Rate Update Failed — Rates May Be Stale",
+            f"The exchange rate update task failed to fetch rates from both "
+            f"the primary and fallback APIs. Currency conversions may show "
+            f"outdated rates.\n\n"
+            f"Error: {error_detail}\n\n"
+            f"Please check the API endpoints manually and update rates "
+            f"if needed.",
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception("Failed to send stale rates admin alert")
 
 
 def update_exchange_rates() -> dict:

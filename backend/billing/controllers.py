@@ -90,6 +90,8 @@ from .schemas import (
     ChangePlanInputSchema,
     CheckoutInputSchema,
     ProrationPreviewOutputSchema,
+    ConfirmPlanChangeInputSchema,
+    ConfirmPlanChangeOutputSchema,
 )
 from .services import BillingService
 from .stripe_errors import handle_stripe_error
@@ -111,9 +113,44 @@ from .stripe import (
     retrieve_subscription,
     get_subscription_currency,
     get_first_item_id,
+    export_user_billing_data as _export_user_billing_data,
+    generate_preview_token,
+    verify_preview_token,
+    classify_plan_change,
+    execute_safe_plan_change,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# CMP-09: Admin access logging
+# =============================================================================
+
+
+from functools import wraps
+
+
+def log_admin_access(func):
+    """Decorator that logs admin access to billing endpoints.
+
+    CMP-09: All admin billing actions (refund, sync, transactions) must be
+    logged with user ID, email, IP, endpoint name, and timestamp for
+    financial compliance and audit trail.
+    """
+    @wraps(func)
+    async def wrapper(self, request, *args, **kwargs):
+        logger.info(
+            "ADMIN_BILLING_ACCESS: user_id=%s, email=%s, action=%s, "
+            "ip=%s, path=%s",
+            request.user.id,
+            getattr(request.user, "email", ""),
+            func.__name__,
+            request.META.get("REMOTE_ADDR"),
+            request.path,
+        )
+        return await func(self, request, *args, **kwargs)
+    return wrapper
 
 
 # =============================================================================
@@ -388,9 +425,7 @@ class BillingProtectedController:
             try:
                 await sync_to_async(cancel_subscription_on_stripe)(subscription)
             except stripe.error.StripeError as e:
-                raise BadRequestException(
-                    handle_stripe_error(e, context="cancel_subscription")
-                )
+                raise handle_stripe_error(e, context="cancel_subscription")
 
         # ── Step 2: DB update (only after Stripe confirms) ────────────
         await BillingService.acancel_subscription(subscription)
@@ -438,9 +473,7 @@ class BillingProtectedController:
                     subscription, subscription.plan
                 )
             except stripe.error.StripeError as e:
-                raise BadRequestException(
-                    handle_stripe_error(e, context="reactivate_subscription")
-                )
+                raise handle_stripe_error(e, context="reactivate_subscription")
 
         # ── Step 2: DB update (only after Stripe confirms) ────────────
         await BillingService.areactivate_subscription(subscription)
@@ -462,14 +495,18 @@ class BillingProtectedController:
         product_slug: str,
         payload: ChangePlanInputSchema,
     ):
-        """Change the subscription plan.
+        """DEPRECATED: Change the subscription plan.
 
-        Stripe-first flow:
-        1. Validate new plan exists and belongs to same product
-        2. If has Stripe sub + new plan is free → cancel on Stripe
-        3. If has Stripe sub + new plan is paid → swap price on Stripe
-        4. On Stripe success → update local DB
-        5. If Stripe fails → raise error, DB untouched
+        .. deprecated::
+            Use ``preview-plan-change`` + ``confirm-plan-change`` instead.
+            This endpoint now blocks paid→paid plan changes for safety.
+
+        This endpoint is retained for backward compatibility with existing
+        frontends.  For paid→paid plan changes, it returns a 400 error
+        directing the caller to the safe preview→confirm flow.
+
+        Still allows:
+        - Paid → Free (cancels at period end)
         """
         require_verified_email(request)
 
@@ -485,32 +522,46 @@ class BillingProtectedController:
         if not new_plan:
             raise NotFoundException(f"Plan '{payload.plan_slug}' not found.")
 
-        # ── Step 1: Stripe first ──────────────────────────────────────
-        if subscription.stripe_subscription_id:
-            if new_plan.is_free:
-                # Paid → Free: cancel the Stripe subscription at period end
-                try:
-                    await sync_to_async(cancel_subscription_on_stripe)(subscription)
-                except stripe.error.StripeError as e:
-                    raise BadRequestException(
-                        handle_stripe_error(e, context="change_plan(paid→free)")
-                    )
-            else:
-                # Paid → Paid: swap the plan's price on Stripe
-                try:
-                    await sync_to_async(update_subscription_plan_on_stripe)(
-                        subscription, new_plan, payload.proration_behavior
-                    )
-                except stripe.error.StripeError as e:
-                    raise BadRequestException(
-                        handle_stripe_error(e, context="change_plan(swap)")
-                    )
+        # ── SAFETY GATE: Block paid→paid changes without preview+confirm ──
+        if (
+            not new_plan.is_free
+            and not subscription.plan.is_free
+            and subscription.stripe_subscription_id
+        ):
+            raise BadRequestException(
+                "Unable to change plan directly. Please select a plan and "
+                "confirm the change through the plan comparison page."
+            )
 
-        # ── Step 2: DB update (only after Stripe confirms) ────────────
+        # ── Paid → Free: cancel the Stripe subscription at period end ──
+        if subscription.stripe_subscription_id and new_plan.is_free:
+            try:
+                await sync_to_async(cancel_subscription_on_stripe)(subscription)
+            except stripe.error.StripeError as e:
+                raise handle_stripe_error(e, context="change_plan(paid→free)")
+
+        # ── DB update ──
+        old_plan = subscription.plan
         try:
             await BillingService.achange_subscription_plan(subscription, new_plan)
         except ValueError as e:
             raise BadRequestException(str(e))
+
+        # Audit log
+        try:
+            from .models import PlanChangeLog
+
+            await sync_to_async(PlanChangeLog.objects.create)(
+                subscription=subscription,
+                from_plan=old_plan,
+                to_plan=new_plan,
+                proration_amount_cents=0,
+                currency=subscription.currency or new_plan.currency,
+                proration_behavior="none",
+                initiated_by=request.user,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create PlanChangeLog: {e}")
 
         return MessageResponse(message=f"Plan changed to {new_plan.name} successfully.")
 
@@ -725,7 +776,7 @@ class BillingProtectedController:
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(handle_stripe_error(e, context="create_checkout"))
+            raise handle_stripe_error(e, context="create_checkout")
 
         # Record ToS acceptance on the existing sub (if any)
         sub = await BillingService.aget_subscription_for_product(
@@ -773,9 +824,7 @@ class BillingProtectedController:
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(
-                handle_stripe_error(e, context="confirm_checkout")
-            )
+            raise handle_stripe_error(e, context="confirm_checkout")
 
         return result
 
@@ -806,7 +855,7 @@ class BillingProtectedController:
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(handle_stripe_error(e, context="create_portal"))
+            raise handle_stripe_error(e, context="create_portal")
 
         return {"portal_url": portal_url}
 
@@ -825,7 +874,16 @@ class BillingProtectedController:
         product_slug: str,
         payload: ChangePlanInputSchema,
     ):
-        """Preview the proration for a plan change."""
+        """Preview the proration for a plan change.
+
+        Returns the proration amounts plus a ``preview_token`` that must
+        be passed to ``confirm-plan-change``.  The token expires after
+        10 minutes and is bound to the user, subscription, target plan,
+        and exact proration amount — preventing any tampering.
+
+        The response also includes ``change_type`` (upgrade/downgrade/lateral)
+        and ``is_upgrade`` so the frontend can tailor the confirmation UI.
+        """
         require_verified_email(request)
 
         subscription = await BillingService.aget_subscription_for_product(
@@ -840,16 +898,245 @@ class BillingProtectedController:
         if not new_plan:
             raise NotFoundException(f"Plan '{payload.plan_slug}' not found.")
 
+        # Classify the change
+        change_type = await sync_to_async(classify_plan_change)(
+            subscription.plan, new_plan
+        )
+        is_upgrade = change_type == "upgrade"
+
         try:
             preview = await sync_to_async(get_proration_preview)(subscription, new_plan)
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
+            raise handle_stripe_error(e, context="preview_plan_change")
+
+        # Generate a time-limited preview token bound to this exact change
+        total_cents = int(preview.get("total", 0) * 100)
+        currency_lower = preview.get("currency", "usd").lower()
+        preview_token = await sync_to_async(generate_preview_token)(
+            user_id=request.user.id,
+            subscription_id=subscription.id,
+            plan_slug=new_plan.slug,
+            total_cents=total_cents,
+            currency=currency_lower,
+        )
+
+        return {
+            **preview,
+            "change_type": change_type,
+            "is_upgrade": is_upgrade,
+            "preview_token": preview_token,
+        }
+
+    @http_post(
+        "/subscriptions/{product_slug}/confirm-plan-change",
+        response={200: ConfirmPlanChangeOutputSchema, 400: dict, 404: dict},
+        summary="Confirm plan change (safe flow)",
+        description=(
+            "Confirm a plan change after previewing it.  Requires a valid "
+            "preview_token from preview-plan-change.  For upgrades, a "
+            "PaymentIntent is created and confirmed before the subscription "
+            "is modified on Stripe — ensuring the user is only charged after "
+            "explicit confirmation."
+        ),
+    )
+    async def confirm_plan_change(
+        self,
+        request: HttpRequest,
+        product_slug: str,
+        payload: ConfirmPlanChangeInputSchema,
+    ):
+        """Confirm a plan change using the safe preview→confirm flow.
+
+        Flow:
+        1. Verify the preview_token (ensures user saw the amount).
+        2. Re-classify the change (upgrade/downgrade/lateral).
+        3. For upgrades: charge proration via PaymentIntent first.
+        4. Modify subscription on Stripe.
+        5. Update local DB.
+        6. Create audit log.
+        """
+        require_verified_email(request)
+        check_rate_limit_or_raise(
+            request, key_prefix="confirm_plan_change", max_attempts=3, window_seconds=300
+        )
+
+        subscription = await BillingService.aget_subscription_for_product(
+            request.user, product_slug
+        )
+        if not subscription:
+            raise NotFoundException("No subscription found for this product.")
+
+        new_plan = await BillingService.aget_plan_by_slug(
+            product_slug, payload.plan_slug
+        )
+        if not new_plan:
+            raise NotFoundException(f"Plan '{payload.plan_slug}' not found.")
+
+        # ── Step 1: Get fresh preview to verify token against current amount ──
+        try:
+            preview = await sync_to_async(get_proration_preview)(subscription, new_plan)
+        except ValueError as e:
+            raise BadRequestException(str(e))
+        except stripe.error.StripeError as e:
+            raise handle_stripe_error(e, context="confirm_plan_change(preview)")
+
+        total_cents = int(preview.get("total", 0) * 100)
+        currency_lower = preview.get("currency", "usd").lower()
+
+        # ── Step 2: Verify preview token ──
+        token_valid = await sync_to_async(verify_preview_token)(
+            token=payload.preview_token,
+            user_id=request.user.id,
+            subscription_id=subscription.id,
+            plan_slug=new_plan.slug,
+            total_cents=total_cents,
+            currency=currency_lower,
+        )
+
+        if not token_valid:
             raise BadRequestException(
-                handle_stripe_error(e, context="preview_plan_change")
+                "Invalid or expired preview token.  "
+                "Please call preview-plan-change again to get a fresh token."
             )
 
-        return preview
+        # ── Step 3: Classify change type ──
+        change_type = await sync_to_async(classify_plan_change)(
+            subscription.plan, new_plan
+        )
+
+        # ── Step 4: Execute safe plan change (charge first for upgrades) ──
+        try:
+            result = await sync_to_async(execute_safe_plan_change)(
+                subscription=subscription,
+                new_plan=new_plan,
+                change_type=change_type,
+                proration_total_cents=total_cents,
+                proration_currency=currency_lower,
+            )
+        except stripe.error.StripeError as e:
+            raise handle_stripe_error(e, context="confirm_plan_change(execute)")
+
+        # ── Step 5: DB update ──
+        old_plan = subscription.plan
+        try:
+            await BillingService.achange_subscription_plan(subscription, new_plan)
+        except ValueError as e:
+            # Rollback: if DB update fails after Stripe change, log but don't
+            # reverse Stripe (webhook will eventually re-sync)
+            logger.error(
+                f"DB update failed after Stripe plan change: sub={subscription.id}, "
+                f"error={e}. Webhook will re-sync."
+            )
+            raise BadRequestException(
+                "Plan was changed on Stripe but local DB update failed. "
+                "It will be synced automatically. Please contact support if "
+                "you see inconsistencies."
+            )
+
+        # ── Step 6: Audit log ──
+        try:
+            from .models import PlanChangeLog
+
+            effective_when = (
+                "immediately" if change_type == "upgrade" else "next_billing_cycle"
+            )
+            proration_behavior_used = (
+                "create_prorations" if change_type == "upgrade" else "none"
+            )
+
+            await sync_to_async(PlanChangeLog.objects.create)(
+                subscription=subscription,
+                from_plan=old_plan,
+                to_plan=new_plan,
+                proration_amount_cents=result.get("amount_charged", 0),
+                currency=currency_lower,
+                proration_behavior=proration_behavior_used,
+                initiated_by=request.user,
+                stripe_payment_intent_id=result.get("payment_intent_id"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create PlanChangeLog: {e}")
+
+        effective_when = (
+            "immediately" if change_type == "upgrade" else "next_billing_cycle"
+        )
+
+        return {
+            "plan_name": new_plan.name,
+            "plan_slug": new_plan.slug,
+            "status": subscription.status,
+            "change_type": change_type,
+            "effective_when": effective_when,
+            "amount_charged": result.get("amount_charged", 0) / 100,
+            "currency": currency_lower.upper(),
+        }
+
+    # =========================================================================
+    # Transaction History (UX-05: user-facing endpoint)
+    # =========================================================================
+
+    @http_get(
+        "/subscriptions/transactions",
+        response=dict,
+        summary="Get my billing history",
+        description=(
+            "Get the authenticated user's own transaction/invoice history "
+            "from Stripe. Returns paginated transactions with charge details, "
+            "card brand, tax, and period info."
+        ),
+    )
+    async def get_my_transactions(
+        self,
+        request: HttpRequest,
+        limit: int = 25,
+        starting_after: Optional[str] = None,
+    ):
+        """Get the authenticated user's own transaction history from Stripe."""
+        try:
+            result = await sync_to_async(get_transaction_history)(
+                user=request.user,
+                limit=min(limit, 100),
+                starting_after=starting_after,
+            )
+        except ValueError as e:
+            raise BadRequestException(str(e))
+        except stripe.error.StripeError as e:
+            raise handle_stripe_error(e, context="get_transactions")
+        return result
+    @http_get(
+        "/export-data",
+        response=dict,
+        summary="Export billing data (GDPR Art. 20)",
+        description=(
+            "Export all billing data for the authenticated user, including "
+            "subscription history, refund records, and invoice history. "
+            "Satisfies GDPR Article 20 (Right to Data Portability). "
+            "Requires email verification."
+        ),
+    )
+    async def export_billing_data(self, request: HttpRequest):
+        """Export all billing data for the authenticated user.
+
+        Returns a structured JSON object with subscription history,
+        refund records, invoice records, and Stripe customer metadata.
+        This endpoint satisfies GDPR Article 20 (Right to Data Portability).
+        """
+        require_verified_email(request)
+
+        try:
+            data = await sync_to_async(_export_user_billing_data)(request.user)
+        except Exception as e:
+            logger.error(
+                f"GDPR export failed for user {request.user.id}: {e}",
+                exc_info=True,
+            )
+            raise BadRequestException(
+                "Failed to export billing data. Please try again or contact support."
+            )
+
+        return data
 
 
 # =============================================================================
@@ -871,6 +1158,14 @@ class BillingAdminController:
     must request refunds through support channels.
     """
 
+    # ── CTR-01: Class-level staff guard applied at every method ──────────
+    def _require_staff(self, request: HttpRequest) -> None:
+        """CTR-01: Enforce staff/superuser access for all admin endpoints."""
+        if not getattr(request.user, "is_staff", False):
+            from ninja.errors import HttpError
+
+            raise HttpError(403, "This action requires admin access.")
+
     @http_post(
         "/subscriptions/{product_slug}/refund",
         response={200: dict, 400: dict, 404: dict, 403: dict},
@@ -878,29 +1173,46 @@ class BillingAdminController:
         description=(
             "Issue a refund for the latest payment. "
             "Requires staff/superuser access. "
-            "Refunds are capped at the latest invoice payment amount."
+            "Refunds are capped at the latest invoice payment amount. "
+            "Accepts optional target_user_id to refund another user's subscription."
         ),
     )
+    @log_admin_access
     async def refund_subscription(
         self,
         request: HttpRequest,
         product_slug: str,
-        payload: dict,
+        # CTR-09: Use proper schema instead of raw dict
+        payload: "RefundInputSchema",  # type: ignore[valid-type]
     ):
-        """Issue a refund for a subscription payment. Admin only."""
-        # F1: Staff-only guard — prevent regular users from refunding
-        if not getattr(request.user, "is_staff", False):
-            from ninja.errors import HttpError
+        """Issue a refund for a subscription payment. Admin only.
 
-            raise HttpError(403, "Refunds are admin-only operations.")
+        CTR-01: Staff guard enforced via _require_staff().
+        CTR-02: Queries subscription for the target user (defaults to self).
+        CTR-09: Uses RefundInputSchema for automatic validation.
+        """
+        # CTR-01: Staff-only guard
+        self._require_staff(request)
 
         require_verified_email(request)
 
         from .models import Refund
-        from .schemas import RefundInputSchema, RefundOutputSchema
+        from .schemas import RefundInputSchema
+
+        # CTR-02: Resolve target user — allow admin to refund another user's sub
+        target_user_id = getattr(payload, "target_user_id", None)
+        if target_user_id:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            try:
+                target_user = await sync_to_async(User.objects.get)(pk=target_user_id)
+            except User.DoesNotExist:
+                raise NotFoundException("Target user not found.")
+        else:
+            target_user = request.user
 
         subscription = await BillingService.aget_subscription_for_product(
-            request.user, product_slug
+            target_user, product_slug
         )
         if not subscription:
             raise NotFoundException("No subscription found for this product.")
@@ -910,23 +1222,22 @@ class BillingAdminController:
                 "Cannot refund a subscription without a Stripe payment."
             )
 
-        # Validate payload using RefundInputSchema
-        try:
-            validated = RefundInputSchema(**payload)
-        except Exception as e:
-            raise BadRequestException(f"Invalid refund payload: {e}")
-
         try:
             refund = await sync_to_async(create_stripe_refund)(
                 subscription=subscription,
-                amount_cents=validated.amount_cents,
-                reason=validated.reason,
+                amount_cents=payload.amount_cents,
+                reason=payload.reason,
                 initiated_by=request.user,
+                reason_category=payload.reason_category,
+                admin_notes=payload.admin_notes,
             )
+            # CMP-02: Capture admin's IP for audit trail
+            refund.initiated_by_ip = request.META.get("REMOTE_ADDR")
+            await sync_to_async(refund.save)(update_fields=["initiated_by_ip"])
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(handle_stripe_error(e, context="refund"))
+            raise handle_stripe_error(e, context="refund")
 
         return {
             "refund_id": refund.id,
@@ -946,13 +1257,16 @@ class BillingAdminController:
             "Returns paginated transactions."
         ),
     )
+    @log_admin_access
     async def get_transactions(
         self,
         request: HttpRequest,
         limit: int = 25,
         starting_after: Optional[str] = None,
     ):
-        """Get transaction history pulled from Stripe."""
+        """Get transaction history pulled from Stripe. CTR-01: Admin only."""
+        # CTR-01: Staff-only guard
+        self._require_staff(request)
         try:
             result = await sync_to_async(get_transaction_history)(
                 user=request.user,
@@ -962,9 +1276,7 @@ class BillingAdminController:
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(
-                handle_stripe_error(e, context="get_transactions")
-            )
+            raise handle_stripe_error(e, context="get_transactions")
 
         return result
 
@@ -978,8 +1290,11 @@ class BillingAdminController:
             "when users update their profile via Stripe Customer Portal."
         ),
     )
+    @log_admin_access
     async def sync_customer(self, request: HttpRequest):
-        """Sync Stripe customer data to local profile."""
+        """Sync Stripe customer data to local profile. CTR-01: Admin only."""
+        # CTR-01: Staff-only guard
+        self._require_staff(request)
         try:
             result = await sync_to_async(sync_stripe_customer_data)(
                 user=request.user,
@@ -987,7 +1302,7 @@ class BillingAdminController:
         except ValueError as e:
             raise BadRequestException(str(e))
         except stripe.error.StripeError as e:
-            raise BadRequestException(handle_stripe_error(e, context="sync_customer"))
+            raise handle_stripe_error(e, context="sync_customer")
 
         return result
 
@@ -1026,8 +1341,9 @@ class BillingWebhookController:
         """Handle incoming Stripe webhooks.
 
         Flow:
-        1. Read raw request body and Stripe-Signature header
-        2. Verify the webhook signature
+        1. Rate-limit to prevent DoS from fake events
+        2. Read raw request body and Stripe-Signature header
+        3. Verify the webhook signature
         3. Record the event in WebhookEventLog (idempotent)
         4. Process the event (update subscription status)
 
@@ -1043,6 +1359,13 @@ class BillingWebhookController:
 
         if not sig_header:
             raise BadRequestException("Missing Stripe-Signature header.")
+
+        # CMP-05: Rate limit webhook endpoint to prevent DoS from fake events.
+        # Even invalid signatures consume verification resources.
+        check_rate_limit_or_raise(
+            request, "webhook",
+            max_attempts=100, window_seconds=60,
+        )
 
         try:
             event = await sync_to_async(verify_and_parse_webhook)(payload, sig_header)

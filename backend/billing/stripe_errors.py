@@ -26,6 +26,8 @@ import logging
 import re
 from typing import Optional
 
+from common.exceptions import BadRequestException
+
 import stripe
 
 logger = logging.getLogger(__name__)
@@ -233,8 +235,11 @@ _ERROR_CODE_MAP: dict[str, str] = {
 def handle_stripe_error(
     error: stripe.error.StripeError,
     context: Optional[str] = None,
-) -> str:
-    """Translate a Stripe API error into a user-friendly message.
+) -> BadRequestException:
+    """Translate a Stripe API error into a user-friendly BadRequestException.
+
+    CC-01: Returns a BadRequestException directly so controllers can
+    simply ``raise handle_stripe_error(e)`` instead of wrapping it.
 
     Args:
         error: The caught Stripe exception.
@@ -242,7 +247,7 @@ def handle_stripe_error(
                  (e.g. ``"cancel_subscription"``).
 
     Returns:
-        A clear, actionable message suitable for showing to the user.
+        A BadRequestException with a clear, actionable message.
 
     Side effects:
         Logs the full original error at ERROR level for debugging.
@@ -260,49 +265,69 @@ def handle_stripe_error(
         exc_info=False,
     )
 
+    def _make_exception(msg: str) -> BadRequestException:
+        """Helper to create the exception with consistent detail."
+        """
+        exc = BadRequestException(msg)
+        return exc
+
     # 1. Try matching against known message patterns
     for pattern, user_message in _ERROR_PATTERNS:
         if pattern in error_msg:
-            return user_message
+            return _make_exception(user_message)
 
     # 2. Try matching against known error codes
     if error_code in _ERROR_CODE_MAP:
-        return _ERROR_CODE_MAP[error_code]
+        return _make_exception(_ERROR_CODE_MAP[error_code])
 
     # 3. Handle by HTTP status class
     if http_status >= 500:
         # Stripe server error — transient
-        return (
+        return _make_exception(
             "The payment provider is temporarily unavailable. "
             "Please try again in a few moments."
         )
 
     if http_status == 429:
-        return "Too many requests. Please wait a moment and try again."
+        return _make_exception("Too many requests. Please wait a moment and try again.")
 
     if http_status == 401:
-        # Auth error — configuration issue, not user's fault
+        # Auth error — configuration issue, not user's fault.
+        # CRITICAL: Active alert because ALL payment processing is broken.
         logger.critical(
             f"{log_ctx}Stripe API key is invalid or missing! "
             f"Check SF_STRIPE_SECRET_KEY in settings."
         )
-        return "Payment system is temporarily unavailable. " "Please contact support."
+        # Send immediate admin alert — payment system is down
+        try:
+            from django.core.mail import mail_admins
+
+            mail_admins(
+                "CRITICAL: Stripe API Key Invalid",
+                f"The Stripe API key is invalid or missing. "
+                f"All payment processing is currently broken. "
+                f"Context: {context or 'unknown'}",
+                fail_silently=True,
+            )
+        except Exception:
+            logger.exception("Failed to send admin alert for invalid Stripe key")
+        return _make_exception("Payment system is temporarily unavailable. Please contact support.")
 
     if http_status == 404:
-        return (
+        return _make_exception(
             "The requested resource was not found on the payment provider. "
             "Please contact support."
         )
 
     if http_status in (400, 402):
         # Generic client error — likely a parameter issue
-        return (
+        return _make_exception(
             "Payment processing failed. Please verify your details "
             "and try again, or contact support for assistance."
         )
 
     # 4. Final fallback — generic but not alarming
-    return (
+    return _make_exception(
         "Something went wrong with the payment provider. "
         "Please try again or contact support if the issue persists."
     )

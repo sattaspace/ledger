@@ -22,7 +22,9 @@ const billingNav: NavSection = {
   title: "Billing",
   items: [
     { label: "Overview", href: "/dashboard/billing", icon: "billing" },
-    { label: "Plans", href: "/dashboard/billing/plans/finance", icon: "plans" },
+    // INAV-01 Fix: Link to billing overview instead of hardcoded product slug.
+    // The overview page lists all available products dynamically.
+    { label: "Plans", href: "/dashboard/billing", icon: "plans", disabled: true, badge: "Coming Soon" },
   ],
 };
 

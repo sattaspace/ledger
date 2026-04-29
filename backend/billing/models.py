@@ -568,6 +568,34 @@ class Subscription(TimeStampedModel):
             "Empty = fallback to plan.currency."
         ),
     )
+    last_dunning_email_at = models.DateTimeField(
+        _("Last Dunning Email At"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Timestamp of the last dunning email sent for this "
+            "subscription. Used to prevent duplicate emails."
+        ),
+    )
+    dunning_step = models.PositiveIntegerField(
+        _("Dunning Step"),
+        default=0,
+        help_text=_(
+            "Current dunning workflow step (0=none, 1=reminder, "
+            "2=urgent, 3=restrict, 4=cancel). Incremented by the "
+            "dunning_retry Celery task."
+        ),
+    )
+    past_due_at = models.DateTimeField(
+        _("Past Due At"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Timestamp of when the subscription first transitioned to PAST_DUE. "
+            "Used by the dunning workflow to calculate days_past_due accurately, "
+            "since updated_at is modified by every save operation."
+        ),
+    )
 
     class Meta:
         db_table = "billing_subscription"
@@ -657,6 +685,9 @@ class Refund(TimeStampedModel):
 
     EU consumers have a 14-day right of withdrawal — this model
     provides the audit trail for compliance.
+
+    CMP-02: Extended with full audit trail including IP, reason category,
+    approval workflow, and admin notes for PCI-DSS compliance.
     """
 
     id = models.BigAutoField(primary_key=True)
@@ -717,6 +748,45 @@ class Refund(TimeStampedModel):
         blank=True,
         verbose_name=_("Initiated By"),
         help_text=_("Admin user who initiated this refund"),
+    )
+    # CMP-02: Audit trail additions
+    initiated_by_ip = models.GenericIPAddressField(
+        _("Initiated By IP"),
+        null=True,
+        blank=True,
+        help_text=_("IP address of the admin who initiated this refund"),
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_refunds",
+        verbose_name=_("Approved By"),
+        help_text=_("Admin who approved this refund (if multi-step approval)"),
+    )
+    approved_at = models.DateTimeField(
+        _("Approved At"),
+        null=True,
+        blank=True,
+        help_text=_("When this refund was approved"),
+    )
+    reason_category = models.CharField(
+        _("Reason Category"),
+        max_length=30,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_(
+            "Structured reason code for audit trail: customer_request, "
+            "billing_error, goodwill, policy, chargeback"
+        ),
+    )
+    admin_notes = models.TextField(
+        _("Admin Notes"),
+        blank=True,
+        default="",
+        help_text=_("Internal admin-only notes about this refund"),
     )
     stripe_response = models.JSONField(
         _("Stripe Response"),
@@ -801,20 +871,264 @@ class ExchangeRate(models.Model):
 
 
 # =============================================================================
+# Invoice
+# =============================================================================
+
+
+class InvoiceStatus(models.TextChoices):
+    """Invoice lifecycle states."""
+
+    DRAFT = "draft", _("Draft")
+    OPEN = "open", _("Open")
+    PAID = "paid", _("Paid")
+    UNCOLLECTIBLE = "uncollectible", _("Uncollectible")
+    VOID = "void", _("Void")
+
+
+class Invoice(TimeStampedModel):
+    """Stores invoice data synced from Stripe webhooks.
+
+    Created/updated by ``invoice.payment_succeeded`` and ``invoice.created``
+    webhook handlers.  Provides local access to invoice history without
+    requiring real-time Stripe API calls for financial reporting,
+    tax reconciliation, and dispute resolution.
+    """
+
+    stripe_invoice_id = models.CharField(
+        _("Stripe Invoice ID"),
+        max_length=100,
+        unique=True,
+        db_index=True,
+        help_text=_("Stripe Invoice ID, e.g. in_1Pxxx..."),
+    )
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.CASCADE,
+        related_name="invoices",
+        db_index=True,
+        verbose_name=_("Subscription"),
+        help_text=_("The subscription this invoice belongs to"),
+    )
+    stripe_subscription_id = models.CharField(
+        _("Stripe Subscription ID"),
+        max_length=100,
+        db_index=True,
+        blank=True,
+        default="",
+        help_text=_("Denormalized for quick filtering without JOIN"),
+    )
+    number = models.CharField(
+        _("Invoice Number"),
+        max_length=50,
+        blank=True,
+        default="",
+        help_text=_("Stripe invoice number, e.g. INV-0012"),
+    )
+    status = models.CharField(
+        _("Status"),
+        max_length=20,
+        choices=InvoiceStatus.choices,
+        default=InvoiceStatus.DRAFT,
+        db_index=True,
+    )
+    amount_paid_cents = models.PositiveIntegerField(
+        _("Amount Paid (cents)"),
+        default=0,
+        help_text=_("Amount paid by the customer in cents"),
+    )
+    amount_due_cents = models.PositiveIntegerField(
+        _("Amount Due (cents)"),
+        default=0,
+        help_text=_("Amount still owed in cents"),
+    )
+    tax_cents = models.PositiveIntegerField(
+        _("Tax (cents)"),
+        default=0,
+        help_text=_("Total tax amount in cents"),
+    )
+    discount_cents = models.PositiveIntegerField(
+        _("Discount (cents)"),
+        default=0,
+        help_text=_("Total discount amount in cents"),
+    )
+    currency = models.CharField(
+        _("Currency"),
+        max_length=3,
+        default="USD",
+        help_text=_("ISO 4217 currency code"),
+    )
+    period_start = models.DateTimeField(
+        _("Period Start"),
+        null=True,
+        blank=True,
+        help_text=_("Start of the billing period this invoice covers"),
+    )
+    period_end = models.DateTimeField(
+        _("Period End"),
+        null=True,
+        blank=True,
+        help_text=_("End of the billing period this invoice covers"),
+    )
+    description = models.CharField(
+        _("Description"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("Invoice description line (e.g. plan name)"),
+    )
+    hosted_url = models.URLField(
+        _("Hosted Invoice URL"),
+        blank=True,
+        default="",
+        help_text=_("Stripe-hosted invoice page URL"),
+    )
+    pdf_url = models.URLField(
+        _("PDF URL"),
+        blank=True,
+        default="",
+        help_text=_("Stripe-hosted invoice PDF URL"),
+    )
+    stripe_fee_cents = models.PositiveIntegerField(
+        _("Stripe Fee (cents)"),
+        default=0,
+        help_text=_("Stripe processing fee for this invoice (2.9% + $0.30)"),
+    )
+    stripe_fee_currency = models.CharField(
+        _("Stripe Fee Currency"),
+        max_length=3,
+        blank=True,
+        default="",
+        help_text=_("Currency of the Stripe fee"),
+    )
+    attempt_count = models.PositiveIntegerField(
+        _("Attempt Count"),
+        default=1,
+        help_text=_("Number of payment attempts for this invoice"),
+    )
+    next_payment_attempt = models.DateTimeField(
+        _("Next Payment Attempt"),
+        null=True,
+        blank=True,
+        help_text=_("When Stripe will next attempt payment"),
+    )
+    stripe_response = models.JSONField(
+        _("Stripe Response"),
+        default=dict,
+        blank=True,
+        help_text=_("Full Stripe Invoice object for audit/reconciliation"),
+    )
+
+    class Meta:
+        db_table = "billing_invoice"
+        verbose_name = _("Invoice")
+        verbose_name_plural = _("Invoices")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Invoice {self.number or self.stripe_invoice_id} ({self.status})"
+
+
+# FIN-04: Plan Change Audit Log
+# =============================================================================
+
+
+class PlanChangeLog(TimeStampedModel):
+    """Audit trail for subscription plan changes.
+
+    Every time a user or admin changes a subscription's plan, this model
+    records the from/to plans, the proration amount, and who initiated it.
+    This provides a complete billing audit trail for reconciliation,
+    dispute resolution, and revenue recognition.
+    """
+
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.CASCADE,
+        related_name="plan_changes",
+        db_index=True,
+        verbose_name=_("Subscription"),
+    )
+    from_plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        related_name="+",
+        verbose_name=_("From Plan"),
+        help_text=_("The plan being changed from"),
+    )
+    to_plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        related_name="+",
+        verbose_name=_("To Plan"),
+        help_text=_("The plan being changed to"),
+    )
+    proration_amount_cents = models.IntegerField(
+        _("Proration Amount (cents)"),
+        help_text=_(
+            "Proration credit/charge amount in cents. "
+            "Negative = credit to customer, Positive = charge."
+        ),
+    )
+    currency = models.CharField(
+        _("Currency"),
+        max_length=3,
+        default="USD",
+        help_text=_("ISO 4217 currency code"),
+    )
+    stripe_proration_id = models.CharField(
+        _("Stripe Proration ID"),
+        max_length=100,
+        blank=True,
+        default="",
+        help_text=_("ID of the Stripe proration line item"),
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        verbose_name=_("Initiated By"),
+        help_text=_("User who initiated the plan change (null for system/webhook)"),
+    )
+    proration_behavior = models.CharField(
+        _("Proration Behavior"),
+        max_length=30,
+        blank=True,
+        default="create_prorations",
+        help_text=_(
+            "How the proration was handled: create_prorations, none, "
+            "or always_invoice"
+        ),
+    )
+
+    class Meta:
+        db_table = "billing_plan_change_log"
+        verbose_name = _("Plan Change Log")
+        verbose_name_plural = _("Plan Change Logs")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        sign = "+" if self.proration_amount_cents >= 0 else ""
+        return (
+            f"{self.subscription} [{self.from_plan} -> {self.to_plan}] "
+            f"({sign}{self.proration_amount_cents / 100:.2f} {self.currency})"
+        )
+
+
+# =============================================================================
 # WebhookEventLog
 # =============================================================================
 
 
 class WebhookEventLog(models.Model):
-    """Audit log for incoming Stripe webhook events.
+    """Logs every Stripe webhook event for idempotency and debugging.
 
-    Every webhook received from Stripe is recorded here before processing.
-    This enables idempotent handling (skip duplicate events), debugging
-    of failed webhooks, and reconciliation tasks. The ``event_id`` field
-    is unique — duplicate deliveries of the same event are rejected.
+    Each incoming webhook is recorded before processing. If processing
+    succeeds, the entry is marked as ``processed``. Failed events remain
+    unprocessed so the reconciliation task can retry them.
 
-    Cleaned up periodically by the ``cleanup_stale_webhook_events``
-    Celery task (Phase 5).
+    FIN-08: Cleaned up by the ``cleanup_stale_webhook_events`` Celery task
+    which deletes processed events older than the retention period.
     """
 
     id = models.BigAutoField(primary_key=True)
@@ -848,7 +1162,6 @@ class WebhookEventLog(models.Model):
         default=dict,
         help_text=_("Full Stripe event JSON payload"),
     )
-
     created_at = models.DateTimeField(
         _("Created At"),
         auto_now_add=True,
@@ -863,3 +1176,107 @@ class WebhookEventLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.event_type} ({self.event_id})"
+
+
+# =============================================================================
+# RevenueRecognitionEntry (FIN-07)
+# =============================================================================
+
+
+class RevenueRecognitionEntry(TimeStampedModel):
+    """Tracks daily revenue recognition for SaaS subscriptions.
+
+    For monthly/annual subscriptions, revenue should be recognized
+    daily/monthly, not all at once at billing time. This model is
+    populated by the `recognize_revenue` Celery task.
+
+    Each row represents the revenue recognized for one subscription
+    on one day. The UniqueConstraint prevents duplicate entries for
+    the same subscription and date.
+
+    Populated by:
+      - `recognize_revenue` Celery task (source='scheduled', runs daily)
+      - `handle_invoice_payment_succeeded` webhook (source='webhook')
+    """
+
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.CASCADE,
+        related_name="revenue_entries",
+        db_index=True,
+        verbose_name=_("Subscription"),
+        help_text=_("The subscription this revenue entry belongs to"),
+    )
+    plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        db_index=True,
+        verbose_name=_("Plan"),
+        help_text=_("The plan at the time of recognition"),
+    )
+    amount_cents = models.PositiveIntegerField(
+        _("Amount (cents)"),
+        default=0,
+        help_text=_("Revenue recognized in cents for this day"),
+    )
+    currency = models.CharField(
+        _("Currency"),
+        max_length=3,
+        default="USD",
+        help_text=_("ISO 4217 currency code"),
+    )
+    period_start = models.DateTimeField(
+        _("Period Start"),
+        null=True,
+        blank=True,
+        help_text=_("Start of the billing period this entry covers"),
+    )
+    period_end = models.DateTimeField(
+        _("Period End"),
+        null=True,
+        blank=True,
+        help_text=_("End of the billing period this entry covers"),
+    )
+    recognized_date = models.DateField(
+        _("Recognized Date"),
+        db_index=True,
+        help_text=_("The date this revenue is recognized for"),
+    )
+    stripe_invoice_id = models.CharField(
+        _("Stripe Invoice ID"),
+        max_length=100,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_("The Stripe invoice that generated this revenue"),
+    )
+    source = models.CharField(
+        _("Source"),
+        max_length=30,
+        blank=True,
+        default="scheduled",
+        db_index=True,
+        help_text=_(
+            "How this entry was created: 'scheduled' (Celery daily task), "
+            "'webhook' (created immediately on payment), 'backfill' (manual)"
+        ),
+    )
+
+    class Meta:
+        db_table = "billing_revenue_recognition"
+        verbose_name = _("Revenue Recognition Entry")
+        verbose_name_plural = _("Revenue Recognition Entries")
+        ordering = ["-recognized_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["subscription", "recognized_date"],
+                name="unique_revenue_per_sub_per_day",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.subscription} — {self.amount_cents / 100:.2f} "
+            f"{self.currency} on {self.recognized_date}"
+        )
+

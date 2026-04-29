@@ -316,6 +316,28 @@ class RefundInputSchema(Schema):
         description="Reason for the refund (visible to customer)",
         examples=["Customer requested cancellation within 14-day period"],
     )
+    # CTR-02: Allow admin to target another user's subscription
+    target_user_id: Optional[int] = Field(
+        None,
+        description=(
+            "Optional target user ID. Admin can refund another user's "
+            "subscription. Defaults to the requesting admin's own subscription."
+        ),
+        examples=[42],
+    )
+    reason_category: str = Field(
+        "",
+        description=(
+            "Structured reason category for audit trail: "
+            "customer_request, billing_error, goodwill, policy, chargeback"
+        ),
+        examples=["customer_request"],
+    )
+    admin_notes: str = Field(
+        "",
+        description="Internal admin-only notes about the refund (not visible to customer)",
+        examples=["User called support, approved by manager"],
+    )
 
 
 class RefundOutputSchema(Schema):
@@ -340,4 +362,63 @@ class ProrationPreviewOutputSchema(Schema):
     tax: float = Field(..., description="Estimated tax amount")
     total: float = Field(..., description="Total charge/credit amount")
     next_billing: float = Field(..., description="Amount due at next billing cycle")
+    currency: str = Field(..., description="ISO 4217 currency code")
+    preview_token: Optional[str] = Field(
+        None,
+        description=(
+            "Server-signed, time-limited token that MUST be passed to "
+            "confirm-plan-change.  Expires after 10 minutes.  Required for "
+            "upgrades (total > 0) to prevent unconfirmed charges."
+        ),
+    )
+    change_type: str = Field(
+        ...,
+        description="Type of plan change: 'upgrade', 'downgrade', or 'lateral'",
+    )
+    is_upgrade: bool = Field(
+        ...,
+        description="Whether this plan change requires immediate payment",
+    )
+
+
+class ConfirmPlanChangeInputSchema(Schema):
+    """Schema for confirming a plan change.
+
+    The ``preview_token`` is required when the change is an upgrade (total > 0).
+    It is issued by ``preview_plan_change`` and expires after 10 minutes.
+    For downgrades, the token is optional but still recommended for consistency.
+    """
+
+    plan_slug: str = Field(
+        ...,
+        description="Slug of the new plan to switch to",
+        examples=["pro"],
+    )
+    preview_token: str = Field(
+        ...,
+        description=(
+            "Token returned by preview_plan_change.  Proves the user "
+            "saw the proration amount before confirming."
+        ),
+    )
+
+
+class ConfirmPlanChangeOutputSchema(Schema):
+    """Schema for confirmed plan change response."""
+
+    plan_name: str = Field(..., description="Name of the new plan")
+    plan_slug: str = Field(..., description="Slug of the new plan")
+    status: str = Field(..., description="Subscription status after change")
+    change_type: str = Field(
+        ...,
+        description="Type of change performed: upgrade, downgrade, or lateral"
+    )
+    effective_when: str = Field(
+        ...,
+        description="When the change takes effect: 'immediately' or 'next_billing_cycle'",
+    )
+    amount_charged: float = Field(
+        0,
+        description="Amount charged immediately (proration), in major units",
+    )
     currency: str = Field(..., description="ISO 4217 currency code")

@@ -85,6 +85,24 @@ def create_checkout(
     price_id = resolve_price_id(plan, currency)
     customer_id = get_or_create_customer_id(user)
 
+    # CMP-07: Checkout deduplication — prevent double-checkout if user
+    # rapidly clicks "Subscribe" or "Upgrade Now". Uses Django cache to
+    # detect a recent checkout for the same user+plan+product within
+    # 5 minutes. Returns the cached URL instead of creating a duplicate.
+    from django.core.cache import cache
+
+    cache_key = f"checkout_recent_{user.id}_{product.id}_{plan.slug}"
+    cached_url = cache.get(cache_key)
+    if cached_url:
+        logger.info(
+            f"CMP-07: Returning cached checkout URL for user={user.id}, "
+            f"plan={plan.slug} (prevents double-checkout)"
+        )
+        return cached_url
+
+    # CMP-06: ToS version tracking per checkout
+    tos_version = getattr(settings, "TOS_VERSION", "1.0")
+
     session = _create_checkout(
         mode="subscription",
         customer=customer_id,
@@ -98,6 +116,7 @@ def create_checkout(
             "user_id": str(user.id),
             "product_slug": product.slug,
             "plan_slug": plan.slug,
+            "tos_version": tos_version,
         },
         subscription_data={
             "trial_period_days": trial_days,
@@ -109,6 +128,18 @@ def create_checkout(
         },
         allow_promotion_codes=True,
     )
+
+    # FIN-05: Log exchange rate used for checkout (for reconciliation)
+    if currency.upper() != plan.currency.upper():
+        from ..currency_service import get_exchange_rate
+        rate = get_exchange_rate(plan.currency, currency)
+        logger.info(
+            f"Checkout session {session['id']} currency conversion: "
+            f"{plan.currency} -> {currency}, rate={rate}"
+        )
+
+    # CMP-07: Cache the checkout URL for 5 minutes to prevent double-checkout
+    cache.set(cache_key, session["url"], timeout=300)
 
     logger.info(
         f"Checkout session {session['id']} for {user.email}, "
@@ -145,6 +176,17 @@ def confirm_checkout(session_id: str, user) -> dict:
 
     product_slug = metadata.get("product_slug")
     plan_slug = metadata.get("plan_slug")
+
+    # CMP-06: Validate ToS version at confirmation time
+    checkout_tos_version = metadata.get("tos_version")
+    current_tos_version = getattr(settings, "TOS_VERSION", "1.0")
+    if checkout_tos_version and current_tos_version and checkout_tos_version != current_tos_version:
+        logger.warning(
+            f"ToS version mismatch for checkout {session_id}: "
+            f"checkout={checkout_tos_version}, current={current_tos_version}. "
+            f"Proceeding — payment already completed."
+        )
+
     if not product_slug or not plan_slug:
         raise ValueError(f"Session {session_id} missing metadata.")
 

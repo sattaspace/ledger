@@ -136,6 +136,19 @@ export interface ProrationPreviewOutputSchema {
   total: number;
   next_billing: number;
   currency: string;
+  preview_token: string | null;
+  change_type: 'upgrade' | 'downgrade' | 'lateral';
+  is_upgrade: boolean;
+}
+
+export interface ConfirmPlanChangeOutputSchema {
+  plan_name: string;
+  plan_slug: string;
+  status: string;
+  change_type: 'upgrade' | 'downgrade' | 'lateral';
+  effective_when: 'immediately' | 'next_billing_cycle';
+  amount_charged: number;
+  currency: string;
 }
 
 // ─── Transaction History (F11 — pulled from Stripe) ────────────────────
@@ -262,7 +275,14 @@ export const billingApi = {
     );
   },
 
-  // ── Transaction History (F11) ──
+  async confirmPlanChange(productSlug: string, planSlug: string, previewToken: string): Promise<ConfirmPlanChangeOutputSchema> {
+    return apiClient.post<ConfirmPlanChangeOutputSchema>(
+      `/billing/subscriptions/${productSlug}/confirm-plan-change`,
+      { plan_slug: planSlug, preview_token: previewToken },
+    );
+  },
+
+  // ── Transaction History (UX-05: user-facing endpoint) ──────────
 
   async getTransactionHistory(limit: number = 25, startingAfter?: string): Promise<{
     transactions: TransactionItemSchema[];
@@ -277,7 +297,7 @@ export const billingApi = {
       transactions: TransactionItemSchema[];
       has_more: boolean;
       currency: string;
-    }>("/billing/admin/transactions", { params });
+    }>("/billing/subscriptions/transactions", { params });
   },
 
   // ── Customer Sync (F8) ──

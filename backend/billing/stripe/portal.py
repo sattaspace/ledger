@@ -22,10 +22,22 @@ def create_portal(user, return_url: str = None) -> str:
 
     _return_url = return_url or getattr(settings, "STRIPE_PORTAL_RETURN_URL", "")
 
-    session = _create_portal(
-        customer_id=customer_id,
-        return_url=_return_url,
-    )
+    # UX-04: Append portal=success query param so the frontend can show
+    # feedback toast when the user returns from Stripe Portal.
+    portal_base = _return_url.rstrip("/")
+    separator = "&" if "?" in portal_base else "?"
+    _return_url = f"{portal_base}{separator}portal=success"
+
+    # CMP-08: Use pre-configured portal configuration if available
+    portal_kwargs = {
+        "customer_id": customer_id,
+        "return_url": _return_url,
+    }
+    portal_config = getattr(settings, "STRIPE_PORTAL_CONFIGURATION", None)
+    if portal_config:
+        portal_kwargs["configuration"] = portal_config
+
+    session = _create_portal(**portal_kwargs)
 
     logger.info(f"Portal session {session['id']} for {user.email}")
     return session["url"]

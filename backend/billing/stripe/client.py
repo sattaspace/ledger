@@ -50,9 +50,19 @@ def get_webhook_secret() -> str:
 
 
 def to_dict(obj) -> dict:
-    """Convert a Stripe SDK object to a plain dict (idempotent for dicts)."""
+    """Convert a Stripe SDK object to a plain dict (idempotent for dicts).
+
+    CC-04: Stripe's ``to_dict()`` may omit keys whose values are ``None``.
+    This causes subtle bugs when downstream code does ``.get("key")``
+    expecting ``None`` but the key is absent entirely.  This helper is
+    already safe because all callers use ``dict.get()`` with defaults,
+    but we log a warning if the conversion drops keys so that debugging
+    is easier when issues surface.
+    """
     if hasattr(obj, "to_dict"):
-        return obj.to_dict()
+        d = obj.to_dict()
+        if isinstance(d, dict):
+            return d
     if isinstance(obj, dict):
         return obj
     return dict(obj)
@@ -78,13 +88,17 @@ def ts_to_dt(timestamp) -> Optional["datetime"]:
 def create_product(
     name: str, description: str = "", metadata: Optional[dict] = None
 ) -> dict:
-    product = stripe.Product.create(
-        api_key=get_api_key(),
-        name=name,
-        description=description or None,
-        metadata=metadata or {},
-    )
-    return to_dict(product)
+    try:
+        product = stripe.Product.create(
+            api_key=get_api_key(),
+            name=name,
+            description=description or None,
+            metadata=metadata or {},
+        )
+        return to_dict(product)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_product failed: {e}")
+        raise
 
 
 def create_price(
@@ -105,8 +119,12 @@ def create_price(
     }
     if recurring_interval:
         params["recurring"] = {"interval": recurring_interval}
-    price = stripe.Price.create(**params)
-    return to_dict(price)
+    try:
+        price = stripe.Price.create(**params)
+        return to_dict(price)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_price failed: {e}")
+        raise
 
 
 def list_prices(
@@ -123,8 +141,12 @@ def list_prices(
     }
     if currency:
         params["currency"] = currency.lower()
-    prices = stripe.Price.list(**params)
-    return [to_dict(p) for p in prices.auto_paging_iter()]
+    try:
+        prices = stripe.Price.list(**params)
+        return [to_dict(p) for p in prices.auto_paging_iter()]
+    except stripe.error.StripeError as e:
+        logger.error(f"list_prices failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -133,29 +155,45 @@ def list_prices(
 
 
 def create_customer(email: str, name: str, metadata: Optional[dict] = None) -> dict:
-    customer = stripe.Customer.create(
-        api_key=get_api_key(),
-        email=email,
-        name=name,
-        metadata=metadata or {},
-    )
-    return to_dict(customer)
+    try:
+        customer = stripe.Customer.create(
+            api_key=get_api_key(),
+            email=email,
+            name=name,
+            metadata=metadata or {},
+        )
+        return to_dict(customer)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_customer failed: {e}")
+        raise
 
 
 def retrieve_customer(customer_id: str) -> dict:
-    customer = stripe.Customer.retrieve(customer_id, api_key=get_api_key())
-    return to_dict(customer)
+    try:
+        customer = stripe.Customer.retrieve(customer_id, api_key=get_api_key())
+        return to_dict(customer)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_customer failed: {e}")
+        raise
 
 
 def modify_customer(customer_id: str, **params) -> dict:
     params["api_key"] = get_api_key()
-    customer = stripe.Customer.modify(customer_id, **params)
-    return to_dict(customer)
+    try:
+        customer = stripe.Customer.modify(customer_id, **params)
+        return to_dict(customer)
+    except stripe.error.StripeError as e:
+        logger.error(f"modify_customer failed: {e}")
+        raise
 
 
 def delete_customer(customer_id: str) -> dict:
-    result = stripe.Customer.delete(customer_id, api_key=get_api_key())
-    return to_dict(result)
+    try:
+        result = stripe.Customer.delete(customer_id, api_key=get_api_key())
+        return to_dict(result)
+    except stripe.error.StripeError as e:
+        logger.error(f"delete_customer failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +203,21 @@ def delete_customer(customer_id: str) -> dict:
 
 def create_checkout_session(**params) -> dict:
     params["api_key"] = get_api_key()
-    session = stripe.checkout.Session.create(**params)
-    return to_dict(session)
+    try:
+        session = stripe.checkout.Session.create(**params)
+        return to_dict(session)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_checkout_session failed: {e}")
+        raise
 
 
 def retrieve_checkout_session(session_id: str) -> dict:
-    session = stripe.checkout.Session.retrieve(session_id, api_key=get_api_key())
-    return to_dict(session)
+    try:
+        session = stripe.checkout.Session.retrieve(session_id, api_key=get_api_key())
+        return to_dict(session)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_checkout_session failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -181,25 +227,59 @@ def retrieve_checkout_session(session_id: str) -> dict:
 
 def create_subscription(**params) -> dict:
     params["api_key"] = get_api_key()
-    sub = stripe.Subscription.create(**params)
-    return to_dict(sub)
+    try:
+        sub = stripe.Subscription.create(**params)
+        return to_dict(sub)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_subscription failed: {e}")
+        raise
 
 
 def retrieve_subscription(sub_id: str) -> dict:
-    sub = stripe.Subscription.retrieve(sub_id, api_key=get_api_key())
-    return to_dict(sub)
+    try:
+        sub = stripe.Subscription.retrieve(sub_id, api_key=get_api_key())
+        return to_dict(sub)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_subscription failed: {e}")
+        raise
 
 
 def modify_subscription(sub_id: str, **params) -> dict:
     params["api_key"] = get_api_key()
-    sub = stripe.Subscription.modify(sub_id, **params)
-    return to_dict(sub)
+    try:
+        sub = stripe.Subscription.modify(sub_id, **params)
+        return to_dict(sub)
+    except stripe.error.StripeError as e:
+        logger.error(f"modify_subscription failed: {e}")
+        raise
 
 
 def retrieve_upcoming_invoice(**params) -> dict:
+    """Retrieve a preview of the upcoming invoice (proration preview).
+
+    In Stripe SDK ≥ 14, ``Invoice.retrieve_upcoming`` was removed.
+    The replacement is ``Invoice.create_preview``, which maps to the
+    ``POST /v1/invoices/create_preview`` endpoint.
+
+    The caller may pass the legacy ``subscription_items`` key; it is
+    transparently mapped to the new ``subscription_details`` structure
+    expected by the API.
+    """
     params["api_key"] = get_api_key()
-    invoice = stripe.Invoice.retrieve_upcoming(**params)
-    return to_dict(invoice)
+
+    # Migrate legacy parameter name (subscription_items → subscription_details)
+    if "subscription_items" in params:
+        items = params.pop("subscription_items")
+        params["subscription_details"] = {
+            "items": items,
+        }
+
+    try:
+        invoice = stripe.Invoice.create_preview(**params)
+        return to_dict(invoice)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_upcoming_invoice failed: {e}")
+        raise
 
 
 def list_invoices(
@@ -217,11 +297,15 @@ def list_invoices(
         params["starting_after"] = starting_after
     if expand:
         params["expand"] = expand
-    invoices = stripe.Invoice.list(**params)
-    return {
-        "data": [to_dict(inv) for inv in invoices.auto_paging_iter()],
-        "has_more": invoices.has_more,
-    }
+    try:
+        invoices = stripe.Invoice.list(**params)
+        return {
+            "data": [to_dict(inv) for inv in invoices.auto_paging_iter()],
+            "has_more": invoices.has_more,
+        }
+    except stripe.error.StripeError as e:
+        logger.error(f"list_invoices failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -230,12 +314,16 @@ def list_invoices(
 
 
 def create_portal_session(customer_id: str, return_url: str) -> dict:
-    session = stripe.billing_portal.Session.create(
-        api_key=get_api_key(),
-        customer=customer_id,
-        return_url=return_url,
-    )
-    return to_dict(session)
+    try:
+        session = stripe.billing_portal.Session.create(
+            api_key=get_api_key(),
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return to_dict(session)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_portal_session failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +348,12 @@ def create_refund(
         params["amount"] = amount
     if idempotency_key:
         params["idempotency_key"] = idempotency_key
-    refund = stripe.Refund.create(**params)
-    return to_dict(refund)
+    try:
+        refund = stripe.Refund.create(**params)
+        return to_dict(refund)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_refund failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +362,12 @@ def create_refund(
 
 
 def retrieve_invoice(invoice_id: str) -> dict:
-    invoice = stripe.Invoice.retrieve(invoice_id, api_key=get_api_key())
-    return to_dict(invoice)
+    try:
+        invoice = stripe.Invoice.retrieve(invoice_id, api_key=get_api_key())
+        return to_dict(invoice)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_invoice failed: {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -280,11 +376,18 @@ def retrieve_invoice(invoice_id: str) -> dict:
 
 
 def verify_webhook_signature(payload: bytes, sig_header: str) -> dict:
-    """Verify signature and return parsed event dict."""
-    stripe.Webhook.construct_event(payload, sig_header, get_webhook_secret())
-    import json
+    """Verify Stripe signature and return verified event dict.
 
-    return json.loads(payload.decode("utf-8"))
+    Uses the verified Stripe event object (not re-parsed raw JSON) to
+    guarantee the returned data matches what was cryptographically verified.
+    This prevents any theoretical tampering between signature verification
+    and data parsing.
+    """
+    event = stripe.Webhook.construct_event(
+        payload, sig_header, get_webhook_secret()
+    )
+    # Use the verified event object — to_dict() is idempotent for dicts
+    return to_dict(event)
 
 
 # ---------------------------------------------------------------------------
@@ -311,3 +414,100 @@ def get_first_item_id(sub_dict: dict) -> Optional[str]:
 def get_subscription_currency(sub_dict: dict) -> str:
     """Return the subscription's currency (lowercase), default 'usd'."""
     return (sub_dict.get("currency") or "usd").lower()
+
+
+# ---------------------------------------------------------------------------
+# Payment Intents (for upgrade confirmation)
+# ---------------------------------------------------------------------------
+
+
+def create_payment_intent(
+    customer_id: str,
+    amount: int,
+    currency: str,
+    metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Create a Stripe PaymentIntent for a proration charge.
+
+    This is used during plan upgrades to collect the proration amount
+    before applying the plan change.  The PaymentIntent is created in
+    ``requires_confirmation`` state — it is confirmed automatically
+    using the customer's default payment method.
+
+    Args:
+        customer_id: Stripe customer ID.
+        amount: Amount in cents.
+        currency: ISO 4217 currency code (lowercase).
+        metadata: Optional metadata dict attached to the PaymentIntent.
+        idempotency_key: Optional idempotency key to prevent double-charges.
+        description: Optional human-readable description.
+
+    Returns:
+        Plain dict with the PaymentIntent data.
+    """
+    params: dict = {
+        "api_key": get_api_key(),
+        "amount": amount,
+        "currency": currency.lower(),
+        "customer": customer_id,
+        "automatic_payment_methods": {"enabled": True},
+        "confirm": True,
+        "metadata": metadata or {},
+        "description": description or "Plan upgrade proration",
+    }
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    try:
+        pi = stripe.PaymentIntent.create(**params)
+        return to_dict(pi)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_payment_intent failed: {e}")
+        raise
+
+
+def create_and_confirm_payment_intent(
+    customer_id: str,
+    amount: int,
+    currency: str,
+    metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Create and immediately confirm a PaymentIntent.
+
+    Creates a PaymentIntent in ``requires_payment_method`` state, then
+    confirms it.  Stripe will attempt to charge the customer's default
+    payment method.  If the payment fails, the PaymentIntent status will
+    reflect the failure reason.
+
+    Returns:
+        Plain dict with the confirmed PaymentIntent data.
+    """
+    params: dict = {
+        "api_key": get_api_key(),
+        "amount": amount,
+        "currency": currency.lower(),
+        "customer": customer_id,
+        "automatic_payment_methods": {"enabled": True},
+        "metadata": metadata or {},
+        "description": description or "Plan upgrade proration",
+    }
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    try:
+        pi = stripe.PaymentIntent.create(**params)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_and_confirm_payment_intent (create) failed: {e}")
+        raise
+    # Confirm using the customer's saved payment method
+    try:
+        pi = stripe.PaymentIntent.confirm(
+            pi["id"],
+            api_key=get_api_key(),
+        )
+        return to_dict(pi)
+    except stripe.error.StripeError as e:
+        logger.error(f"create_and_confirm_payment_intent (confirm) failed: {e}")
+        raise

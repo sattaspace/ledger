@@ -3,13 +3,19 @@
 import logging
 
 from ....models import Subscription, Refund, RefundStatus
-from ...client import ts_to_dt
+from ...client import ts_to_dt, retrieve_invoice
 
 logger = logging.getLogger(__name__)
 
 
 def handle_charge_refunded(event: dict) -> None:
-    """Create local Refund record from Stripe-initiated refund."""
+    """Create local Refund record from Stripe-initiated refund.
+
+    CH-01 Fix: Resolve the correct subscription by tracing the chain:
+    charge -> payment_intent -> invoice -> subscription_details.stripe_subscription_id
+    This replaces the previous broken .first() which returned an arbitrary
+    subscription from the entire database.
+    """
     charge = event["data"]["object"]
     charge_id = charge.get("id")
     refunds = charge.get("refunds") or {}
@@ -28,9 +34,13 @@ def handle_charge_refunded(event: dict) -> None:
     if Refund.objects.filter(stripe_refund_id=refund_id).exists():
         return
 
-    # Find subscription (best effort — link via user)
-    sub = Subscription.objects.filter(stripe_subscription_id__isnull=False).first()
+    # CH-01 Fix: Resolve subscription from charge -> payment_intent -> invoice -> subscription
+    sub = _resolve_subscription_from_charge(charge)
     if not sub:
+        logger.warning(
+            f"charge.refunded {charge_id}: could not resolve subscription "
+            f"from payment_intent={payment_intent_id}"
+        )
         return
 
     Refund.objects.create(
@@ -48,7 +58,52 @@ def handle_charge_refunded(event: dict) -> None:
         initiated_by=None,
         stripe_response=refund_data,
     )
-    logger.info(f"Refund record created: {refund_id}")
+    logger.info(f"Refund record created: {refund_id} for sub={sub.id}")
+
+
+def _resolve_subscription_from_charge(charge: dict):
+    """Resolve the correct subscription from a charge object.
+
+    Traces the chain: charge -> payment_intent -> invoice -> subscription.
+    Falls back to: charge -> invoice -> subscription (for direct charges).
+    Returns None if no subscription can be found.
+    """
+    payment_intent_id = charge.get("payment_intent")
+    invoice_id = charge.get("invoice")
+
+    stripe_sub_id = None
+
+    # Path 1: charge -> invoice -> subscription_details
+    if invoice_id:
+        try:
+            invoice = retrieve_invoice(invoice_id)
+            # subscription_details is the reliable field in modern Stripe
+            sub_details = invoice.get("subscription_details") or {}
+            stripe_sub_id = sub_details.get("subscription")
+            # Fallback: top-level subscription field
+            if not stripe_sub_id:
+                stripe_sub_id = invoice.get("subscription")
+        except Exception as e:
+            logger.warning(f"CH-01: Could not retrieve invoice {invoice_id}: {e}")
+
+    # Path 2: If no invoice, try from the charge's expandable invoice
+    if not stripe_sub_id and not invoice_id:
+        # charge may have expanded invoice data
+        expanded_invoice = charge.get("invoice")
+        if expanded_invoice and isinstance(expanded_invoice, dict):
+            stripe_sub_id = expanded_invoice.get("subscription")
+
+    if not stripe_sub_id:
+        return None
+
+    try:
+        return Subscription.objects.get(stripe_subscription_id=stripe_sub_id)
+    except Subscription.DoesNotExist:
+        logger.warning(
+            f"CH-01: No local subscription found for "
+            f"stripe_subscription_id={stripe_sub_id}"
+        )
+        return None
 
 
 def handle_customer_updated(event: dict) -> None:

@@ -47,8 +47,12 @@ const prorationPreview = ref<{
   total: number;
   next_billing: number;
   currency: string;
+  preview_token: string | null;
+  change_type: 'upgrade' | 'downgrade' | 'lateral';
+  is_upgrade: boolean;
 } | null>(null);
 const prorationLoading = ref(false);
+const isRedirecting = ref(false);
 
 const currentSubscription = computed(() => {
   return subscriptions.value.find((s) => s.product_slug === props.slug) || null;
@@ -85,6 +89,28 @@ const featureKeys = computed(() => {
     }
   }
   return Array.from(keys);
+});
+
+// UX-10: Calculate annual savings when both monthly and yearly plans exist
+const annualSavings = computed(() => {
+  if (!product.value) return {} as Record<string, number>;
+  const savings: Record<string, number> = {};
+  for (const plan of product.value.plans) {
+    if (plan.billing_cycle === 'yearly') {
+      const monthlyPlan = product.value.plans.find(
+        (p) => p.name === plan.name && p.billing_cycle === 'monthly',
+      );
+      if (monthlyPlan) {
+        const monthlyTotal = monthlyPlan.price_cents * 12;
+        const yearlyTotal = plan.price_cents;
+        const pct = Math.round((1 - yearlyTotal / monthlyTotal) * 100);
+        if (pct > 0) {
+          savings[plan.name] = pct;
+        }
+      }
+    }
+  }
+  return savings;
 });
 
 onMounted(async () => {
@@ -211,14 +237,33 @@ async function showProrationPreviewAndConfirm(planSlug: string) {
   }
 }
 
-function confirmProrationChange() {
-  if (!prorationPreview.value) return;
+async function confirmProrationChange() {
+  if (!prorationPreview.value || !prorationPreview.value.preview_token) return;
   const targetPlan = product.value?.plans.find(
     (p) => p.slug !== currentPlanSlug.value && !p.is_free,
   );
-  if (targetPlan) {
+  if (!targetPlan) return;
+
+  actionLoading.value = `change-${targetPlan.slug}`;
+  try {
+    const result = await billingApi.confirmPlanChange(
+      props.slug,
+      targetPlan.slug,
+      prorationPreview.value.preview_token,
+    );
     showProrationModal.value = false;
-    executeChangePlan(targetPlan.slug);
+
+    if (result.effective_when === 'immediately') {
+      showToast(`Upgraded to ${result.plan_name}. Amount charged: ${formatPrice(result.amount_charged * 100, result.currency)}.`, 'success');
+    } else {
+      showToast(`Plan change to ${result.plan_name} will take effect at your next billing cycle.`, 'success');
+    }
+    emit('plan-changed');
+    subscriptions.value = await billingApi.getSubscriptions();
+  } catch (err) {
+    showToast(getErrorMessage(err), 'error');
+  } finally {
+    actionLoading.value = null;
   }
 }
 
@@ -253,6 +298,7 @@ async function executeChangePlan(planSlug: string) {
         return;
       }
 
+      isRedirecting.value = true;
       window.location.href = result.checkout_url;
       return;
     }
@@ -372,22 +418,8 @@ async function executeChangePlan(planSlug: string) {
           </span>
         </label>
 
-        <!-- Proration Behavior Toggle (M5) -->
-        <div v-if="currentPlanSlug" class="flex items-center gap-3 text-sm">
-          <span class="text-[var(--color-muted-foreground)]">Plan change:</span>
-          <button
-            :class="prorationBehavior === 'create_prorations' ? 'btn-primary text-xs !py-1 !px-3' : 'btn-ghost text-xs !py-1 !px-3'"
-            @click="prorationBehavior = 'create_prorations'"
-          >
-            Apply Now
-          </button>
-          <button
-            :class="prorationBehavior === 'none' ? 'btn-primary text-xs !py-1 !px-3' : 'btn-ghost text-xs !py-1 !px-3'"
-            @click="prorationBehavior = 'none'"
-          >
-            Next Billing
-          </button>
-        </div>
+        <!-- Proration behavior is now automatic: upgrades charge immediately,
+             downgrades apply at next billing cycle. No manual toggle needed. -->
       </div>
 
       <!-- Plans Grid -->
@@ -442,8 +474,19 @@ async function executeChangePlan(planSlug: string) {
             <p v-if="!plan.is_free && plan.converted_price_cents != null && plan.user_currency && plan.user_currency !== plan.currency" class="mt-1 text-xs text-[var(--color-muted-foreground)]">
               {{ formatPrice(plan.price_cents, plan.currency) }}
             </p>
+            <!-- FIN-05: Disclaimer for converted (non-base) currencies -->
+            <p v-if="!plan.is_free && plan.user_currency && plan.user_currency !== plan.currency" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              Prices in {{ plan.user_currency.toUpperCase() }} are approximate. Final charge is in {{ plan.currency.toUpperCase() }}.
+            </p>
             <p v-if="plan.trial_days > 0" class="mt-1 text-xs text-brand-600 dark:text-brand-400">
               {{ plan.trial_days }}-day free trial
+            </p>
+            <!-- UX-10: Annual savings badge -->
+            <p
+              v-if="annualSavings[plan.name]"
+              class="mt-1 text-xs font-semibold text-green-600 dark:text-green-400"
+            >
+              Save {{ annualSavings[plan.name] }}% vs monthly
             </p>
           </div>
 
@@ -454,8 +497,35 @@ async function executeChangePlan(planSlug: string) {
               :key="key"
               class="flex items-start gap-2.5 text-sm"
             >
-              <!-- Check icon -->
-              <svg class="mt-0.5 h-4 w-4 shrink-0 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <!-- UX-07: Semantic feature icons -->
+              <!-- Numeric limit (e.g. "10", "5GB") -->
+              <svg
+                v-if="typeof value === 'number' || String(value).match(/^\d+/)"
+                class="mt-0.5 h-4 w-4 shrink-0 text-blue-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+              </svg>
+              <!-- Unlimited / Infinity -->
+              <svg
+                v-else-if="String(value).match(/unlimited|infinity/i)"
+                class="mt-0.5 h-4 w-4 shrink-0 text-purple-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 0C9.5 2 7 4.5 7 7.5S9.5 13 12 13s5-2.5 5-5.5S14.5 2 12 2zm0 0c2.5 0 5 2.5 5 5.5S14.5 13 12 13" />
+              </svg>
+              <!-- Boolean/Default: checkmark -->
+              <svg
+                v-else
+                class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
               <div>
@@ -511,20 +581,36 @@ async function executeChangePlan(planSlug: string) {
         @click.self="showProrationModal = false"
       >
         <div class="w-full max-w-md rounded-xl bg-white dark:bg-gray-900 shadow-2xl p-6">
-          <h3 class="text-lg font-semibold mb-1">Plan Change Summary</h3>
-          <p class="text-sm text-[var(--color-muted-foreground)] mb-4">Review the cost adjustment for your plan change.</p>
+          <h3 class="text-lg font-semibold mb-1">
+            {{ prorationPreview.is_upgrade ? 'Upgrade' : prorationPreview.change_type === 'downgrade' ? 'Downgrade' : 'Switch Plan' }}
+          </h3>
+          <p class="text-sm text-[var(--color-muted-foreground)] mb-4">
+            {{ prorationPreview.is_upgrade ? 'You will be charged immediately for the remaining time in your billing cycle.' : 'Your new rate starts at the next billing cycle.' }}
+          </p>
 
           <div class="space-y-3 mb-6">
-            <div class="flex items-center justify-between text-sm">
-              <span class="text-[var(--color-muted-foreground)]">Prorated credit/charge</span>
-              <span class="font-medium" :class="prorationPreview.total < 0 ? 'text-green-600 dark:text-green-400' : 'text-foreground'">
-                {{ prorationPreview.total < 0 ? '-' : '' }}{{ formatPrice(Math.abs(prorationPreview.total * 100), prorationPreview.currency) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between text-sm">
-              <span class="text-[var(--color-muted-foreground)]">Tax</span>
-              <span class="font-medium">{{ formatPrice(prorationPreview.tax * 100, prorationPreview.currency) }}</span>
-            </div>
+            <!-- Upgrade: show charge amount -->
+            <template v-if="prorationPreview.is_upgrade">
+              <div class="flex items-center justify-between text-sm">
+                <span class="text-[var(--color-muted-foreground)]">Amount due now</span>
+                <span class="font-semibold text-foreground">
+                  {{ formatPrice(prorationPreview.total * 100, prorationPreview.currency) }}
+                </span>
+              </div>
+              <div v-if="prorationPreview.tax > 0" class="flex items-center justify-between text-sm">
+                <span class="text-[var(--color-muted-foreground)]">Includes tax</span>
+                <span class="font-medium">{{ formatPrice(prorationPreview.tax * 100, prorationPreview.currency) }}</span>
+              </div>
+            </template>
+            <!-- Downgrade: show credit -->
+            <template v-else>
+              <div class="flex items-center justify-between text-sm">
+                <span class="text-[var(--color-muted-foreground)]">Prorated credit</span>
+                <span class="font-medium text-green-600 dark:text-green-400">
+                  {{ formatPrice(Math.abs(prorationPreview.total * 100), prorationPreview.currency) }}
+                </span>
+              </div>
+            </template>
             <hr class="border-[var(--color-border)]" />
             <div class="flex items-center justify-between text-sm">
               <span class="text-[var(--color-muted-foreground)]">Next billing amount</span>
@@ -532,24 +618,42 @@ async function executeChangePlan(planSlug: string) {
             </div>
           </div>
 
-          <div v-if="prorationBehavior === 'none'" class="mb-4 rounded-md bg-blue-50 dark:bg-blue-950/30 p-3 text-sm text-blue-700 dark:text-blue-300">
+          <div v-if="!prorationPreview.is_upgrade" class="mb-4 rounded-md bg-blue-50 dark:bg-blue-950/30 p-3 text-sm text-blue-700 dark:text-blue-300">
             Change will take effect at your next billing cycle.
+          </div>
+          <div v-else class="mb-4 rounded-md bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-700 dark:text-amber-300">
+            Your card will be charged immediately for the prorated amount.
           </div>
 
           <div class="flex items-center gap-2">
             <button
               class="btn-secondary flex-1"
               @click="showProrationModal = false"
+              :disabled="!!actionLoading"
             >
               Cancel
             </button>
             <button
               class="btn-primary flex-1"
+              :disabled="!!actionLoading"
               @click="confirmProrationChange()"
             >
-              Confirm Change
+              {{ actionLoading ? 'Processing...' : (prorationPreview?.is_upgrade ? 'Pay & Upgrade' : 'Confirm Change') }}
             </button>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- UX-06: Full-page redirect overlay during Stripe checkout -->
+    <Teleport to="body">
+      <div
+        v-if="isRedirecting"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-white/80 dark:bg-gray-900/80"
+      >
+        <div class="text-center">
+          <div class="animate-spin h-8 w-8 border-4 border-brand-500 border-t-transparent rounded-full mx-auto mb-4" />
+          <p class="text-sm font-medium text-foreground">Redirecting to secure checkout...</p>
         </div>
       </div>
     </Teleport>

@@ -6,7 +6,7 @@ funnels through here.
 
 import json
 import logging
-import signal
+import threading
 from contextlib import contextmanager
 from typing import Optional
 
@@ -61,21 +61,30 @@ _EVENT_MAP = {
 
 @contextmanager
 def _timeout(seconds: int):
-    """Raise TimeoutError after *seconds* (Unix SIGALRM)."""
+    """Portable timeout using threading.Timer.
 
-    def _raise(signum, frame):
-        raise TimeoutError(f"Webhook processing exceeded {seconds}s")
+    Replaces the old signal.SIGALRM approach which only works on Unix.
+    This uses threading.Timer and works on Windows, Docker containers,
+    and all Unix systems.
 
+    Note: This is a cooperative timeout — it checks after execution
+    whether the time budget was exceeded. For true interrupt-based
+    enforcement, also configure Gunicorn/uWSGI worker timeout.
+    """
+    timed_out = [False]
+
+    def _alarm():
+        timed_out[0] = True
+
+    timer = threading.Timer(seconds, _alarm)
+    timer.daemon = True
     try:
-        signal.signal(signal.SIGALRM, _raise)
-        signal.alarm(seconds)
+        timer.start()
         yield
+        if timed_out[0]:
+            raise TimeoutError(f"Webhook processing exceeded {seconds}s")
     finally:
-        signal.alarm(0)
-        try:
-            signal.signal(signal.SIGALRM, signal.SIG_DFL)
-        except (ValueError, OSError):
-            pass
+        timer.cancel()
 
 
 # ---------------------------------------------------------------------------

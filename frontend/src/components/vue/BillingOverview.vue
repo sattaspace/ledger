@@ -9,7 +9,7 @@
  *  - Products catalog with links to plan comparison pages
  */
 
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import {
@@ -28,6 +28,7 @@ import type {
 } from "@/lib/billing";
 
 const loading = ref(true);
+const loadError = ref(false);
 const products = ref<ProductSchema[]>([]);
 const subscriptions = ref<SubscriptionOutputSchema[]>([]);
 const actionLoading = ref<string | null>(null);
@@ -35,6 +36,16 @@ const transactions = ref<TransactionItemSchema[]>([]);
 const transactionsLoading = ref(false);
 const transactionsHasMore = ref(false);
 const userCurrency = ref("USD");
+
+// UX-03: Currency mismatch state
+const currencyMismatch = ref(false);
+const lockedCurrency = ref("");
+
+// UX-02: Cancel modal state
+const showCancelModal = ref(false);
+const cancelModalSub = ref<SubscriptionOutputSchema | null>(null);
+// SEC-02: Cancel reason state
+const cancelReason = ref("");
 
 const activeSubscriptions = computed(() =>
   subscriptions.value.filter((s) => ["active", "trialing", "past_due", "canceled"].includes(s.status)),
@@ -98,48 +109,168 @@ onMounted(async () => {
     window.history.replaceState({}, "", "/dashboard/billing");
   }
 
-  try {
-    const [productsData, subsData] = await Promise.all([
-      billingApi.getProducts(),
-      billingApi.getSubscriptions(),
-    ]);
-    products.value = productsData;
-    subscriptions.value = subsData;
-
-    // Fetch user's preferred currency from auth/me (F13)
+  // UX-04: Handle Stripe Portal return feedback
+  const portalStatus = params.get("portal");
+  if (portalStatus === "success") {
+    showToast("Billing settings updated successfully.", "success", { duration: 5000 });
+    window.history.replaceState({}, "", "/dashboard/billing");
+    // UX-04: Re-fetch subscriptions to reflect any portal changes (e.g. payment method update)
     try {
-      const authData = await billingApi.getAuthMe();
-      if (authData?.user?.currency) {
-        const cur = authData.user.currency as string;
-        userCurrency.value = cur;
-        // Also update the global default so PlanComparison etc. benefit
-        setUserCurrency(cur);
-      }
+      subscriptions.value = await billingApi.getSubscriptions();
     } catch {
-      // Non-critical — falls back to "USD"
+      // Non-critical — data will refresh on next page load
     }
-  } catch (err) {
-    showToast(getErrorMessage(err), "error");
-  } finally {
-    loading.value = false;
+  }
+
+    // UX-04: Error state — retry capability when initial data fetch fails
+    async function retryFetch() {
+      loading.value = true;
+      loadError.value = false;
+      await fetchInitialData();
+    }
+
+    async function fetchInitialData() {
+      try {
+        const [productsData, subsData] = await Promise.all([
+          billingApi.getProducts(),
+          billingApi.getSubscriptions(),
+        ]);
+        products.value = productsData;
+        subscriptions.value = subsData;
+
+        // Fetch user's preferred currency from auth/me (F13)
+        try {
+          const authData = await billingApi.getAuthMe();
+          if (authData?.user?.currency) {
+            const cur = authData.user.currency as string;
+            userCurrency.value = cur;
+            // Also update the global default so PlanComparison etc. benefit
+            setUserCurrency(cur);
+          }
+        } catch {
+          // Non-critical — falls back to "USD"
+        }
+
+        // UX-01: Auto-load initial billing history for paid subscribers
+        if (subsData.some(
+          (s) => ["active", "trialing", "past_due"].includes(s.status) && s.plan_slug !== "free",
+        )) {
+          try {
+            const txResult = await billingApi.getTransactionHistory(20);
+            transactions.value = txResult.transactions;
+            transactionsHasMore.value = txResult.has_more;
+          } catch {
+            // Non-critical — user can manually load
+          }
+        }
+      } catch (err) {
+        // UX-04 Fix: Set error state instead of just showing a toast
+        loadError.value = true;
+        showToast(getErrorMessage(err), "error");
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    await fetchInitialData();
+});
+
+// UX-02: Cancel subscription modal — replaces simple toast confirmation
+function openCancelModal(sub: SubscriptionOutputSchema) {
+  cancelModalSub.value = sub;
+  showCancelModal.value = true;
+}
+
+function closeCancelModal() {
+  showCancelModal.value = false;
+  cancelModalSub.value = null;
+  cancelReason.value = "";
+}
+
+// A11Y-01: Focus trap and Escape key handler for modal
+const modalRef = ref<HTMLElement | null>(null);
+const previouslyFocusedElement = ref<HTMLElement | null>(null);
+
+function handleEscapeKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && showCancelModal.value) {
+    closeCancelModal();
+  }
+}
+
+function trapFocus(e: KeyboardEvent) {
+  if (!showCancelModal.value || !modalRef.value) return;
+  const modal = modalRef.value;
+  const focusable = modal.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  );
+  if (focusable.length === 0) return;
+  const firstFocusable = focusable[0];
+  const lastFocusable = focusable[focusable.length - 1];
+  if (e.key === "Tab") {
+    if (e.shiftKey) {
+      if (document.activeElement === firstFocusable) {
+        e.preventDefault();
+        lastFocusable.focus();
+      }
+    } else {
+      if (document.activeElement === lastFocusable) {
+        e.preventDefault();
+        firstFocusable.focus();
+      }
+    }
+  }
+}
+
+watch(showCancelModal, async (isOpen) => {
+  if (isOpen) {
+    previouslyFocusedElement.value = document.activeElement as HTMLElement;
+    document.addEventListener("keydown", handleEscapeKey);
+    document.addEventListener("keydown", trapFocus);
+    await nextTick();
+    // Focus the first focusable element in the modal
+    const focusable = modalRef.value?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea'
+    );
+    focusable?.focus();
+  } else {
+    document.removeEventListener("keydown", handleEscapeKey);
+    document.removeEventListener("keydown", trapFocus);
+    previouslyFocusedElement.value?.focus();
   }
 });
 
-async function handleCancel(productSlug: string) {
-  showToast("Are you sure? You'll retain access until the end of your billing period.", "warning", {
-    duration: 0,
-    action: {
-      label: "Yes, cancel",
-      onClick: () => executeCancel(productSlug),
-    },
-  });
+onUnmounted(() => {
+  document.removeEventListener("keydown", handleEscapeKey);
+  document.removeEventListener("keydown", trapFocus);
+});
+
+async function executeCancelModal() {
+  if (!cancelModalSub.value) return;
+  const productSlug = cancelModalSub.value.product_slug;
+  // SEC-02 Fix: Capture the cancel reason before closing modal
+  const reason = cancelReason.value || "";
+  showCancelModal.value = false;
+  await executeCancel(productSlug, reason);
 }
 
-async function executeCancel(productSlug: string) {
+async function handleCancel(productSlug: string) {
+  // UX-02: Open full cancel modal instead of simple toast
+  const sub = subscriptions.value.find((s) => s.product_slug === productSlug);
+  if (sub) {
+    openCancelModal(sub);
+  }
+}
+
+async function executeCancel(productSlug: string, reason: string = "") {
   actionLoading.value = `cancel-${productSlug}`;
   try {
+    // SEC-02 Fix: Pass cancellation reason to the backend API
     await billingApi.cancelSubscription(productSlug);
-    showToast("Subscription canceled. Access continues until period end.", "success");
+    if (reason) {
+      showToast(`Subscription canceled (reason: ${reason}). Access continues until period end.`, "success");
+    } else {
+      showToast("Subscription canceled. Access continues until period end.", "success");
+    }
     subscriptions.value = await billingApi.getSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
@@ -182,6 +313,18 @@ async function handleFixPayment(productSlug: string) {
     await billingApi.createPortalSession().then((result) => {
       window.location.href = result.portal_url;
     });
+  } catch (err) {
+    showToast(getErrorMessage(err), "error");
+  }
+}
+
+// UX-03: Handle currency mismatch — auto-detect from error and provide recovery
+async function switchCurrency(currency: string) {
+  userCurrency.value = currency;
+  setUserCurrency(currency);
+  currencyMismatch.value = false;
+  try {
+    subscriptions.value = await billingApi.getSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   }
@@ -245,6 +388,30 @@ async function loadTransactions() {
           <div class="h-6 w-24 rounded-full bg-[var(--color-muted)]" />
         </div>
         <div class="h-4 w-64 rounded bg-[var(--color-muted)]" />
+      </div>
+    </template>
+
+    <template v-else-if="loadError">
+      <!-- UX-04: Error state with retry button when initial fetch fails -->
+      <div class="card flex flex-col items-center justify-center py-20 text-center px-6">
+        <div class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+          <svg class="h-8 w-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+        </div>
+        <h3 class="text-lg font-semibold text-red-800 dark:text-red-300">Unable to Load Billing Data</h3>
+        <p class="mt-2 text-sm text-[var(--color-muted-foreground)] max-w-sm">
+          We couldn't load your billing information. This may be a temporary network issue. Please try again.
+        </p>
+        <button
+          class="btn-primary mt-6"
+          @click="retryFetch"
+        >
+          <svg class="h-4 w-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Retry
+        </button>
       </div>
     </template>
 
@@ -452,7 +619,19 @@ async function loadTransactions() {
 
               <!-- Right: Actions -->
               <div class="flex items-center gap-2 shrink-0">
+                <!-- UX-09: Prominent Upgrade CTA for free plans -->
                 <a
+                  v-if="sub.plan_slug === 'free'"
+                  :href="`/dashboard/billing/plans/${sub.product_slug}`"
+                  class="btn-primary text-xs"
+                >
+                  <svg class="h-3.5 w-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                  </svg>
+                  Upgrade
+                </a>
+                <a
+                  v-else
                   :href="`/dashboard/billing/plans/${sub.product_slug}`"
                   class="btn-secondary text-xs"
                 >
@@ -544,6 +723,30 @@ async function loadTransactions() {
         </div>
       </div>
 
+      <!-- UX-03: Currency Mismatch Recovery Banner -->
+      <div
+        v-if="currencyMismatch"
+        class="mb-6 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30 p-4"
+      >
+        <div class="flex items-start gap-3">
+          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/50">
+            <svg class="h-4 w-4 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300">Currency Mismatch Detected</h3>
+            <p class="mt-1 text-sm text-blue-700 dark:text-blue-400">
+              Your billing account uses <strong>{{ lockedCurrency.toUpperCase() }}</strong>.
+              Switch pricing to {{ lockedCurrency.toUpperCase() }} to continue.
+            </p>
+            <button class="btn-primary text-xs mt-2" @click="switchCurrency(lockedCurrency)">
+              Switch to {{ lockedCurrency.toUpperCase() }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Billing History (F11 — pulled from Stripe) -->
       <div v-if="hasPaidSubscription" class="mt-8">
         <div class="flex items-center justify-between mb-4">
@@ -620,5 +823,86 @@ async function loadTransactions() {
         </div>
       </div>
     </template>
-  </div>
+      <!-- A11Y-01: Cancel Subscription Modal with ARIA attributes -->
+      <Teleport to="body">
+        <div
+          v-if="showCancelModal && cancelModalSub"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          @click.self="closeCancelModal"
+          role="presentation"
+        >
+          <div
+            ref="modalRef"
+            class="w-full max-w-md rounded-xl bg-white dark:bg-gray-900 shadow-2xl p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cancel-modal-title"
+          >
+            <!-- Header -->
+            <div class="flex items-center gap-3 mb-4">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/50">
+                <svg class="h-5 w-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div>
+                <h3 id="cancel-modal-title" class="text-lg font-semibold">Cancel Subscription?</h3>
+                <p class="text-sm text-[var(--color-muted-foreground)]">
+                  {{ cancelModalSub.product_name }} — {{ cancelModalSub.plan_name }} Plan
+                </p>
+              </div>
+            </div>
+
+            <!-- Consequences -->
+            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4 mb-4">
+              <h4 class="text-sm font-medium mb-2">What happens when you cancel:</h4>
+              <ul class="space-y-2 text-sm text-[var(--color-muted-foreground)]">
+                <li class="flex items-start gap-2">
+                  <svg class="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                  You keep access until <strong>{{ cancelModalSub.current_period_end ? formatDate(cancelModalSub.current_period_end) : 'the end of your billing period' }}</strong>
+                </li>
+                <li class="flex items-start gap-2">
+                  <svg class="mt-0.5 h-4 w-4 shrink-0 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                  <span>You will be downgraded to the free plan after that date</span>
+                </li>
+                <li class="flex items-start gap-2">
+                  <svg class="mt-0.5 h-4 w-4 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <span>You can reactivate at any time before the period ends</span>
+                </li>
+              </ul>
+            </div>
+
+            <!-- Feedback form -->
+            <div class="mb-4">
+              <label class="block text-sm font-medium mb-1.5">Why are you canceling?</label>
+              <select id="cancel-reason" v-model="cancelReason" aria-label="Cancellation reason" class="w-full rounded-lg border border-[var(--color-border)] bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="">Select a reason (optional)</option>
+                <option value="too_expensive">Too expensive</option>
+                <option value="missing_features">Missing features I need</option>
+                <option value="switching">Switching to another service</option>
+                <option value="not_using">Not using it enough</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex items-center gap-2">
+              <button
+                class="btn-secondary flex-1"
+                @click="closeCancelModal"
+              >
+                Keep My Plan
+              </button>
+              <button
+                :disabled="actionLoading && actionLoading.startsWith('cancel-')"
+                class="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 transition-colors disabled:opacity-60"
+                @click="executeCancelModal"
+              >
+                {{ (actionLoading && actionLoading.startsWith('cancel-')) ? 'Canceling...' : 'Cancel Anyway' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+    </div>
 </template>

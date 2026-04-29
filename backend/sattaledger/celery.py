@@ -38,6 +38,17 @@ app.conf.beat_schedule = {
         "task": "billing.tasks.update_exchange_rates",
         "schedule": crontab(minute=0, hour=3),  # 3:00 AM UTC daily
     },
+    # CRIT-02: Revenue recognition — daily at 2:30 AM UTC
+    "recognize-revenue-daily": {
+        "task": "billing.tasks.recognize_revenue",
+        "schedule": crontab(minute=30, hour=2),  # 2:30 AM UTC daily
+    },
+    # CRIT-02: Cleanup stale webhook events — weekly Sunday at 5 AM UTC
+    "cleanup-stale-webhook-events-weekly": {
+        "task": "billing.tasks.cleanup_stale_webhook_events",
+        "schedule": crontab(minute=0, hour=5, day_of_week="sunday"),  # Weekly Sunday
+        "args": (90,),  # retention_days
+    },
     # Cleanup expired auth tokens every day at 3 AM UTC
     # "cleanup-expired-tokens": {
     #     "task": "common.tasks.cleanup_expired_tokens",
