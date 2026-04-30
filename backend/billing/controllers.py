@@ -359,6 +359,41 @@ class BillingProtectedController:
             for sub in subscriptions
         ]
 
+    # =========================================================================
+    # Transaction History (UX-05: user-facing endpoint)
+    # MUST be registered BEFORE /subscriptions/{product_slug} to avoid
+    # "transactions" being captured as a product_slug by the path param.
+    # =========================================================================
+
+    @http_get(
+        "/subscriptions/transactions",
+        response=dict,
+        summary="Get my billing history",
+        description=(
+            "Get the authenticated user's own transaction/invoice history "
+            "from Stripe. Returns paginated transactions with charge details, "
+            "card brand, tax, and period info."
+        ),
+    )
+    async def get_my_transactions(
+        self,
+        request: HttpRequest,
+        limit: int = 25,
+        starting_after: Optional[str] = None,
+    ):
+        """Get the authenticated user's own transaction history from Stripe."""
+        try:
+            result = await sync_to_async(get_transaction_history)(
+                user=request.user,
+                limit=min(limit, 100),
+                starting_after=starting_after,
+            )
+        except ValueError as e:
+            raise BadRequestException(str(e))
+        except stripe.error.StripeError as e:
+            raise handle_stripe_error(e, context="get_transactions")
+        return result
+
     @http_get(
         "/subscriptions/{product_slug}",
         response={200: SubscriptionDetailSchema, 404: dict},
@@ -1074,38 +1109,6 @@ class BillingProtectedController:
             "currency": currency_lower.upper(),
         }
 
-    # =========================================================================
-    # Transaction History (UX-05: user-facing endpoint)
-    # =========================================================================
-
-    @http_get(
-        "/subscriptions/transactions",
-        response=dict,
-        summary="Get my billing history",
-        description=(
-            "Get the authenticated user's own transaction/invoice history "
-            "from Stripe. Returns paginated transactions with charge details, "
-            "card brand, tax, and period info."
-        ),
-    )
-    async def get_my_transactions(
-        self,
-        request: HttpRequest,
-        limit: int = 25,
-        starting_after: Optional[str] = None,
-    ):
-        """Get the authenticated user's own transaction history from Stripe."""
-        try:
-            result = await sync_to_async(get_transaction_history)(
-                user=request.user,
-                limit=min(limit, 100),
-                starting_after=starting_after,
-            )
-        except ValueError as e:
-            raise BadRequestException(str(e))
-        except stripe.error.StripeError as e:
-            raise handle_stripe_error(e, context="get_transactions")
-        return result
     @http_get(
         "/export-data",
         response=dict,

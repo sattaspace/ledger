@@ -3,7 +3,7 @@
 // Handles POST /auth/email-change/confirm via auth.ts
 
 import { ref, reactive, onMounted } from "vue";
-import { confirmEmailChange, getErrorMessage } from "@/lib/auth";
+import { confirmEmailChangeOTP, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 
 const props = defineProps<{
@@ -33,7 +33,7 @@ async function handleSubmit() {
   loading.value = true;
 
   try {
-    await confirmEmailChange(form.token.trim());
+    await confirmEmailChangeOTP(form.token.trim());
     done.value = true;
     showToast("Email address updated successfully!", "success");
   } catch (err: unknown) {
