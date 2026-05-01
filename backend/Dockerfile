@@ -43,4 +43,4 @@ EXPOSE 8090
 CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "4", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--access-logfile", "-", "--error-logfile", "-", \
-     "config.asgi:application"]
+     "sattaledger.asgi:application"]
