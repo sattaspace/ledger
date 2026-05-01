@@ -59,9 +59,9 @@ CORS_ALLOWED_ORIGINS = env.list(
     "SB_CORS_ALLOWED_ORIGINS",
     default=[
         "http://localhost:4321",
-        "http://localhost:8086",
+        "http://localhost:8090",
         "http://127.0.0.1:4321",
-        "http://127.0.0.1:8086",
+        "http://127.0.0.1:8090",
     ],
 )
 
@@ -69,9 +69,9 @@ CSRF_TRUSTED_ORIGINS = env.list(
     "SB_CSRF_TRUSTED_ORIGINS",
     default=[
         "http://localhost:4321",
-        "http://localhost:8086",
+        "http://localhost:8090",
         "http://127.0.0.1:4321",
-        "http://127.0.0.1:8086",
+        "http://127.0.0.1:8090",
     ],
 )
 

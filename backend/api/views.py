@@ -65,7 +65,7 @@ api = NinjaExtraAPI(
             "license": {"name": "Private"},
         },
         "servers": [
-            {"url": "http://localhost:8000", "description": "Local Development"}
+            {"url": "http://localhost:8090", "description": "Local Development"}
         ],
     },
 )
