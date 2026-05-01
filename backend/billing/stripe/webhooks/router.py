@@ -14,6 +14,7 @@ from django.db import transaction
 
 from ...models import WebhookEventLog
 from ..client import verify_webhook_signature
+from .utils import sanitize_for_json
 from .handlers.checkout import handle_checkout_completed
 from .handlers.subscription import (
     handle_subscription_created,
@@ -98,13 +99,21 @@ def verify_and_parse(payload: bytes, sig_header: str) -> dict:
 
 
 def record_event(event: dict) -> Optional[WebhookEventLog]:
-    """Record event for audit.  Returns None on DB error."""
+    """Record event for audit.  Returns None on DB error.
+
+    The event payload is sanitized before storage to convert any
+    ``Decimal`` values (from Stripe's SDK) to ``float``, preventing
+    JSON serialization errors in the JSONField.
+    """
     event_id = event["id"]
     event_type = event["type"]
     try:
         log_entry, created = WebhookEventLog.objects.get_or_create(
             event_id=event_id,
-            defaults={"event_type": event_type, "payload": event},
+            defaults={
+                "event_type": event_type,
+                "payload": sanitize_for_json(event),
+            },
         )
         if created:
             logger.info(f"Recorded webhook: {event_type} ({event_id})")
@@ -122,29 +131,36 @@ def process_event(event: dict) -> None:
     event_id = event["id"]
 
     if event_type not in HANDLED_EVENTS:
-        logger.info(f"Ignoring unhandled event: {event_type}")
+        logger.warning("[WEBHOOK-DIAG] Unhandled event type: %s (%s)", event_type, event_id)
         return
 
     handler = _EVENT_MAP.get(event_type)
     if not handler:
-        logger.warning(f"No handler for: {event_type}")
+        logger.warning("[WEBHOOK-DIAG] No handler registered for: %s (%s)", event_type, event_id)
         return
 
+    logger.warning(
+        "[WEBHOOK-DIAG] Dispatching to %s: %s (%s)",
+        handler.__name__, event_type, event_id,
+    )
     try:
         with _timeout(TIMEOUT_SECONDS):
             with transaction.atomic():
                 handler(event)
         WebhookEventLog.objects.filter(event_id=event_id).update(processed=True)
-        logger.info(f"Processed webhook: {event_type} ({event_id})")
+        logger.warning(
+            "[WEBHOOK-DIAG] Handler %s SUCCEEDED for %s (%s)",
+            handler.__name__, event_type, event_id,
+        )
     except TimeoutError as e:
         msg = str(e)
-        logger.error(f"Timeout: {event_type} ({event_id}): {msg}")
+        logger.error("Timeout: %s (%s): %s", event_type, event_id, msg)
         WebhookEventLog.objects.filter(event_id=event_id).update(
             processed=False, error_message=msg[:500]
         )
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
-        logger.error(f"Failed: {event_type} ({event_id}): {msg}", exc_info=True)
+        logger.error("Failed: %s (%s): %s", event_type, event_id, msg, exc_info=True)
         WebhookEventLog.objects.filter(event_id=event_id).update(
             processed=False, error_message=msg[:500]
         )

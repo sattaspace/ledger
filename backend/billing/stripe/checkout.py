@@ -25,8 +25,85 @@ from .client import (
 logger = logging.getLogger(__name__)
 
 
-def build_success_url(product_slug: str, plan_slug: str) -> str:
-    """Build the success redirect URL with Stripe's {CHECKOUT_SESSION_ID}."""
+def validate_return_url(return_url: str) -> bool:
+    """Validate a return_url against registered ServiceDomain entries.
+
+    Prevents open redirect attacks by ensuring the return URL's origin
+    matches an active ServiceDomain domain. The URL must use http/https
+    scheme and its netloc (host+port) must exactly match a registered
+    ServiceDomain.domain.
+
+    Also allows the app's own domain (STRIPE_APP_DOMAIN) for internal
+    redirects when no sister domain is involved.
+
+    Args:
+        return_url: The URL to validate.
+
+    Returns:
+        True if the URL is safe to redirect to, False otherwise.
+    """
+    if not return_url:
+        return False
+
+    try:
+        parsed = urlparse(return_url)
+    except Exception:
+        return False
+
+    # Only allow http/https schemes
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    origin = parsed.netloc  # e.g. "finance.sattabase.tld" or "finance.sattabase.tld:3000"
+
+    # Allow the app's own domain
+    app_domain = getattr(settings, "STRIPE_APP_DOMAIN", "")
+    if app_domain:
+        app_parsed = urlparse(app_domain)
+        if origin == app_parsed.netloc:
+            return True
+
+    # Check against registered service domains
+    from django.core.cache import cache
+
+    cache_key = "sattabase_allowed_cors_origins"
+    allowed = cache.get(cache_key)
+    if allowed is None:
+        from ..models import ServiceDomain
+        allowed = set(
+            ServiceDomain.objects.filter(is_active=True).values_list("domain", flat=True)
+        )
+        cache.set(cache_key, allowed, timeout=300)
+
+    # Exact match against registered domains (including port)
+    if origin in allowed:
+        return True
+
+    # Also check origin without port (e.g. "finance.sattabase.tld" matches
+    # even if return_url is "finance.sattabase.tld:3000")
+    origin_without_port = origin.split(":")[0]
+    if origin_without_port in allowed:
+        return True
+
+    # Check if allowed domains have ports
+    for domain in allowed:
+        if domain.split(":")[0] == origin_without_port:
+            return True
+
+    return False
+
+
+def build_success_url(product_slug: str, plan_slug: str, return_url: str = None) -> str:
+    """Build the success redirect URL with Stripe's {CHECKOUT_SESSION_ID}.
+
+    Args:
+        product_slug: Product slug for the checkout.
+        plan_slug: Plan slug for the checkout.
+        return_url: Optional sister-domain URL to redirect back to after
+            checkout. If provided and valid, it is stored as a query param.
+            The frontend will read it and perform the actual redirect after
+            confirming the checkout.
+    """
     base = settings.STRIPE_SUCCESS_URL.rstrip("/")
     parsed = urlparse(base)
     params = {
@@ -35,13 +112,24 @@ def build_success_url(product_slug: str, plan_slug: str) -> str:
     }
     params["product"] = product_slug
     params["plan"] = plan_slug
+
+    # Append validated return_url so the frontend can redirect back
+    if return_url and validate_return_url(return_url):
+        params["return_url"] = return_url
+
     url = urlunparse(parsed._replace(query=urlencode(params)))
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}session_id={{CHECKOUT_SESSION_ID}}"
 
 
-def build_cancel_url(product_slug: str) -> str:
-    """Build the cancel redirect URL."""
+def build_cancel_url(product_slug: str, return_url: str = None) -> str:
+    """Build the cancel redirect URL.
+
+    Args:
+        product_slug: Product slug for the checkout.
+        return_url: Optional sister-domain URL to redirect back to after
+            cancel. Validated before inclusion.
+    """
     base = settings.STRIPE_CANCEL_URL.rstrip("/")
     parsed = urlparse(base)
     params = {
@@ -49,6 +137,10 @@ def build_cancel_url(product_slug: str) -> str:
         for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
     }
     params["product"] = product_slug
+
+    if return_url and validate_return_url(return_url):
+        params["return_url"] = return_url
+
     return urlunparse(parsed._replace(query=urlencode(params)))
 
 
@@ -58,6 +150,7 @@ def create_checkout(
     product: Product,
     currency: str,
     trial_days: Optional[int] = None,
+    return_url: Optional[str] = None,
 ) -> str:
     """Create a Stripe Checkout session.  Returns the checkout URL.
 
@@ -107,8 +200,8 @@ def create_checkout(
         mode="subscription",
         customer=customer_id,
         line_items=[{"price": price_id, "quantity": 1}],
-        success_url=build_success_url(product.slug, plan.slug),
-        cancel_url=build_cancel_url(product.slug),
+        success_url=build_success_url(product.slug, plan.slug, return_url=return_url),
+        cancel_url=build_cancel_url(product.slug, return_url=return_url),
         automatic_tax={"enabled": tax_enabled},
         customer_update={"address": "auto"},
         consent_collection={"terms_of_service": "required"},

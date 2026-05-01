@@ -54,6 +54,9 @@ const prorationPreview = ref<{
 const prorationLoading = ref(false);
 const isRedirecting = ref(false);
 
+// 6.5: Return URL for sister-domain billing redirect
+const returnUrl = ref<string | null>(null);
+
 const currentSubscription = computed(() => {
   return subscriptions.value.find((s) => s.product_slug === props.slug) || null;
 });
@@ -115,6 +118,17 @@ const annualSavings = computed(() => {
 
 onMounted(async () => {
   if (!requireAuth()) return;
+
+  // 6.5: Capture return_url from query param or sessionStorage
+  const params = new URLSearchParams(window.location.search);
+  const incomingReturnUrl = params.get("return_url");
+  if (incomingReturnUrl) {
+    returnUrl.value = incomingReturnUrl;
+    sessionStorage.setItem("billing_return_url", incomingReturnUrl);
+  } else {
+    returnUrl.value = sessionStorage.getItem("billing_return_url");
+  }
+
   try {
     // Fetch user's preferred currency directly from /users/me to avoid
     // race condition with Navbar's async populateUserInfo(). Also update
@@ -287,6 +301,7 @@ async function executeChangePlan(planSlug: string) {
         planSlug,
         undefined,
         true, // tos_accepted
+        returnUrl.value || undefined, // 6.5: pass return_url for sister-domain redirect
       );
 
       // If the backend reactivated an existing cancelled subscription,

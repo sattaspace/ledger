@@ -20,14 +20,24 @@ def handle_subscription_created(event: dict) -> None:
 
 def handle_subscription_updated(event: dict) -> None:
     """Sync subscription state from Stripe (plan change, cancel, period update)."""
-    stripe_sub_id = event["data"]["object"].get("id")
+    obj = event["data"]["object"]
+    stripe_sub_id = obj.get("id")
+    cancel_at_end = obj.get("cancel_at_period_end", False)
+    cancel_at_raw = obj.get("cancel_at")
+    stripe_status = obj.get("status", "")
+    logger.warning(
+        "[WEBHOOK-DIAG] handle_subscription_updated: sub=%s, "
+        "status=%s, cancel_at_period_end=%s, cancel_at=%s, schedule=%s",
+        stripe_sub_id, stripe_status, cancel_at_end, cancel_at_raw,
+        obj.get("schedule"),
+    )
     if not stripe_sub_id:
         return
 
     try:
         sync_subscription_from_stripe(stripe_sub_id)
     except Subscription.DoesNotExist:
-        logger.warning(f"subscription.updated: no local sub for {stripe_sub_id}")
+        logger.warning("subscription.updated: no local sub for %s", stripe_sub_id)
 
 
 def handle_subscription_deleted(event: dict) -> None:

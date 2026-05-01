@@ -586,6 +586,15 @@ class Subscription(TimeStampedModel):
             "dunning_retry Celery task."
         ),
     )
+    cancel_at_period_end = models.BooleanField(
+        _("Cancel at Period End"),
+        default=False,
+        help_text=_(
+            "True when the subscription is scheduled to cancel at the end "
+            "of the current billing period. Set by Stripe when the user cancels "
+            "from the portal or via the cancel API."
+        ),
+    )
     past_due_at = models.DateTimeField(
         _("Past Due At"),
         null=True,
@@ -639,19 +648,30 @@ class Subscription(TimeStampedModel):
         entries = self.plan.access_entries.all()
         return {entry.key: entry.typed_value for entry in entries}
 
-    def cancel_at_period_end(self):
+    def schedule_cancellation(self):
         """Mark subscription as canceled but keep active until period end."""
         from django.utils import timezone
 
         self.status = SubscriptionStatus.CANCELED
         self.canceled_at = timezone.now()
-        self.save(update_fields=["status", "canceled_at", "updated_at"])
+        self.cancel_at_period_end = True
+        self.save(update_fields=["status", "canceled_at", "cancel_at_period_end", "updated_at"])
 
     def reactivate(self):
-        """Reactivate a previously canceled subscription."""
-        self.status = SubscriptionStatus.ACTIVE
+        """Reactivate a previously canceled subscription.
+
+        If the subscription is still within its trial period, restores
+        TRIALING status.  Otherwise restores ACTIVE.
+        """
+        from django.utils import timezone
+
+        if self.trial_end and self.trial_end > timezone.now():
+            self.status = SubscriptionStatus.TRIALING
+        else:
+            self.status = SubscriptionStatus.ACTIVE
         self.canceled_at = None
-        self.save(update_fields=["status", "canceled_at", "updated_at"])
+        self.cancel_at_period_end = False
+        self.save(update_fields=["status", "canceled_at", "cancel_at_period_end", "updated_at"])
 
     def change_plan(self, new_plan):
         """Switch to a different plan within the same product."""
@@ -1279,4 +1299,96 @@ class RevenueRecognitionEntry(TimeStampedModel):
             f"{self.subscription} — {self.amount_cents / 100:.2f} "
             f"{self.currency} on {self.recognized_date}"
         )
+
+
+# =============================================================================
+# ServiceCredential (SDK — Service-to-Service Auth)
+# =============================================================================
+
+
+class ServiceCredential(TimeStampedModel):
+    """API credential for service-to-service authentication.
+
+    Each service domain (sister concern) receives one API key credential
+    that identifies it when making API calls to Sattabase. The raw API key
+    is shown ONCE at creation time and never stored — only its SHA-256
+    hash is persisted.
+
+    When a service calls Sattabase with the ``X-API-Key`` header, the
+    middleware hashes the key, looks up the ``ServiceCredential`` record,
+    and attaches the credential (and its associated ``ServiceDomain``)
+    to the request object for downstream use.
+
+    Security:
+    - Raw key is NEVER stored in the database
+    - ``api_key_hash`` uses SHA-256 with per-key randomness (from token_urlsafe)
+    - Keys can be revoked instantly via ``is_active`` flag
+    - Key rotation creates a new credential and deactivates the old one
+    """
+
+    name = models.CharField(
+        _("Credential Name"),
+        max_length=100,
+        help_text=_("Human-readable name, e.g. 'Finance Backend Production'"),
+    )
+    service_domain = models.OneToOneField(
+        ServiceDomain,
+        on_delete=models.CASCADE,
+        related_name="credential",
+        db_index=True,
+        verbose_name=_("Service Domain"),
+        help_text=_("One credential per service domain"),
+    )
+    api_key_hash = models.CharField(
+        _("API Key Hash"),
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text=_("SHA-256 hash of the API key (raw key never stored)"),
+    )
+    api_key_prefix = models.CharField(
+        _("API Key Prefix"),
+        max_length=12,
+        db_index=True,
+        help_text=_("First 12 chars for identification (e.g. 'sb_live_a1Bc')"),
+    )
+    permissions = models.JSONField(
+        _("Permissions"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Scoped permissions: {'auth': True, 'billing_read': True}. "
+            "Controls which API surface this credential can access."
+        ),
+    )
+    is_active = models.BooleanField(
+        _("Active"),
+        default=True,
+        db_index=True,
+        help_text=_("Can be revoked instantly by setting to False"),
+    )
+    last_used_at = models.DateTimeField(
+        _("Last Used At"),
+        null=True,
+        blank=True,
+        help_text=_("When this credential was last used (audit)"),
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_("Created By"),
+        help_text=_("Admin who created this credential"),
+    )
+
+    class Meta:
+        db_table = "billing_service_credential"
+        verbose_name = _("Service Credential")
+        verbose_name_plural = _("Service Credentials")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        status = "active" if self.is_active else "revoked"
+        return f"{self.name} ({self.api_key_prefix}...) [{status}]"
 

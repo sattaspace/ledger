@@ -31,6 +31,8 @@ ALLOWED_HOSTS = env.list("SF_ALLOWED_HOSTS")
 
 INSTALLED_APPS = [
     "daphne",  # Must be at the top
+    "admin_interface",
+    "colorfield",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -48,8 +50,9 @@ INSTALLED_APPS = [
     "api",
     "common",
     "billing",
+    "cache_cleaner",
 ]
-
+SILENCED_SYSTEM_CHECKS = ["security.W019"]
 CORS_ALLOW_ALL_ORIGINS = env("CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
@@ -77,6 +80,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "common.cors_middleware.service_domain_cors_middleware",
     "django.middleware.common.CommonMiddleware",
     "ninja.compatibility.files.fix_request_files_middleware",  # <-- ADD THIS LINE
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -277,6 +281,17 @@ RATE_LIMIT_SENSITIVE_WINDOW = env(
 EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS = env(
     "EMAIL_CHANGE_TOKEN_EXPIRY", default=3600, cast=int
 )  # 1 hour
+
+# --- API Key Authentication ---
+SF_API_KEY_ENFORCED = env("SF_API_KEY_ENFORCED", default=False, cast=bool)
+
+# --- SDK Rate Limiting (server-to-server traffic via X-API-Key) ---
+# Higher limits than per-IP because SDK traffic comes from trusted
+# sister domain backends that proxy many users through one IP.
+RATE_LIMIT_SDK_ATTEMPTS = env("RATE_LIMIT_SDK_ATTEMPTS", default=1000, cast=int)
+RATE_LIMIT_SDK_WINDOW = env("RATE_LIMIT_SDK_WINDOW", default=3600, cast=int)  # 1 hour
+
+
 
 
 FORMATTERS = (

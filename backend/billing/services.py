@@ -299,7 +299,7 @@ class BillingService:
     @staticmethod
     def cancel_subscription(subscription: Subscription) -> None:
         """Cancel a subscription at the end of the current billing period."""
-        subscription.cancel_at_period_end()
+        subscription.schedule_cancellation()
         logger.info(
             f"Subscription canceled: user={subscription.user.email}, "
             f"plan={subscription.plan.slug}"
@@ -312,11 +312,55 @@ class BillingService:
 
     @staticmethod
     def _do_cancel(subscription: Subscription) -> None:
-        subscription.cancel_at_period_end()
+        subscription.schedule_cancellation()
         logger.info(
             f"Subscription canceled: user={subscription.user.email}, "
             f"plan={subscription.plan.slug}"
         )
+
+    @staticmethod
+    def sync_user_subscriptions_from_stripe(user) -> list[Subscription]:
+        """Force-sync all user subscriptions from Stripe.
+
+        Iterates all user subscriptions that have a stripe_subscription_id
+        and calls sync_subscription_from_stripe() for each.  This ensures
+        the local DB reflects the latest Stripe state after portal visits
+        or external changes.
+
+        Returns the refreshed list of subscriptions.
+        """
+        from .stripe.webhooks.sync import sync_subscription_from_stripe
+
+        subs = Subscription.objects.filter(
+            user=user,
+            stripe_subscription_id__isnull=False,
+        ).exclude(stripe_subscription_id="")
+
+        synced = []
+        for sub in subs:
+            try:
+                updated = sync_subscription_from_stripe(
+                    sub.stripe_subscription_id, subscription=sub
+                )
+                synced.append(updated)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to sync sub {sub.id} "
+                    f"(stripe={sub.stripe_subscription_id}): {e}"
+                )
+
+        # Also return subscriptions without Stripe IDs (free plans)
+        all_subs = list(
+            Subscription.objects.filter(user=user)
+            .select_related("plan", "product")
+            .order_by("-created_at")
+        )
+        return all_subs
+
+    @staticmethod
+    async def async_sync_user_subscriptions_from_stripe(user) -> list:
+        """Async version of sync_user_subscriptions_from_stripe."""
+        return await sync_to_async(BillingService.sync_user_subscriptions_from_stripe)(user)
 
     @staticmethod
     def reactivate_subscription(subscription: Subscription) -> None:
@@ -416,6 +460,7 @@ class BillingService:
             "id": subscription.id,
             "user_id": subscription.user_id,
             "status": subscription.status,
+            "cancel_at_period_end": subscription.cancel_at_period_end,
             "current_period_start": subscription.current_period_start,
             "current_period_end": subscription.current_period_end,
             "trial_start": subscription.trial_start,
@@ -460,6 +505,21 @@ class BillingService:
     # =========================================================================
 
     @staticmethod
+    def _get_account_status(user) -> str:
+        """Return the user's account status string.
+
+        Returns ``"deleted"``, ``"inactive"``, or ``"active"``.
+        This is included in the auth/me response so SDK consumers can
+        perform defensive status checks even when the 401 error code
+        is not reliably propagated through their HTTP client.
+        """
+        if getattr(user, "is_deleted", False):
+            return "deleted"
+        if not getattr(user, "is_active", True):
+            return "inactive"
+        return "active"
+
+    @staticmethod
     def get_auth_me_data(user, domain: Optional[str] = None) -> dict:
         """Build the enhanced auth/me response.
 
@@ -476,11 +536,14 @@ class BillingService:
             domain: The X-Service-Domain header value.
 
         Returns:
-            Dict with 'user', 'subscription', and 'access' keys.
+            Dict with 'user', 'account_status', 'subscription', and 'access' keys.
         """
+        account_status = BillingService._get_account_status(user)
+
         if not domain:
             return {
                 "user": user,
+                "account_status": account_status,
                 "subscription": None,
                 "access": {},
             }
@@ -492,16 +555,31 @@ class BillingService:
             )
         except ServiceDomain.DoesNotExist:
             logger.warning(f"Unknown service domain in auth/me: {domain}")
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         product = service_domain.product
         if not product.is_active:
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         # Get or create subscription
         subscription = BillingService.get_or_create_free_subscription(user, product)
         if not subscription:
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         # Build access map
         prefetch_related_objects(
@@ -515,10 +593,12 @@ class BillingService:
 
         return {
             "user": user,
+            "account_status": account_status,
             "subscription": {
                 "plan_name": subscription.plan.name,
                 "plan_slug": subscription.plan.slug,
                 "status": subscription.status,
+                "cancel_at_period_end": subscription.cancel_at_period_end,
                 "current_period_end": subscription.current_period_end,
                 "trial_end": subscription.trial_end,
                 "is_active": subscription.is_effectively_active(),
@@ -529,9 +609,12 @@ class BillingService:
     @staticmethod
     async def aget_auth_me_data(user, domain: Optional[str] = None) -> dict:
         """Async version of get_auth_me_data()."""
+        account_status = BillingService._get_account_status(user)
+
         if not domain:
             return {
                 "user": user,
+                "account_status": account_status,
                 "subscription": None,
                 "access": {},
             }
@@ -543,18 +626,33 @@ class BillingService:
             )
         except ServiceDomain.DoesNotExist:
             logger.warning(f"Unknown service domain in auth/me: {domain}")
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         product = service_domain.product
         if not product.is_active:
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         # Get or create subscription
         subscription = await BillingService.aget_or_create_free_subscription(
             user, product
         )
         if not subscription:
-            return {"user": user, "subscription": None, "access": {}}
+            return {
+                "user": user,
+                "account_status": account_status,
+                "subscription": None,
+                "access": {},
+            }
 
         # Build access map
         await sync_to_async(prefetch_related_objects)(
@@ -568,10 +666,12 @@ class BillingService:
 
         return {
             "user": user,
+            "account_status": account_status,
             "subscription": {
                 "plan_name": subscription.plan.name,
                 "plan_slug": subscription.plan.slug,
                 "status": subscription.status,
+                "cancel_at_period_end": subscription.cancel_at_period_end,
                 "current_period_end": subscription.current_period_end,
                 "trial_end": subscription.trial_end,
                 "is_active": subscription.is_effectively_active(),

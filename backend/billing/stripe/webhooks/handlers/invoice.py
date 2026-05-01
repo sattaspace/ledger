@@ -4,6 +4,7 @@ import logging
 
 from ....models import Subscription, SubscriptionStatus, Invoice, InvoiceStatus, RevenueRecognitionEntry
 from ...client import ts_to_dt, get_api_key
+from ..utils import sanitize_for_json
 import stripe
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def _upsert_invoice(sub: Subscription, invoice: dict) -> Invoice:
         "attempt_count": invoice.get("attempt_count", 1),
         "next_payment_attempt": ts_to_dt(invoice.get("next_payment_attempt")),
         "stripe_subscription_id": invoice.get("subscription", ""),
-        "stripe_response": invoice,
+        "stripe_response": sanitize_for_json(invoice),
     }
 
     inv, created = Invoice.objects.update_or_create(

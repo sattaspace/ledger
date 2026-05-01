@@ -23,6 +23,7 @@ from .models import (
     BillingCycle,
     SubscriptionStatus,
     AccessValueType,
+    ServiceCredential,
 )
 
 
@@ -508,7 +509,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         count = 0
         for sub in queryset:
             if sub.status == SubscriptionStatus.ACTIVE:
-                sub.cancel_at_period_end()
+                sub.schedule_cancellation()
                 count += 1
         self.message_user(request, _(f"Canceled {count} subscription(s)."))
 
@@ -796,3 +797,97 @@ class ExchangeRateAdmin(admin.ModelAdmin):
             )
         except Exception as e:
             self.message_user(request, f"Refresh failed: {e}", level="error")
+
+
+# =============================================================================
+# ServiceCredential Admin
+# =============================================================================
+
+
+@admin.register(ServiceCredential)
+class ServiceCredentialAdmin(admin.ModelAdmin):
+    """Admin configuration for service credentials.
+
+    Credentials are created via the API endpoint (POST /admin/api-keys),
+    not through the Django admin. The admin provides a read-only list view
+    for auditing and a revoke action. The raw API key is never shown here
+    since it is only returned at creation time.
+    """
+
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "name",
+                    "service_domain",
+                    "api_key_prefix",
+                    "is_active",
+                )
+            },
+        ),
+        (
+            _("Details"),
+            {
+                "fields": (
+                    "permissions",
+                    "last_used_at",
+                    "created_by",
+                ),
+                "classes": ("wide",),
+            },
+        ),
+    )
+
+    list_display = (
+        "name",
+        "domain_display",
+        "api_key_prefix",
+        "is_active",
+        "last_used_at",
+        "created_by_email",
+        "created_at",
+    )
+    list_filter = ("is_active", "service_domain", "created_at")
+    search_fields = ("name", "api_key_prefix", "service_domain__domain")
+    ordering = ("-created_at",)
+    readonly_fields = (
+        "name",
+        "service_domain",
+        "api_key_hash",
+        "api_key_prefix",
+        "permissions",
+        "last_used_at",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
+
+    @admin.display(description=_("Domain"))
+    def domain_display(self, obj):
+        """Show service domain."""
+        return obj.service_domain.domain
+
+    @admin.display(description=_("Created By"))
+    def created_by_email(self, obj):
+        """Show creator email."""
+        if obj.created_by:
+            url = reverse("admin:users_user_change", args=[obj.created_by.id])
+            return format_html('<a href="{}">{}</a>', url, obj.created_by.email)
+        return "—"
+
+    def has_add_permission(self, request):
+        """Prevent manual creation — use the API endpoint instead."""
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        """Prevent editing — use revoke/rotate via API endpoint."""
+        return False
+
+    actions = ["revoke_credentials"]
+
+    @admin.action(description=_("Revoke selected credential(s)"))
+    def revoke_credentials(self, request, queryset):
+        """Revoke selected credentials by setting is_active=False."""
+        count = queryset.update(is_active=False)
+        self.message_user(request, _(f"Revoked {count} credential(s)."))

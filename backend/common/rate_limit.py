@@ -38,6 +38,31 @@ def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> bool:
     return True
 
 
+def _get_sdk_rate_limit_params(request):
+    """Return (bucket_id, max_attempts, window_seconds) for SDK traffic.
+
+    When a valid ``X-API-Key`` is present, the request originates from a
+    sister domain backend (server-to-server).  All users proxied through
+    the same backend share a single IP, so per-IP rate limiting would
+    exhaust the bucket for every user on that domain.  Instead we use
+    the API key prefix as the rate limit bucket, with higher limits
+    appropriate for trusted server-to-server traffic.
+
+    Returns:
+        ``(bucket_id, max_attempts, window_seconds)`` when a valid
+        ``service_credential`` is attached to the request, otherwise
+        ``None``.
+    """
+    credential = getattr(request, "service_credential", None)
+    if credential is None:
+        return None
+
+    prefix = credential.api_key_prefix
+    max_attempts = getattr(settings, "RATE_LIMIT_SDK_ATTEMPTS", 1000)
+    window_seconds = getattr(settings, "RATE_LIMIT_SDK_WINDOW", 3600)
+    return (f"sdk:{prefix}", max_attempts, window_seconds)
+
+
 def check_rate_limit_or_raise(
     request,
     key_prefix: str,
@@ -47,9 +72,14 @@ def check_rate_limit_or_raise(
     """Check rate limit and raise ``TooManyRequestsException`` if exceeded.
 
     Builds the rate limit key from the request's user ID (if authenticated)
-    and client IP. This is a convenience wrapper that combines
-    ``get_client_ip``, ``check_rate_limit``, and exception raising into
-    a single call.
+    and either the client IP (direct/browser traffic) or the API key prefix
+    (SDK/server-to-server traffic).
+
+    When a valid ``X-API-Key`` is present on the request, the rate limit
+    bucket switches from per-IP to per-service-domain (via API key prefix).
+    This prevents a sister domain backend that proxies many users through
+    a single IP from exhausting the shared bucket.  SDK traffic also uses
+    higher default limits (``RATE_LIMIT_SDK_ATTEMPTS`` / ``RATE_LIMIT_SDK_WINDOW``).
 
     Args:
         request: Django HttpRequest. If ``request.user`` is authenticated,
@@ -57,9 +87,11 @@ def check_rate_limit_or_raise(
         key_prefix: Action-specific prefix (e.g. ``"cancel_sub"``,
             ``"checkout"``, ``"change_plan"``).
         max_attempts: Max requests in the window. Falls back to
-            ``settings.RATE_LIMIT_BILLING_ATTEMPTS`` (default: 5).
+            ``settings.RATE_LIMIT_SENSITIVE_ATTEMPTS`` (default: 5).
+            Ignored for SDK traffic (uses ``RATE_LIMIT_SDK_ATTEMPTS``).
         window_seconds: Window length in seconds. Falls back to
-            ``settings.RATE_LIMIT_BILLING_WINDOW`` (default: 3600).
+            ``settings.RATE_LIMIT_SENSITIVE_WINDOW`` (default: 3600).
+            Ignored for SDK traffic (uses ``RATE_LIMIT_SDK_WINDOW``).
 
     Raises:
         TooManyRequestsException: If the rate limit is exceeded.
@@ -79,11 +111,22 @@ def check_rate_limit_or_raise(
         and str(request.user.id)
         or "anon"
     )
-    client_ip = get_client_ip(request)
-    rl_key = f"{key_prefix}:{user_id}:{client_ip}"
 
-    _max = max_attempts or getattr(settings, "RATE_LIMIT_BILLING_ATTEMPTS", 5)
-    _window = window_seconds or getattr(settings, "RATE_LIMIT_BILLING_WINDOW", 3600)
+    # SDK traffic: use API key prefix as bucket with higher limits
+    sdk_params = _get_sdk_rate_limit_params(request)
+    if sdk_params:
+        bucket_id, _max, _window = sdk_params
+        rl_key = f"{key_prefix}:{user_id}:{bucket_id}"
+    else:
+        # Direct/browser traffic: use client IP as bucket
+        client_ip = get_client_ip(request)
+        rl_key = f"{key_prefix}:{user_id}:{client_ip}"
+        _max = max_attempts or getattr(
+            settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 5
+        )
+        _window = window_seconds or getattr(
+            settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600
+        )
 
     if not check_rate_limit(rl_key, _max, _window):
         raise TooManyRequestsException()

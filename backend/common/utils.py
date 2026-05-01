@@ -93,3 +93,29 @@ async def get_paginated_data_async(
     }
 
     return results, meta
+
+
+def generate_api_key() -> tuple:
+    """Generate a new service API key.
+
+    Returns a tuple of (raw_key, prefix, sha256_hash).
+
+    - ``raw_key`` is shown ONCE to the admin at creation time. It cannot
+      be recovered after that.
+    - ``prefix`` (first 12 chars) is stored for identification in logs
+      and admin displays.
+    - ``hash`` is the SHA-256 digest stored in the database for lookup.
+
+    Format: ``sb_live_<43 chars from token_urlsafe(32)>``
+    Total length: 50 characters.
+
+    Example::
+        sb_live_a1BcD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2yZ3A4bC5dE6fG7hI
+    """
+    import hashlib
+    import secrets
+
+    raw = f"sb_live_{secrets.token_urlsafe(32)}"
+    prefix = raw[:12]
+    key_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return raw, prefix, key_hash

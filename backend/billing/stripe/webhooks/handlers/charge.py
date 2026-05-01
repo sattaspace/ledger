@@ -4,6 +4,7 @@ import logging
 
 from ....models import Subscription, Refund, RefundStatus
 from ...client import ts_to_dt, retrieve_invoice
+from ..utils import sanitize_for_json
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def handle_charge_refunded(event: dict) -> None:
             else RefundStatus.PENDING
         ),
         initiated_by=None,
-        stripe_response=refund_data,
+        stripe_response=sanitize_for_json(refund_data),
     )
     logger.info(f"Refund record created: {refund_id} for sub={sub.id}")
 

@@ -72,6 +72,7 @@ export interface SubscriptionInfoSchema {
   plan_name: string;
   plan_slug: string;
   status: string;
+  cancel_at_period_end: boolean;
   current_period_end: string | null;
   trial_end: string | null;
   is_active: boolean;
@@ -81,6 +82,7 @@ export interface SubscriptionOutputSchema {
   id: number;
   user_id: number;
   status: string;
+  cancel_at_period_end: boolean;
   currency?: string | null;
   current_period_start: string | null;
   current_period_end: string | null;
@@ -111,6 +113,7 @@ export interface CheckoutInputSchema {
   plan_slug: string;
   billing_cycle?: string;
   tos_accepted?: boolean;
+  return_url?: string;
 }
 
 // ─── Refund Schemas ───────────────────────────────────────────────────────
@@ -215,6 +218,10 @@ export const billingApi = {
     return apiClient.get<SubscriptionOutputSchema[]>("/billing/subscriptions");
   },
 
+  async syncSubscriptions(): Promise<SubscriptionOutputSchema[]> {
+    return apiClient.post<SubscriptionOutputSchema[]>("/billing/subscriptions/sync");
+  },
+
   async getSubscriptionDetail(productSlug: string): Promise<SubscriptionDetailSchema> {
     return apiClient.get<SubscriptionDetailSchema>(`/billing/subscriptions/${productSlug}`);
   },
@@ -235,8 +242,8 @@ export const billingApi = {
     );
   },
 
-  async createCheckout(productSlug: string, planSlug: string, billingCycle?: string, tosAccepted?: boolean): Promise<{ checkout_url: string | null; reactivated: boolean }> {
-    const body: CheckoutInputSchema = { plan_slug: planSlug, billing_cycle: billingCycle, tos_accepted: tosAccepted };
+  async createCheckout(productSlug: string, planSlug: string, billingCycle?: string, tosAccepted?: boolean, returnUrl?: string): Promise<{ checkout_url: string | null; reactivated: boolean }> {
+    const body: CheckoutInputSchema = { plan_slug: planSlug, billing_cycle: billingCycle, tos_accepted: tosAccepted, return_url: returnUrl };
     return apiClient.post<{ checkout_url: string | null; reactivated: boolean }>(
       `/billing/subscriptions/${productSlug}/checkout`,
       body,
@@ -253,8 +260,9 @@ export const billingApi = {
     return apiClient.post(`/billing/checkout/confirm`, { session_id: sessionId });
   },
 
-  async createPortalSession(): Promise<{ portal_url: string }> {
-    return apiClient.post<{ portal_url: string }>("/billing/portal");
+  async createPortalSession(returnUrl?: string): Promise<{ portal_url: string }> {
+    const params = returnUrl ? `?return_url=${encodeURIComponent(returnUrl)}` : "";
+    return apiClient.post<{ portal_url: string }>(`/billing/portal${params}`);
   },
 
   // ── Refund (F1: admin-only endpoint) ──

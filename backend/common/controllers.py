@@ -1,0 +1,301 @@
+"""Common controllers for cross-app functionality.
+
+Currently provides the admin API key management controller for the
+ServiceCredential model. This lives in the ``common`` app because it
+is used across multiple apps (billing auth/me, future SDK auth endpoints).
+"""
+
+import logging
+from typing import Optional
+
+from ninja_extra import api_controller, http_get, http_post, http_patch
+from ninja import Query
+from django.http import HttpRequest
+from asgiref.sync import sync_to_async
+
+from common.exceptions import (
+    BadRequestException,
+    NotFoundException,
+    ConflictException,
+)
+from common.permissions import IsAuthenticated, IsAdmin
+from common.schemas import (
+    MessageResponse,
+    PaginatedResponse,
+    PaginationInput,
+    ApiKeyCreateInputSchema,
+    ApiKeyOutputSchema,
+    ApiKeyCreateOutputSchema,
+    ApiKeyRotateOutputSchema,
+)
+
+# Import JWTAuth from users controllers — single auth class shared across apps
+from users.controllers import JWTAuth
+
+from billing.models import ServiceCredential, ServiceDomain
+from common.utils import generate_api_key
+
+logger = logging.getLogger(__name__)
+
+
+@api_controller(
+    "/admin/api-keys",
+    tags=["Admin — API Keys"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated, IsAdmin],
+)
+class AdminApiKeyController:
+    """Admin endpoints for managing service API keys (credentials).
+
+    All endpoints require staff authentication. API keys are the primary
+    mechanism for service-to-service authentication — sister concern
+    backends use them to identify themselves when calling Sattabase.
+
+    The raw API key is returned ONLY at creation time and during rotation.
+    It is never stored in the database (only its SHA-256 hash is stored).
+    """
+
+    @http_get(
+        "/",
+        response=PaginatedResponse[ApiKeyOutputSchema],
+        summary="List API keys",
+        description=(
+            "List all service credentials with pagination. "
+            "Filterable by service_domain_id and is_active."
+        ),
+    )
+    async def list_api_keys(
+        self,
+        request: HttpRequest,
+        service_domain_id: Optional[int] = None,
+        is_active: Optional[bool] = None,
+        pagination: PaginationInput = Query(...),
+    ):
+        """List all service credentials."""
+        qs = ServiceCredential.objects.select_related(
+            "service_domain", "created_by"
+        ).order_by("-created_at")
+
+        if service_domain_id is not None:
+            qs = qs.filter(service_domain_id=service_domain_id)
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active)
+
+        from common.utils import get_paginated_data_async
+        results, meta = await get_paginated_data_async(
+            qs, pagination.page, pagination.page_size
+        )
+
+        items = [
+            {
+                "id": cred.id,
+                "name": cred.name,
+                "api_key_prefix": cred.api_key_prefix,
+                "service_domain_id": cred.service_domain_id,
+                "service_domain": cred.service_domain.domain,
+                "permissions": cred.permissions,
+                "is_active": cred.is_active,
+                "last_used_at": cred.last_used_at,
+                "created_at": cred.created_at,
+                "created_by": (
+                    cred.created_by.email if cred.created_by else None
+                ),
+            }
+            for cred in results
+        ]
+        return {"meta": meta, "results": items}
+
+    @http_post(
+        "/",
+        response={201: ApiKeyCreateOutputSchema, 400: dict, 409: dict},
+        summary="Create API key",
+        description=(
+            "Create a new API key for a service domain. "
+            "The raw key is returned ONLY in this response. "
+            "Each domain can have only one active credential."
+        ),
+    )
+    async def create_api_key(
+        self, request: HttpRequest, payload: ApiKeyCreateInputSchema
+    ):
+        """Create a new API key credential.
+
+        Flow:
+        1. Validate the service_domain_id exists and is active.
+        2. Check no active credential already exists for this domain.
+        3. Generate the key (raw, prefix, hash).
+        4. Create the ServiceCredential record.
+        5. Return the raw key (shown ONLY this once).
+        """
+        # Validate service domain exists
+        try:
+            domain = await sync_to_async(
+                ServiceDomain.objects.select_related("product").get
+            )(id=payload.service_domain_id)
+        except ServiceDomain.DoesNotExist:
+            raise NotFoundException("Service domain not found.")
+
+        # Check uniqueness (one active credential per domain)
+        existing = await sync_to_async(
+            ServiceCredential.objects.filter(
+                service_domain_id=payload.service_domain_id,
+                is_active=True,
+            ).exists
+        )()
+        if existing:
+            raise ConflictException(
+                "An active API key already exists for this service domain. "
+                "Revoke or rotate the existing key first."
+            )
+
+        # Generate the key
+        raw_key, prefix, key_hash = generate_api_key()
+
+        # Create credential
+        from django.utils import timezone
+
+        credential = await sync_to_async(ServiceCredential.objects.create)(
+            name=payload.name,
+            service_domain=domain,
+            api_key_hash=key_hash,
+            api_key_prefix=prefix,
+            is_active=True,
+            created_by=request.user,
+        )
+
+        logger.info(
+            "ADMIN_API_KEY_CREATED: key_id=%s, prefix='%s', domain='%s', "
+            "created_by=%s, ip=%s",
+            credential.id,
+            prefix,
+            domain.domain,
+            request.user.email,
+            request.META.get("REMOTE_ADDR"),
+        )
+
+        return {
+            "id": credential.id,
+            "name": credential.name,
+            "api_key_prefix": prefix,
+            "raw_api_key": raw_key,
+            "service_domain_id": domain.id,
+            "service_domain": domain.domain,
+            "is_active": True,
+            "created_at": credential.created_at,
+            "warning": (
+                "Save this API key now. It cannot be recovered after this response."
+            ),
+        }
+
+    @http_patch(
+        "/{key_id}/revoke",
+        response={200: MessageResponse, 404: dict},
+        summary="Revoke API key",
+        description="Revoke a service API key. The key becomes immediately invalid.",
+    )
+    async def revoke_api_key(self, request: HttpRequest, key_id: int):
+        """Revoke an API key by setting is_active=False."""
+        try:
+            credential = await sync_to_async(
+                ServiceCredential.objects.select_related("service_domain").get
+            )(id=key_id)
+        except ServiceCredential.DoesNotExist:
+            raise NotFoundException("API key not found.")
+
+        if not credential.is_active:
+            raise BadRequestException("This API key is already revoked.")
+
+        credential.is_active = False
+        await sync_to_async(credential.save)(
+            update_fields=["is_active", "updated_at"]
+        )
+
+        logger.info(
+            "ADMIN_API_KEY_REVOKED: key_id=%s, prefix='%s', domain='%s', "
+            "revoked_by=%s, ip=%s",
+            credential.id,
+            credential.api_key_prefix,
+            credential.service_domain.domain,
+            request.user.email,
+            request.META.get("REMOTE_ADDR"),
+        )
+
+        return MessageResponse(
+            message=f"API key '{credential.api_key_prefix}...' has been revoked."
+        )
+
+    @http_post(
+        "/{key_id}/rotate",
+        response={200: ApiKeyRotateOutputSchema, 404: dict},
+        summary="Rotate API key",
+        description=(
+            "Rotate an API key: revoke the old key and create a new one. "
+            "The new raw key is returned ONLY in this response."
+        ),
+    )
+    async def rotate_api_key(self, request: HttpRequest, key_id: int):
+        """Rotate an API key.
+
+        Flow:
+        1. Validate the existing credential exists.
+        2. Revoke the old key (set is_active=False).
+        3. Generate a new key.
+        4. Create a new ServiceCredential for the same domain.
+        5. Return the new raw key (shown ONLY this once).
+        """
+        try:
+            old_credential = await sync_to_async(
+                ServiceCredential.objects.select_related("service_domain").get
+            )(id=key_id)
+        except ServiceCredential.DoesNotExist:
+            raise NotFoundException("API key not found.")
+
+        domain = old_credential.service_domain
+
+        # Revoke old key
+        old_credential.is_active = False
+        await sync_to_async(old_credential.save)(
+            update_fields=["is_active", "updated_at"]
+        )
+
+        # Generate new key
+        new_raw, new_prefix, new_hash = generate_api_key()
+
+        # Create new credential for the same domain
+        new_credential = await sync_to_async(ServiceCredential.objects.create)(
+            name=old_credential.name,
+            service_domain=domain,
+            api_key_hash=new_hash,
+            api_key_prefix=new_prefix,
+            permissions=old_credential.permissions,
+            is_active=True,
+            created_by=request.user,
+        )
+
+        logger.info(
+            "ADMIN_API_KEY_ROTATED: old_key_id=%s (prefix='%s'), "
+            "new_key_id=%s (prefix='%s'), domain='%s', "
+            "rotated_by=%s, ip=%s",
+            old_credential.id,
+            old_credential.api_key_prefix,
+            new_credential.id,
+            new_prefix,
+            domain.domain,
+            request.user.email,
+            request.META.get("REMOTE_ADDR"),
+        )
+
+        return {
+            "id": new_credential.id,
+            "name": new_credential.name,
+            "old_prefix": old_credential.api_key_prefix,
+            "new_api_key": new_raw,
+            "new_prefix": new_prefix,
+            "service_domain_id": domain.id,
+            "service_domain": domain.domain,
+            "is_active": True,
+            "warning": (
+                "Save this new API key now. The old key is immediately "
+                "revoked and cannot be recovered."
+            ),
+        }

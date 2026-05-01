@@ -66,6 +66,8 @@ from .webhooks.router import (
     process_event as process_webhook_event,
     reconcile_unprocessed as reconcile_unprocessed_webhooks,
 )
+from .webhooks.utils import sanitize_for_json as _sanitize_stripe_dict
+from .webhooks.sync import sync_subscription_from_stripe
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +302,7 @@ def create_stripe_refund(subscription, amount_cents=None, reason="", initiated_b
         initiated_by=initiated_by,
         reason_category=reason_category,
         admin_notes=admin_notes,
-        stripe_response=refund,
+        stripe_response=_sanitize_stripe_dict(refund),
     )
     logger.info(f"Refund created: {refund['id']} (amount={amount_cents or 'full'}, charge={charge_id or 'latest'})")
     return record

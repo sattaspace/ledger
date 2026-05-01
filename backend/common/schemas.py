@@ -50,3 +50,79 @@ class ErrorResponse(Schema):
 
     detail: str
     code: Optional[str] = None
+
+
+# --- Service Credential / API Key Schemas ---
+
+
+class ApiKeyCreateInputSchema(Schema):
+    """Input schema for creating a new service API key."""
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Human-readable name for the credential",
+    )
+    service_domain_id: int = Field(
+        ...,
+        description="ID of the ServiceDomain this credential is for",
+    )
+
+
+class ApiKeyOutputSchema(Schema):
+    """Output schema for API key listing (never includes the raw key)."""
+
+    id: int
+    name: str
+    api_key_prefix: str
+    service_domain_id: int
+    service_domain: str
+    permissions: dict = {}
+    is_active: bool
+    last_used_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+
+
+class ApiKeyCreateOutputSchema(Schema):
+    """Output schema for API key creation (includes the raw key ONCE)."""
+
+    id: int
+    name: str
+    api_key_prefix: str
+    raw_api_key: str = Field(
+        ...,
+        description="The raw API key. Store it securely — this is the only time it is shown.",
+    )
+    service_domain_id: int
+    service_domain: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+    warning: str = Field(
+        "Save this API key now. It cannot be recovered after this response.",
+        description="Security warning",
+    )
+
+
+class ApiKeyRotateOutputSchema(Schema):
+    """Output schema for API key rotation (includes the new raw key ONCE)."""
+
+    id: int
+    name: str
+    old_prefix: str = Field(
+        ...,
+        description="Prefix of the old (now revoked) API key",
+    )
+    new_api_key: str = Field(
+        ...,
+        description="The new raw API key. Store it securely — this is the only time it is shown.",
+    )
+    new_prefix: str
+    service_domain_id: int
+    service_domain: str
+    is_active: bool
+    warning: str = Field(
+        "Save this new API key now. The old key is immediately revoked and cannot be recovered.",
+        description="Security warning",
+    )

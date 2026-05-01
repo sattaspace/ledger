@@ -87,6 +87,7 @@ from .schemas import (
     CheckoutConfirmInputSchema,
     CheckoutConfirmOutputSchema,
     PortalOutputSchema,
+    PortalInputSchema,
     ChangePlanInputSchema,
     CheckoutInputSchema,
     ProrationPreviewOutputSchema,
@@ -317,8 +318,42 @@ class BillingProtectedController:
         ),
     )
     async def get_auth_me(self, request: HttpRequest):
-        """Return user info + subscription + access for the requesting domain."""
-        domain = request.headers.get("X-Service-Domain", "").strip()
+        """Return user info + subscription + access for the requesting domain.
+
+        Domain resolution priority:
+        1. Service credential's domain (if X-API-Key was provided and valid)
+        2. X-Service-Domain header (backward compatibility for direct calls)
+        3. None (returns plain user profile without subscription data)
+
+        Account status enforcement:
+        Checks ``user.is_active`` and ``user.is_deleted`` before returning
+        any data.  Deactivated or deleted accounts receive a 401 with a
+        specific error code (``account_inactive`` / ``account_deleted``)
+        so that SDK consumers can force-logout the user.
+        """
+        # Import here to avoid circular imports at module level
+        from common.api_key_auth import validate_api_key
+
+        # Enforce account status — must happen before any data is returned.
+        # This closes the window where a deactivated/deleted user's JWT
+        # (still valid for up to 60 minutes) could be used to access data
+        # on sister domains via SDK proxy.
+        if getattr(request.user, "is_deleted", False):
+            from common.exceptions import AccountDeletedException
+            raise AccountDeletedException()
+        if not getattr(request.user, "is_active", True):
+            from common.exceptions import AccountInactiveException
+            raise AccountInactiveException()
+
+        # Validate API key if provided (sets request.service_domain_from_key)
+        validate_api_key(request)
+
+        # Priority: credential domain > header > None
+        domain = None
+        if hasattr(request, "service_domain_from_key") and request.service_domain_from_key:
+            domain = request.service_domain_from_key.domain
+        else:
+            domain = request.headers.get("X-Service-Domain", "").strip()
         return await BillingService.aget_auth_me_data(request.user, domain or None)
 
     # =========================================================================
@@ -342,6 +377,7 @@ class BillingProtectedController:
                 "id": sub.id,
                 "user_id": sub.user_id,
                 "status": sub.status,
+                "cancel_at_period_end": sub.cancel_at_period_end,
                 "currency": sub.currency or None,
                 "current_period_start": sub.current_period_start,
                 "current_period_end": sub.current_period_end,
@@ -393,6 +429,68 @@ class BillingProtectedController:
         except stripe.error.StripeError as e:
             raise handle_stripe_error(e, context="get_transactions")
         return result
+
+    @http_post(
+        "/subscriptions/sync",
+        response=list[SubscriptionOutputSchema],
+        summary="Force-sync subscriptions from Stripe",
+        description=(
+            "Fetches the latest subscription state from Stripe for all of "
+            "the user's subscriptions.  Use this after returning from the "
+            "Stripe Customer Portal to ensure the local DB reflects any "
+            "changes made in the portal (cancel, reactivate, payment method, "
+            "etc.).  This eliminates webhook race conditions."
+        ),
+    )
+    async def sync_subscriptions(self, request: HttpRequest):
+        """Force-sync all user subscriptions from Stripe.
+
+        Called by the frontend after returning from the Stripe Customer
+        Portal.  Iterates all user subscriptions with a stripe_subscription_id,
+        fetches the live state from Stripe, and overwrites the local DB.
+        Returns the updated subscription list.
+        """
+        logger.warning(
+            "[SYNC-DIAG] sync_subscriptions called for user %s (id=%s)",
+            request.user.email, request.user.id,
+        )
+        try:
+            subscriptions = await BillingService.async_sync_user_subscriptions_from_stripe(
+                request.user
+            )
+        except Exception as e:
+            logger.error(f"Failed to sync subscriptions: {e}", exc_info=True)
+            raise BadRequestException("Failed to sync subscription state from Stripe.")
+
+        logger.warning(
+            "[SYNC-DIAG] sync_subscriptions result: %d subscriptions, "
+            "states=%s",
+            len(subscriptions),
+            [(s.product.slug, s.status, s.cancel_at_period_end) for s in subscriptions],
+        )
+
+        return [
+            {
+                "id": sub.id,
+                "user_id": sub.user_id,
+                "status": sub.status,
+                "cancel_at_period_end": sub.cancel_at_period_end,
+                "currency": sub.currency or None,
+                "current_period_start": sub.current_period_start,
+                "current_period_end": sub.current_period_end,
+                "trial_start": sub.trial_start,
+                "trial_end": sub.trial_end,
+                "canceled_at": sub.canceled_at,
+                "expires_at": sub.expires_at,
+                "created_at": sub.created_at,
+                "updated_at": sub.updated_at,
+                "plan_name": sub.plan.name,
+                "plan_slug": sub.plan.slug,
+                "product_name": sub.product.name,
+                "product_slug": sub.product.slug,
+            }
+            for sub in subscriptions
+        ]
 
     @http_get(
         "/subscriptions/{product_slug}",
@@ -808,6 +906,7 @@ class BillingProtectedController:
                 product=product,
                 currency=user_currency,
                 trial_days=trial_days,
+                return_url=payload.return_url,
             )
         except ValueError as e:
             raise BadRequestException(str(e))
@@ -874,19 +973,33 @@ class BillingProtectedController:
             "Requires the user to have at least one Stripe subscription."
         ),
     )
-    async def create_portal(self, request: HttpRequest):
+    async def create_portal(
+        self, request: HttpRequest, payload: PortalInputSchema = Query(...)
+    ):
         """Create a Stripe Customer Portal session.
 
         Flow:
         1. Get the user's Stripe Customer ID
-        2. Create a Customer Portal session
-        3. Return the portal_url
+        2. Validate return_url if provided (must match registered domain)
+        3. Create a Customer Portal session with return_url
+        4. Return the portal_url
         """
         require_verified_email(request)
+
+        # Validate return_url if provided
+        _return_url = payload.return_url
+        if _return_url:
+            from .stripe.checkout import validate_return_url
+            if not validate_return_url(_return_url):
+                raise BadRequestException(
+                    "Invalid return_url. It must match a registered "
+                    "service domain or the application's own domain."
+                )
 
         try:
             portal_url = await sync_to_async(_create_portal)(
                 user=request.user,
+                return_url=_return_url,
             )
         except ValueError as e:
             raise BadRequestException(str(e))
@@ -1378,6 +1491,13 @@ class BillingWebhookController:
         except stripe.error.SignatureVerificationError:
             raise BadRequestException("Invalid webhook signature.")
 
+        event_type = event.get("type", "unknown")
+        event_id = event.get("id", "unknown")
+        logger.warning(
+            "[WEBHOOK-DIAG] Received: type=%s, id=%s",
+            event_type, event_id,
+        )
+
         # Record the event for audit (best-effort — never blocks processing)
         log_entry = await sync_to_async(record_webhook_event)(event)
 
@@ -1385,6 +1505,22 @@ class BillingWebhookController:
         #   - Recording succeeded AND it hasn't been processed yet, OR
         #   - Recording failed (log_entry is None) — process anyway as fallback
         if log_entry is None or not log_entry.processed:
+            if log_entry is None:
+                logger.warning(
+                    "[WEBHOOK-DIAG] Recording failed — processing anyway: "
+                    "%s (%s)",
+                    event_type, event_id,
+                )
+            else:
+                logger.warning(
+                    "[WEBHOOK-DIAG] Recording OK (processed=%s) — processing: %s (%s)",
+                    log_entry.processed, event_type, event_id,
+                )
             await sync_to_async(process_webhook_event)(event)
+        else:
+            logger.warning(
+                "[WEBHOOK-DIAG] Already processed, skipping: %s (%s)",
+                event_type, event_id,
+            )
 
         return MessageResponse(message="Webhook processed successfully.")

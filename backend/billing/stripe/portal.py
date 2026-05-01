@@ -28,6 +28,12 @@ def create_portal(user, return_url: str = None) -> str:
     separator = "&" if "?" in portal_base else "?"
     _return_url = f"{portal_base}{separator}portal=success"
 
+    # If a sister-domain return_url was provided, pass it through so the
+    # frontend can redirect back after portal interaction.
+    if return_url and return_url != _return_url:
+        sep2 = "&" if "?" in _return_url else "?"
+        _return_url = f"{_return_url}{sep2}return_url={return_url}"
+
     # CMP-08: Use pre-configured portal configuration if available
     portal_kwargs = {
         "customer_id": customer_id,

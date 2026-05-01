@@ -27,6 +27,32 @@ import type {
   TransactionItemSchema,
 } from "@/lib/billing";
 
+// 6.5: Return URL for sister-domain billing redirect
+const returnUrl = ref<string | null>(null);
+
+/** Get stored return_url from sessionStorage (set by PlanComparison or incoming redirect) */
+function getStoredReturnUrl(): string | null {
+  return sessionStorage.getItem("billing_return_url");
+}
+
+/** Store return_url in sessionStorage for use across redirect chain */
+function storeReturnUrl(url: string | null) {
+  if (url) {
+    sessionStorage.setItem("billing_return_url", url);
+  } else {
+    sessionStorage.removeItem("billing_return_url");
+  }
+}
+
+/** Redirect to return_url with billing_updated param */
+function redirectToReturnUrl(updated: 1 | 0) {
+  const url = returnUrl.value || getStoredReturnUrl();
+  if (!url) return;
+  storeReturnUrl(null); // Clean up
+  const separator = url.includes("?") ? "&" : "?";
+  window.location.href = `${url}${separator}billing_updated=${updated}`;
+}
+
 const loading = ref(true);
 const loadError = ref(false);
 const products = ref<ProductSchema[]>([]);
@@ -53,7 +79,9 @@ const activeSubscriptions = computed(() =>
 
 const hasPaidSubscription = computed(() =>
   subscriptions.value.some(
-    (s) => ["active", "trialing", "past_due"].includes(s.status) && s.plan_slug !== "free",
+    (s) =>
+      (["active", "trialing", "past_due"].includes(s.status) || s.cancel_at_period_end) &&
+      s.plan_slug !== "free",
   ),
 );
 
@@ -67,7 +95,7 @@ const pausedSubscriptions = computed(() =>
 
 const stats = computed(() => {
   const active = subscriptions.value.filter((s) =>
-    ["active", "trialing"].includes(s.status),
+    ["active", "trialing"].includes(s.status) || s.cancel_at_period_end,
   );
   const nextEnd = subscriptions.value
     .filter((s) => s.current_period_end && s.status !== "expired")
@@ -85,6 +113,38 @@ const stats = computed(() => {
   };
 });
 
+/**
+ * Compute the effective cancellation date for a subscription.
+ *
+ * For trial subscriptions canceled from the portal, Stripe cancels at trial_end
+ * (not period_end). The backend sets status=canceled + cancel_at_period_end=true.
+ * We detect this by checking if trial_end is before current_period_end.
+ *
+ * For frontend-initiated cancels or active subscriptions, cancel is at period_end.
+ */
+function getCancelDate(sub: SubscriptionOutputSchema): string | null {
+  if (!sub.cancel_at_period_end) return null;
+
+  // Trial-end cancellation: portal cancels at trial end, not period end
+  if (sub.trial_end) {
+    const trialEnd = new Date(sub.trial_end);
+    const periodEnd = sub.current_period_end ? new Date(sub.current_period_end) : null;
+    if (!periodEnd || trialEnd <= periodEnd) {
+      return sub.trial_end;
+    }
+  }
+
+  return sub.current_period_end || null;
+}
+
+/** Whether the subscription is canceling at trial end (vs period end). */
+function isTrialCancel(sub: SubscriptionOutputSchema): boolean {
+  if (!sub.cancel_at_period_end || !sub.trial_end) return false;
+  const trialEnd = new Date(sub.trial_end);
+  const periodEnd = sub.current_period_end ? new Date(sub.current_period_end) : null;
+  return !periodEnd || trialEnd <= periodEnd;
+}
+
 onMounted(async () => {
   if (!requireAuth()) return;
 
@@ -92,6 +152,16 @@ onMounted(async () => {
   const params = new URLSearchParams(window.location.search);
   const checkoutStatus = params.get("checkout");
   const sessionId = params.get("session_id");
+  const incomingReturnUrl = params.get("return_url");
+
+  // 6.5: Capture return_url from incoming Stripe redirect or direct link
+  if (incomingReturnUrl) {
+    storeReturnUrl(incomingReturnUrl);
+    returnUrl.value = incomingReturnUrl;
+  } else {
+    returnUrl.value = getStoredReturnUrl();
+  }
+
   if (checkoutStatus === "success" && sessionId) {
     try {
       showToast("Processing payment...", "info", { duration: 3000 });
@@ -104,9 +174,17 @@ onMounted(async () => {
       showToast(getErrorMessage(err), "error", { duration: 8000 });
     }
     window.history.replaceState({}, "", "/dashboard/billing");
+    // 6.5: Redirect to sister domain after successful checkout confirmation
+    redirectToReturnUrl(1);
+    return; // Don't render the billing page — redirecting out
   } else if (checkoutStatus === "canceled") {
     showToast("Checkout was canceled. No changes were made.", "info", { duration: 5000 });
     window.history.replaceState({}, "", "/dashboard/billing");
+    // 6.5: Redirect to sister domain after cancel
+    if (returnUrl.value) {
+      redirectToReturnUrl(0);
+      return;
+    }
   }
 
   // UX-04: Handle Stripe Portal return feedback
@@ -114,11 +192,59 @@ onMounted(async () => {
   if (portalStatus === "success") {
     showToast("Billing settings updated successfully.", "success", { duration: 5000 });
     window.history.replaceState({}, "", "/dashboard/billing");
-    // UX-04: Re-fetch subscriptions to reflect any portal changes (e.g. payment method update)
+    // UX-04: Force-sync from Stripe to eliminate webhook race condition.
+    // The user may have canceled, reactivated, or changed payment method
+    // in the portal.  The webhook might not have fired yet, so we fetch
+    // the live state from Stripe directly.
     try {
-      subscriptions.value = await billingApi.getSubscriptions();
-    } catch {
-      // Non-critical — data will refresh on next page load
+      // Capture pre-portal state to detect what changed
+      const prePortalState = new Map(
+        subscriptions.value.map((s) => [s.product_slug, s.status])
+      );
+
+      console.log("[PORTAL-SYNC] Calling syncSubscriptions...");
+      const synced = await billingApi.syncSubscriptions();
+      console.log("[PORTAL-SYNC] Synced subscriptions:", JSON.stringify(
+        synced.map((s) => ({ product: s.product_slug, status: s.status, cancel_at_period_end: s.cancel_at_period_end }))
+      ));
+      subscriptions.value = synced;
+
+      // PORTAL-CANCEL SYNC: Compare pre-portal vs synced state to show
+      // the same feedback messages as the Cancel/Reactivate buttons.
+      for (const sub of synced) {
+        const prevStatus = prePortalState.get(sub.product_slug);
+        if (!prevStatus) continue;
+
+        // Detect cancellation: active/trialing → canceled
+        if (
+          ["active", "trialing"].includes(prevStatus) &&
+          sub.status === "canceled"
+        ) {
+          showToast(`Subscription canceled (${sub.plan_name}). Access continues until period end.`, "success", { duration: 8000 });
+        }
+
+        // Detect reactivation: canceled → active/trialing
+        if (
+          prevStatus === "canceled" &&
+          ["active", "trialing"].includes(sub.status)
+        ) {
+          showToast(`Subscription reactivated (${sub.plan_name}).`, "success", { duration: 8000 });
+        }
+      }
+    } catch (err) {
+      console.error("[PORTAL-SYNC] syncSubscriptions failed:", err);
+      showToast("Failed to sync billing state from Stripe. Please reload the page.", "error", { duration: 5000 });
+      // Fallback: re-fetch from local DB (webhook may have processed by now)
+      try {
+        subscriptions.value = await billingApi.getSubscriptions();
+      } catch {
+        // Non-critical — data will refresh on next page load
+      }
+    }
+    // 6.5: Redirect to sister domain after portal session
+    if (returnUrl.value) {
+      redirectToReturnUrl(1);
+      return;
     }
   }
 
@@ -295,7 +421,7 @@ async function handleReactivate(productSlug: string) {
 async function handleManageBilling() {
   actionLoading.value = "portal";
   try {
-    const result = await billingApi.createPortalSession();
+    const result = await billingApi.createPortalSession(getStoredReturnUrl() || undefined);
     window.location.href = result.portal_url;
   } catch (err) {
     showToast(getErrorMessage(err), "error");
@@ -310,7 +436,7 @@ async function handleFixPayment(productSlug: string) {
     { duration: 5000 }
   );
   try {
-    await billingApi.createPortalSession().then((result) => {
+    await billingApi.createPortalSession(getStoredReturnUrl() || undefined).then((result) => {
       window.location.href = result.portal_url;
     });
   } catch (err) {
@@ -580,38 +706,56 @@ async function loadTransactions() {
                 <div class="flex flex-wrap items-center gap-3 text-sm text-[var(--color-muted-foreground)]">
                   <!-- Status Badge -->
                   <span
-                    :class="[getStatusStyle(sub.status).bg, getStatusStyle(sub.status).text]"
+                    :class="[
+                      sub.cancel_at_period_end
+                        ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                        : [getStatusStyle(sub.status).bg, getStatusStyle(sub.status).text]
+                    ]"
                     class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
                   >
                     <span
-                      :class="getStatusStyle(sub.status).dot"
+                      :class="sub.cancel_at_period_end ? 'bg-amber-500' : getStatusStyle(sub.status).dot"
                       class="h-1.5 w-1.5 rounded-full"
                     />
-                    {{ sub.status.charAt(0).toUpperCase() + sub.status.slice(1).replace('_', ' ') }}
+                    <template v-if="sub.cancel_at_period_end">
+                      {{ isTrialCancel(sub) ? 'Trial, cancels at end' : 'Cancels at period end' }}
+                    </template>
+                    <template v-else>
+                      {{ sub.status.charAt(0).toUpperCase() + sub.status.slice(1).replace('_', ' ') }}
+                    </template>
                   </span>
 
-                  <!-- Trial end date -->
-                  <span v-if="sub.status === 'trialing' && sub.trial_end" class="flex items-center gap-1 text-blue-600 dark:text-blue-400">
+                  <!-- Trial end date (only when NOT canceling — canceling shows its own line below) -->
+                  <span v-if="sub.status === 'trialing' && sub.trial_end && !sub.cancel_at_period_end" class="flex items-center gap-1 text-blue-600 dark:text-blue-400">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     Trial ends {{ formatDate(sub.trial_end) }}
                   </span>
 
-                  <!-- Renewal date (non-trial active) -->
-                  <span v-if="sub.current_period_end && sub.status !== 'trialing'" class="flex items-center gap-1">
+                  <!-- Canceling: show effective cancel date (trial end or period end) -->
+                  <span v-if="sub.cancel_at_period_end && getCancelDate(sub)" class="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                    </svg>
+                    Cancels {{ formatDate(getCancelDate(sub)!) }}
+                  </span>
+
+                  <!-- Renewal date (non-trial, non-canceled active) -->
+                  <span v-if="sub.current_period_end && sub.status !== 'trialing' && !sub.cancel_at_period_end" class="flex items-center gap-1">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                     Renews {{ formatDate(sub.current_period_end) }}
                   </span>
 
-                  <!-- First billing after trial -->
-                  <span v-if="sub.status === 'trialing' && sub.current_period_end" class="text-[var(--color-muted-foreground)]">
+                  <!-- First billing after trial (only when NOT canceling) -->
+                  <span v-if="sub.status === 'trialing' && sub.current_period_end && !sub.cancel_at_period_end" class="text-[var(--color-muted-foreground)]">
                     First bill {{ formatDate(sub.current_period_end) }}
                   </span>
 
-                  <span v-if="sub.canceled_at" class="text-orange-600 dark:text-orange-400">
+                  <!-- Canceled date (hard cancellation, not cancel_at_period_end) -->
+                  <span v-if="sub.canceled_at && !sub.cancel_at_period_end" class="text-orange-600 dark:text-orange-400">
                     Canceled {{ formatDate(sub.canceled_at) }}
                   </span>
                 </div>
@@ -640,7 +784,7 @@ async function loadTransactions() {
 
                 <!-- Manage Billing (Stripe Portal) -->
                 <button
-                  v-if="sub.plan_slug !== 'free' && ['active', 'trialing'].includes(sub.status)"
+                  v-if="sub.plan_slug !== 'free' && (['active', 'trialing'].includes(sub.status) || sub.cancel_at_period_end)"
                   :disabled="actionLoading === `portal-${sub.product_slug}`"
                   class="btn-ghost text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700"
                   @click="handleManageBilling"
@@ -653,7 +797,7 @@ async function loadTransactions() {
                 </button>
 
                 <button
-                  v-if="sub.plan_slug !== 'free' && ['active', 'trialing'].includes(sub.status)"
+                  v-if="sub.plan_slug !== 'free' && ['active', 'trialing'].includes(sub.status) && !sub.cancel_at_period_end"
                   :disabled="actionLoading === `cancel-${sub.product_slug}`"
                   class="btn-ghost text-xs text-destructive hover:text-destructive"
                   @click="handleCancel(sub.product_slug)"

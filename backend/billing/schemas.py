@@ -159,6 +159,7 @@ class SubscriptionOutputSchema(Schema):
     id: int
     user_id: int
     status: str
+    cancel_at_period_end: bool = False
     currency: Optional[str] = Field(
         None, description="Billing currency denormalized from user profile"
     )
@@ -199,6 +200,17 @@ class AuthMeSchema(Schema):
     """
 
     user: UserOutputSchema = Field(..., description="User profile data")
+    account_status: str = Field(
+        "active",
+        description=(
+            "User account status: 'active', 'inactive', or 'deleted'. "
+            "SDK consumers should treat 'inactive' and 'deleted' as "
+            "force-logout signals.  Note: inactive/deleted accounts "
+            "never reach the SDK — auth/me returns 401 with a specific "
+            "error code (account_inactive / account_deleted) instead. "
+            "This field is provided for defensive checks."
+        ),
+    )
     subscription: Optional[SubscriptionInfoSchema] = Field(
         None, description="Subscription info for the requesting domain"
     )
@@ -229,6 +241,15 @@ class CheckoutInputSchema(Schema):
     tos_accepted: bool = Field(
         False,
         description="Whether the user has accepted the Terms of Service",
+    )
+    return_url: Optional[str] = Field(
+        None,
+        description=(
+            "Optional URL to redirect back to after checkout completes. "
+            "Must match a registered ServiceDomain domain or the app's own domain. "
+            "Passed through to Stripe success/cancel URLs so the frontend can "
+            "redirect the user back to the originating sister domain."
+        ),
     )
 
 
@@ -275,6 +296,18 @@ class PortalOutputSchema(Schema):
     """Schema for Stripe Customer Portal session response."""
 
     portal_url: str = Field(..., description="Stripe Customer Portal URL")
+
+
+class PortalInputSchema(Schema):
+    """Schema for creating a Stripe Customer Portal session."""
+
+    return_url: Optional[str] = Field(
+        None,
+        description=(
+            "Optional URL to redirect back to after portal session. "
+            "Must match a registered ServiceDomain domain or the app's own domain."
+        ),
+    )
 
 
 class ChangePlanInputSchema(Schema):

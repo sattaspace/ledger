@@ -76,3 +76,28 @@ class AccountNotActiveException(APIException):
     status_code = 403
     default_detail = "Your account is not active. Please contact support."
     default_code = "account_not_active"
+
+
+class AccountInactiveException(APIException):
+    """Raised when user account has been deactivated.
+
+    Distinct from ``AccountNotActiveException`` (email verification).
+    This signals that an admin deactivated the account.  SDK consumers
+    should treat this as a force-logout signal.
+    """
+
+    status_code = 401
+    default_detail = "This account has been deactivated."
+    default_code = "account_inactive"
+
+
+class AccountDeletedException(APIException):
+    """Raised when user account has been soft-deleted.
+
+    Signals that the user requested account deletion.  SDK consumers
+    should treat this as a permanent force-logout signal.
+    """
+
+    status_code = 401
+    default_detail = "This account has been deleted."
+    default_code = "account_deleted"

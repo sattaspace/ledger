@@ -58,7 +58,31 @@ def sync_subscription_from_stripe(
     """
     stripe_sub = retrieve_subscription(stripe_sub_id)
     stripe_status = stripe_sub.get("status", "")
+    cancel_at_period_end = stripe_sub.get("cancel_at_period_end", False)
+    cancel_at_ts = stripe_sub.get("cancel_at")  # absolute timestamp (int or None)
+    cancel_at = ts_to_dt(cancel_at_ts)
+    schedule_id = stripe_sub.get("schedule")  # subscription schedule ID (str or None)
     metadata = stripe_sub.get("metadata") or {}
+
+    # Comprehensive diagnostic: log ALL fields that could indicate cancellation
+    logger.warning(
+        "[WEBHOOK-DIAG] FULL-DIAG: sub=%s, status=%s, cancel_at_period_end=%s, "
+        "cancel_at=%s (raw_ts=%s), schedule=%s, trial_end=%s, "
+        "current_period_end=%s, canceled_at=%s, pause_collection=%s, "
+        "collection_method=%s, ended_at=%s",
+        stripe_sub_id,
+        stripe_status,
+        cancel_at_period_end,
+        cancel_at,
+        cancel_at_ts,
+        schedule_id,
+        ts_to_dt(stripe_sub.get("trial_end")),
+        ts_to_dt(stripe_sub.get("current_period_end")),
+        ts_to_dt(stripe_sub.get("canceled_at")),
+        stripe_sub.get("pause_collection"),
+        stripe_sub.get("collection_method"),
+        ts_to_dt(stripe_sub.get("ended_at")),
+    )
 
     # --- Find or look up local subscription ----------------------------------
     if subscription is None:
@@ -135,6 +159,41 @@ def sync_subscription_from_stripe(
 
     # --- Overwrite all fields from Stripe ------------------------------------
     subscription.status = _STATUS_MAP.get(stripe_status, subscription.status)
+
+    # --- Cancellation detection ---
+    # Stripe has TWO ways to schedule cancellation:
+    #   1. cancel_at_period_end=True → cancel at end of billing period
+    #   2. cancel_at=<unix_ts>       → cancel at absolute timestamp
+    # The Stripe Customer Portal uses cancel_at for trial subscriptions
+    # (sets it to trial_end), and cancel_at_period_end for active subs.
+    is_canceling = cancel_at_period_end or bool(cancel_at)
+
+    subscription.cancel_at_period_end = is_canceling
+
+    if is_canceling and stripe_status in ("active", "trialing"):
+        subscription.status = SubscriptionStatus.CANCELED
+        if cancel_at and not cancel_at_period_end:
+            logger.warning(
+                "[WEBHOOK-DIAG] PORTAL-CANCEL (cancel_at): sub %s overriding status to CANCELED "
+                "(cancel_at=%s, stripe_status=%s)",
+                subscription.id, cancel_at, stripe_status,
+            )
+        else:
+            logger.warning(
+                "[WEBHOOK-DIAG] PORTAL-CANCEL (cancel_at_period_end): sub %s overriding status to CANCELED "
+                "(cancel_at_period_end=True, stripe_status=%s)",
+                subscription.id, stripe_status,
+            )
+    else:
+        logger.warning(
+            "[WEBHOOK-DIAG] No cancel override: sub %s, cancel_at_period_end=%s, "
+            "cancel_at=%s, schedule=%s, stripe_status=%s, final_status=%s",
+            subscription.id, cancel_at_period_end, cancel_at, schedule_id,
+            stripe_status, subscription.status,
+        )
+
+    # (canceled_at handling is consolidated below after trial/period dates)
+
     subscription.stripe_subscription_id = stripe_sub_id
     subscription.stripe_customer_id = (
         stripe_sub.get("customer") or subscription.stripe_customer_id
@@ -144,19 +203,52 @@ def sync_subscription_from_stripe(
     subscription.current_period_start = ts_to_dt(stripe_sub.get("current_period_start"))
     subscription.current_period_end = ts_to_dt(stripe_sub.get("current_period_end"))
 
-    # Trial
+    # Trial — only set status to TRIALING when Stripe says the sub is
+    # currently trialing AND it hasn't been marked for cancellation.
+    # A subscription that had a trial in the past still carries
+    # trial_start/trial_end in the API response, but its status has
+    # moved on (active, canceled, etc.).
     trial_start = ts_to_dt(stripe_sub.get("trial_start"))
     trial_end = ts_to_dt(stripe_sub.get("trial_end"))
     if trial_start and trial_end:
         subscription.trial_start = trial_start
         subscription.trial_end = trial_end
-        subscription.status = SubscriptionStatus.TRIALING
+        # Only force-trialing if not already set to CANCELED by
+        # the cancel_at_period_end check above
+        if (
+            stripe_status == "trialing"
+            and subscription.status != SubscriptionStatus.CANCELED
+        ):
+            subscription.status = SubscriptionStatus.TRIALING
         subscription.has_used_trial = True
 
-    # Cancellation
-    canceled_at = ts_to_dt(stripe_sub.get("canceled_at"))
-    if canceled_at:
-        subscription.canceled_at = canceled_at
+    # Cancellation timestamp handling:
+    # - If is_canceling: set canceled_at to Stripe's value (if available) or now()
+    # - If NOT is_canceling (reactivation or never canceled): always clear it
+    #   because Stripe's canceled_at is stale after reactivation.
+    stripe_canceled_at = ts_to_dt(stripe_sub.get("canceled_at"))
+    if is_canceling:
+        # Soft cancel in progress — set/use a cancellation timestamp
+        if stripe_canceled_at:
+            subscription.canceled_at = stripe_canceled_at
+        elif not subscription.canceled_at:
+            from django.utils import timezone
+            subscription.canceled_at = timezone.now()
+        # else: keep existing canceled_at (already set by controller or previous sync)
+    else:
+        # Not canceling — always clear canceled_at regardless of Stripe's stale value
+        if subscription.canceled_at:
+            logger.info(
+                "[WEBHOOK-DIAG] REACTIVATE: sub %s cleared canceled_at "
+                "(is_canceling=False, both cancel signals cleared)",
+                subscription.id,
+            )
+        subscription.canceled_at = None
+
+    # Note: Stripe's cancel_at is detected above and folded into is_canceling.
+    # For display, the frontend uses trial_end (for trialing) or current_period_end
+    # (for active) — both already stored on the model. No separate cancel_at column
+    # is needed since the cancellation date is always one of those two.
 
     # Currency — set once from Stripe, never overwrite
     sub_currency = getattr(subscription, "currency", None)

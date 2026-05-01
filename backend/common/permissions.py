@@ -46,3 +46,22 @@ class IsSelfOrAdmin(BasePermission):
         if hasattr(obj, "owner"):
             return obj.owner == request.user
         return obj == request.user
+
+
+class IsServiceAuthenticated(BasePermission):
+    """Allows access only if a valid service API key was provided.
+
+    Used for endpoints that require service-to-service authentication
+    (e.g., the SDK auth/me endpoint). The ``validate_api_key`` function
+    must have been called before this permission is checked, typically
+    via middleware or a decorator.
+
+    Checks ``request.service_credential`` which is set by
+    ``common.api_key_auth.validate_api_key``.
+    """
+
+    def has_permission(self, request, view=None, controller=None, **kwargs):
+        return bool(
+            getattr(request, "service_credential", None) is not None
+            and request.service_credential.is_active
+        )
