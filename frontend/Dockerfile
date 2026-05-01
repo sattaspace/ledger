@@ -18,4 +18,4 @@ USER node
 EXPOSE 4321
 
 # Serve the build folder
-CMD ["serve", "-s", "dist", "-l", "4321"]
+CMD ["serve", "dist", "-l", "4321"]
