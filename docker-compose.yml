@@ -61,7 +61,7 @@ services:
   sb-celery:
     build: ./backend
     container_name: sb-celery
-    command: celery -A config worker -l INFO -Q default,websocket,celery
+    command: celery -A sattaledger worker -l INFO -Q default,websocket,celery
     env_file: .env
     volumes:
       - ./backend/media:/app/media
@@ -76,7 +76,7 @@ services:
   sb-celery-beat:
     build: ./backend
     container_name: sb-celery-beat
-    command: celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A sattaledger beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
     env_file: .env
     depends_on:
       sb-db:
