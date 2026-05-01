@@ -37,7 +37,7 @@ def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
     4. Check ``is_active`` and ``service_domain.is_active``.
     5. Update ``last_used_at`` (atomic update to avoid race conditions).
     6. Attach ``request.service_credential`` and ``request.service_domain``.
-    7. When ``SF_API_KEY_ENFORCED`` is ``False`` (default), missing keys
+    7. When ``API_KEY_ENFORCED`` is ``False`` (default), missing keys
        log a warning but allow the request through for backward compatibility.
        When ``True``, missing/invalid keys raise ``UnauthorizedException``.
 
@@ -70,7 +70,7 @@ def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
             request.path,
             request.META.get("REMOTE_ADDR"),
         )
-        enforced = getattr(settings, "SF_API_KEY_ENFORCED", False)
+        enforced = getattr(settings, "API_KEY_ENFORCED", False)
         if enforced:
             raise UnauthorizedException(
                 "Invalid API key. Provide a valid X-API-Key header."
@@ -85,7 +85,7 @@ def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
             request.path,
             request.META.get("REMOTE_ADDR"),
         )
-        enforced = getattr(settings, "SF_API_KEY_ENFORCED", False)
+        enforced = getattr(settings, "API_KEY_ENFORCED", False)
         if enforced:
             raise UnauthorizedException("This API key has been revoked.")
         return None
@@ -97,7 +97,7 @@ def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
             request.path,
             request.META.get("REMOTE_ADDR"),
         )
-        enforced = getattr(settings, "SF_API_KEY_ENFORCED", False)
+        enforced = getattr(settings, "API_KEY_ENFORCED", False)
         if enforced:
             raise UnauthorizedException(
                 "The service domain associated with this API key is inactive."
@@ -129,7 +129,7 @@ def _handle_missing_key(request: HttpRequest) -> None:
     When enforcement is off (default), log a warning and allow.
     When enforcement is on, raise UnauthorizedException.
     """
-    enforced = getattr(settings, "SF_API_KEY_ENFORCED", False)
+    enforced = getattr(settings, "API_KEY_ENFORCED", False)
     if enforced:
         raise UnauthorizedException(
             "API key is required. Provide a valid X-API-Key header."

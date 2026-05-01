@@ -43,7 +43,7 @@ Each service domain (e.g., `finance.sattabase.tld`, `analytics.sattabase.tld`) a
 - **Async-first services** — every service method has both sync and async variants (`register_user` / `aregister_user`) for compatibility with Django 5.2's async ORM under Daphne/ASGI.
 - **Stripe-first mutations** — all payment state changes go through Stripe first; local DB is synced via webhooks. This ensures Stripe remains the single source of truth for billing.
 - **Safe plan changes** — plan changes use a two-step preview/confirm flow with a time-limited `preview_token` to prevent stale proration data.
-- **Service-to-service API keys** — service domains authenticate via `X-API-Key` header with SHA-256 hashed credentials. Enforcement is opt-in via `SF_API_KEY_ENFORCED` setting for backward compatibility.
+- **Service-to-service API keys** — service domains authenticate via `X-API-Key` header with SHA-256 hashed credentials. Enforcement is opt-in via `API_KEY_ENFORCED` setting for backward compatibility.
 - **Dynamic CORS** — origins are checked against active `ServiceDomain` records in the database, cached for 5 minutes. Falls back to `CORS_ALLOW_ALL_ORIGINS` in DEBUG mode.
 - **Separate upload endpoint for avatars** — avatar uploads use `PUT /users/me/avatar` with `multipart/form-data` (via `ninja.UploadedFile`), separate from the JSON-based profile update endpoint.
 
@@ -371,32 +371,32 @@ npm run build
 
 | Variable | Description | Example |
 |---|---|---|
-| `SF_DEBUG` | Debug mode | `True` |
-| `SF_SECRET_KEY` | Django secret key | `django-insecure-...` |
-| `SF_ALLOWED_HOSTS` | Allowed hosts | `localhost,127.0.0.1` |
+| `SB_DEBUG` | Debug mode | `True` |
+| `SB_SECRET_KEY` | Django secret key | `django-insecure-...` |
+| `SB_ALLOWED_HOSTS` | Allowed hosts | `localhost,127.0.0.1` |
 | `SFDB_NAME` | PostgreSQL database name | `django_db` |
 | `SFDB_USER` | PostgreSQL username | `django_user` |
 | `SFDB_PASSWORD` | PostgreSQL password | `django_password` |
 | `SFDB_HOST` | PostgreSQL host | `localhost` |
 | `SFDB_PORT` | PostgreSQL port | `5432` |
-| `SF_REDIS_HOST` | Redis host | `localhost` |
-| `SF_REDIS_PORT` | Redis port | `6379` |
-| `SF_EMAIL_HOST` | SMTP host | `smtp.gmail.com` |
-| `SF_EMAIL_PORT` | SMTP port | `587` |
-| `SF_EMAIL_HOST_USER` | SMTP username | `ledger@gmail.com` |
-| `SF_EMAIL_HOST_PASSWORD` | SMTP password (app password) | `app-specific-pass` |
-| `SF_DEFAULT_FROM_EMAIL` | Sender email | `ledger@gmail.com` |
+| `SB_REDIS_HOST` | Redis host | `localhost` |
+| `SB_REDIS_PORT` | Redis port | `6379` |
+| `SB_EMAIL_HOST` | SMTP host | `smtp.gmail.com` |
+| `SB_EMAIL_PORT` | SMTP port | `587` |
+| `SB_EMAIL_HOST_USER` | SMTP username | `ledger@gmail.com` |
+| `SB_EMAIL_HOST_PASSWORD` | SMTP password (app password) | `app-specific-pass` |
+| `SB_DEFAULT_FROM_EMAIL` | Sender email | `ledger@gmail.com` |
 | `JWT_SIGNING_KEY` | JWT signing key (prod) | `your-random-key` |
 | `JWT_ACCESS_TOKEN_MINUTES` | Access token lifetime | `60` |
 | `JWT_REFRESH_TOKEN_DAYS` | Refresh token lifetime | `7` |
-| `SF_STRIPE_SECRET_KEY` | Stripe secret key | `sk_live_...` |
-| `SF_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_live_...` |
-| `SF_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
-| `SF_STRIPE_APP_DOMAIN` | Sattabase app domain | `https://sattabase.tld` |
-| `SF_API_KEY_ENFORCED` | Enforce X-API-Key on auth/me | `False` |
+| `SB_STRIPE_SECRET_KEY` | Stripe secret key | `sk_live_...` |
+| `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_live_...` |
+| `SB_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
+| `SB_STRIPE_APP_DOMAIN` | Sattabase app domain | `https://sattabase.tld` |
+| `API_KEY_ENFORCED` | Enforce X-API-Key on auth/me | `False` |
 | `VITE_API_BASE_URL` | Frontend API URL | `http://localhost:8000/api/v1` |
 
-> **Note**: In production, `JWT_SIGNING_KEY` must be explicitly set and must differ from `SF_SECRET_KEY`. The server will refuse to start without it.
+> **Note**: In production, `JWT_SIGNING_KEY` must be explicitly set and must differ from `SB_SECRET_KEY`. The server will refuse to start without it.
 
 ---
 
@@ -1318,7 +1318,7 @@ The `validate_api_key(request)` function is called at the controller level (not 
 
 ### Enforcement Modes
 
-Controlled by `SF_API_KEY_ENFORCED` setting (default `False`):
+Controlled by `API_KEY_ENFORCED` setting (default `False`):
 
 | Mode | Behavior |
 |---|---|
@@ -1566,7 +1566,7 @@ The `service_domain_cors_middleware` uses `@sync_and_async_middleware` (Django 5
 3. Checks `credential.is_active` and `credential.service_domain.is_active`
 4. Atomically updates `last_used_at`
 5. Sets `request.service_credential` and `request.service_domain_from_key`
-6. If `SF_API_KEY_ENFORCED=True` and key is missing/invalid: rejects with 401
+6. If `API_KEY_ENFORCED=True` and key is missing/invalid: rejects with 401
 
 ### Password Security
 
@@ -1685,14 +1685,14 @@ Schedules are managed via `django-celery-beat`'s `DatabaseScheduler`, allowing r
 
 | Setting | Description |
 |---|---|
-| `SF_STRIPE_SECRET_KEY` | Stripe secret key for API calls |
-| `SF_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key (frontend) |
-| `SF_STRIPE_WEBHOOK_SECRET` | Webhook signing secret for event verification |
-| `SF_STRIPE_APP_DOMAIN` | Sattabase base URL (used in checkout/portal URLs) |
-| `SF_STRIPE_PORTAL_RETURN_URL` | Default return URL for Customer Portal |
-| `SF_STRIPE_SUCCESS_URL` | Default success URL for checkout |
-| `SF_STRIPE_CANCEL_URL` | Default cancel URL for checkout |
-| `SF_STRIPE_TAX_ENABLED` | Whether to enable Stripe Tax |
+| `SB_STRIPE_SECRET_KEY` | Stripe secret key for API calls |
+| `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key (frontend) |
+| `SB_STRIPE_WEBHOOK_SECRET` | Webhook signing secret for event verification |
+| `SB_STRIPE_APP_DOMAIN` | Sattabase base URL (used in checkout/portal URLs) |
+| `SB_STRIPE_PORTAL_RETURN_URL` | Default return URL for Customer Portal |
+| `SB_STRIPE_SUCCESS_URL` | Default success URL for checkout |
+| `SB_STRIPE_CANCEL_URL` | Default cancel URL for checkout |
+| `SB_STRIPE_TAX_ENABLED` | Whether to enable Stripe Tax |
 
 ---
 
@@ -1725,7 +1725,7 @@ Plan changes use a preview/confirm pattern with a time-limited `preview_token` s
 - Raw API keys are never stored — only SHA-256 hashes
 - Keys are shown to the admin exactly once at creation time
 - `last_used_at` is updated atomically to avoid race conditions
-- Enforcement mode is configurable via `SF_API_KEY_ENFORCED` for gradual rollout
+- Enforcement mode is configurable via `API_KEY_ENFORCED` for gradual rollout
 - Only the key prefix (first 12 chars) is logged for identification
 
 **Whitelisted Field Updates**

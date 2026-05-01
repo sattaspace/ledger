@@ -16,15 +16,15 @@ import environ
 import sys
 from datetime import timedelta
 
-env = environ.Env(SF_DEBUG=(bool, False))
+env = environ.Env(SB_DEBUG=(bool, False))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 environ.Env.read_env(os.path.join(BASE_DIR.parent, ".env"))
 
-SECRET_KEY = env("SF_SECRET_KEY")
-DEBUG = env("SF_DEBUG")
+SECRET_KEY = env("SB_SECRET_KEY")
+DEBUG = env("SB_DEBUG")
 
-ALLOWED_HOSTS = env.list("SF_ALLOWED_HOSTS")
+ALLOWED_HOSTS = env.list("SB_ALLOWED_HOSTS")
 
 
 # Application definition
@@ -53,10 +53,10 @@ INSTALLED_APPS = [
     "cache_cleaner",
 ]
 SILENCED_SYSTEM_CHECKS = ["security.W019"]
-CORS_ALLOW_ALL_ORIGINS = env("CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
+CORS_ALLOW_ALL_ORIGINS = env("SB_CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
-    "CORS_ALLOWED_ORIGINS",
+    "SB_CORS_ALLOWED_ORIGINS",
     default=[
         "http://localhost:4321",
         "http://localhost:8086",
@@ -66,7 +66,7 @@ CORS_ALLOWED_ORIGINS = env.list(
 )
 
 CSRF_TRUSTED_ORIGINS = env.list(
-    "CSRF_TRUSTED_ORIGINS",
+    "SB_CSRF_TRUSTED_ORIGINS",
     default=[
         "http://localhost:4321",
         "http://localhost:8086",
@@ -115,13 +115,23 @@ ASGI_APPLICATION = "sattaledger.asgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": env("SFDB_NAME"),
-        "USER": env("SFDB_USER"),
-        "PASSWORD": env("SFDB_PASSWORD"),
-        "HOST": env("SFDB_HOST"),
-        "PORT": env("SFDB_PORT"),
+        "NAME": env("SB_DB_NAME"),
+        "USER": env("SB_DB_USER"),
+        "PASSWORD": env("SB_DB_PASSWORD"),
+        "HOST": env("SB_DB_HOST"),
+        "PORT": env("SB_DB_PORT"),
     }
 }
+
+if DEBUG:    
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": os.path.join(BASE_DIR, "db.sqlite3"),
+    }
+    print(
+        "WARNING: PostgreSQL settings not fully configured. Falling back to SQLite for development."
+    )
+    
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -153,16 +163,25 @@ USE_I18N = True
 
 USE_TZ = True
 
+REDIS_HOST = env("SB_REDIS_HOST", default="localhost")
+REDIS_PORT = env("SB_REDIS_PORT", default=6379, cast=int)
+
+if DEBUG:
+    REDIS_HOST = "localhost"
+    REDIS_PORT = 6379
+    print(
+        f"Using Redis at {REDIS_HOST}:{REDIS_PORT} for Channels, Celery, and Caching. Make sure Redis is running."
+    )
 
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [(env("SF_REDIS_HOST"), int(env("SF_REDIS_PORT")))],
+            "hosts": [(REDIS_HOST, REDIS_PORT)],
         },
     },
 }
-CELERY_BROKER_URL = f'redis://{env("SF_REDIS_HOST")}:{env("SF_REDIS_PORT")}/1'
+CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/1'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_RESULT_EXTENDED = True
@@ -173,7 +192,7 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = "UTC"
 
 
-CACH_URL = f'redis://{env("SF_REDIS_HOST")}:{env("SF_REDIS_PORT")}/2'
+CACH_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/2'
 CACHE_MIDDLEWARE_SECONDS = 3600
 
 CACHES = {
@@ -209,13 +228,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = env("SF_EMAIL_HOST", default="smtp.gmail.com")
-EMAIL_PORT = env("SF_EMAIL_PORT", default=587, cast=int)
-EMAIL_USE_TLS = env("SF_EMAIL_USE_TLS", default=False, cast=bool)
-EMAIL_USE_SSL = env("SF_EMAIL_USE_SSL", default=True, cast=bool)
-EMAIL_HOST_USER = env("SF_EMAIL_HOST_USER")
-EMAIL_HOST_PASSWORD = env("SF_EMAIL_HOST_PASSWORD")
-DEFAULT_FROM_EMAIL = env("SF_DEFAULT_FROM_EMAIL")
+EMAIL_HOST = env("SB_EMAIL_HOST", default="smtp.gmail.com")
+EMAIL_PORT = env("SB_EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = env("SB_EMAIL_USE_TLS", default=False, cast=bool)
+EMAIL_USE_SSL = env("SB_EMAIL_USE_SSL", default=True, cast=bool)
+EMAIL_HOST_USER = env("SB_EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = env("SB_EMAIL_HOST_PASSWORD")
+DEFAULT_FROM_EMAIL = env("SB_DEFAULT_FROM_EMAIL")
 
 if DEBUG:
     EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
@@ -234,62 +253,62 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SECURE_SSL_HOST = True
     SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_NAME = env("SESSION_COOKIE_NAME", default="sessionid")
+    SESSION_COOKIE_NAME = env("SB_SESSION_COOKIE_NAME", default="sessionid")
 
     # HSTS — enforce HTTPS
     SECURE_HSTS_SECONDS = env(
-        "SECURE_HSTS_SECONDS", default=31536000, cast=int
+        "SB_SECURE_HSTS_SECONDS", default=31536000, cast=int
     )  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
     # Require separate JWT signing key in production (never fall back to SECRET_KEY)
-    _jwt_key = env("JWT_SIGNING_KEY", default=None)
+    _jwt_key = env("SB_JWT_SIGNING_KEY", default=None)
     if _jwt_key is None:
         raise environ.ImproperlyConfigured(
-            "JWT_SIGNING_KEY must be set explicitly in production (not defaulting to SECRET_KEY)."
+            "SB_JWT_SIGNING_KEY must be set explicitly in production (not defaulting to SECRET_KEY)."
         )
 
 # --- Rate Limiting ---
-RATE_LIMIT_LOGIN_ATTEMPTS = env("RATE_LIMIT_LOGIN_ATTEMPTS", default=10, cast=int)
+RATE_LIMIT_LOGIN_ATTEMPTS = env("SB_RATE_LIMIT_LOGIN_ATTEMPTS", default=10, cast=int)
 RATE_LIMIT_LOGIN_WINDOW = env(
-    "RATE_LIMIT_LOGIN_WINDOW", default=900, cast=int
+    "SB_RATE_LIMIT_LOGIN_WINDOW", default=900, cast=int
 )  # 15 min
-RATE_LIMIT_REGISTER_ATTEMPTS = env("RATE_LIMIT_REGISTER_ATTEMPTS", default=5, cast=int)
+RATE_LIMIT_REGISTER_ATTEMPTS = env("SB_RATE_LIMIT_REGISTER_ATTEMPTS", default=5, cast=int)
 RATE_LIMIT_REGISTER_WINDOW = env(
-    "RATE_LIMIT_REGISTER_WINDOW", default=3600, cast=int
+    "SB_RATE_LIMIT_REGISTER_WINDOW", default=3600, cast=int
 )  # 1 hour
 RATE_LIMIT_PASSWORD_RESET_ATTEMPTS = env(
-    "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", default=5, cast=int
+    "SB_RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", default=5, cast=int
 )
 RATE_LIMIT_PASSWORD_RESET_WINDOW = env(
-    "RATE_LIMIT_PASSWORD_RESET_WINDOW", default=3600, cast=int
+    "SB_RATE_LIMIT_PASSWORD_RESET_WINDOW", default=3600, cast=int
 )  # 1 hour
 
 # --- Password Reset ---
 PASSWORD_RESET_TOKEN_EXPIRY_SECONDS = env(
-    "PASSWORD_RESET_TOKEN_EXPIRY", default=900, cast=int
+    "SB_PASSWORD_RESET_TOKEN_EXPIRY", default=900, cast=int
 )  # 15 min
 
 RATE_LIMIT_SENSITIVE_ATTEMPTS = env(
-    "RATE_LIMIT_SENSITIVE_ATTEMPTS", default=5, cast=int
+    "SB_RATE_LIMIT_SENSITIVE_ATTEMPTS", default=5, cast=int
 )
 RATE_LIMIT_SENSITIVE_WINDOW = env(
-    "RATE_LIMIT_SENSITIVE_WINDOW", default=3600, cast=int
+    "SB_RATE_LIMIT_SENSITIVE_WINDOW", default=3600, cast=int
 )  # 1 hour
-# --- Email Change ---
+# --- Email Change --- 
 EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS = env(
-    "EMAIL_CHANGE_TOKEN_EXPIRY", default=3600, cast=int
+    "SB_EMAIL_CHANGE_TOKEN_EXPIRY", default=3600, cast=int
 )  # 1 hour
-
+ 
 # --- API Key Authentication ---
-SF_API_KEY_ENFORCED = env("SF_API_KEY_ENFORCED", default=False, cast=bool)
+API_KEY_ENFORCED = env("SB_API_KEY_ENFORCED", default=False, cast=bool)
 
 # --- SDK Rate Limiting (server-to-server traffic via X-API-Key) ---
 # Higher limits than per-IP because SDK traffic comes from trusted
 # sister domain backends that proxy many users through one IP.
-RATE_LIMIT_SDK_ATTEMPTS = env("RATE_LIMIT_SDK_ATTEMPTS", default=1000, cast=int)
-RATE_LIMIT_SDK_WINDOW = env("RATE_LIMIT_SDK_WINDOW", default=3600, cast=int)  # 1 hour
+RATE_LIMIT_SDK_ATTEMPTS = env("SB_RATE_LIMIT_SDK_ATTEMPTS", default=1000, cast=int)
+RATE_LIMIT_SDK_WINDOW = env("SB_RATE_LIMIT_SDK_WINDOW", default=3600, cast=int)  # 1 hour
 
 
 
@@ -387,16 +406,16 @@ AUTH_USER_MODEL = "users.User"
 # --- JWT Configuration ---
 NINJA_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(
-        minutes=env("JWT_ACCESS_TOKEN_MINUTES", default=60)
+        minutes=env("SB_JWT_ACCESS_TOKEN_MINUTES", default=60)
     ),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=env("JWT_REFRESH_TOKEN_DAYS", default=7)),
-    "ROTATE_REFRESH_TOKENS": env("JWT_ROTATE_REFRESH_TOKENS", default=True, cast=bool),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env("SB_JWT_REFRESH_TOKEN_DAYS", default=7)),
+    "ROTATE_REFRESH_TOKENS": env("SB_JWT_ROTATE_REFRESH_TOKENS", default=True, cast=bool),
     "BLACKLIST_AFTER_ROTATION": env(
-        "JWT_BLACKLIST_AFTER_ROTATION", default=True, cast=bool
+        "SB_JWT_BLACKLIST_AFTER_ROTATION", default=True, cast=bool
     ),
     "UPDATE_LAST_LOGIN": True,
-    "ALGORITHM": env("JWT_ALGORITHM", default="HS256"),
-    "SIGNING_KEY": env("JWT_SIGNING_KEY", default=SECRET_KEY),
+    "ALGORITHM": env("SB_JWT_ALGORITHM", default="HS256"),
+    "SIGNING_KEY": env("SB_JWT_SIGNING_KEY", default=SECRET_KEY),
     "USE_STATELESS_AUTH": True,
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
@@ -408,20 +427,20 @@ USER_ROLES = ["owner", "admin", "member"]
 
 
 # --- Stripe Configuration ---
-STRIPE_SECRET_KEY = env("SF_STRIPE_SECRET_KEY", default="")
-STRIPE_PUBLISHABLE_KEY = env("SF_STRIPE_PUBLISHABLE_KEY", default="")
-STRIPE_WEBHOOK_SECRET = env("SF_STRIPE_WEBHOOK_SECRET", default="")
-STRIPE_APP_DOMAIN = env("SF_STRIPE_APP_DOMAIN", default="http://localhost:8000")
+STRIPE_SECRET_KEY = env("SB_STRIPE_SECRET_KEY", default="")
+STRIPE_PUBLISHABLE_KEY = env("SB_STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("SB_STRIPE_WEBHOOK_SECRET", default="")
+STRIPE_APP_DOMAIN = env("SB_STRIPE_APP_DOMAIN", default="http://localhost:4321")
 STRIPE_PORTAL_RETURN_URL = env(
-    "SF_STRIPE_PORTAL_RETURN_URL",
+    "SB_STRIPE_PORTAL_RETURN_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing",
 )
 STRIPE_SUCCESS_URL = env(
-    "SF_STRIPE_SUCCESS_URL",
+    "SB_STRIPE_SUCCESS_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing?checkout=success",
 )
 STRIPE_CANCEL_URL = env(
-    "SF_STRIPE_CANCEL_URL",
+    "SB_STRIPE_CANCEL_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing?checkout=canceled",
 )
 
@@ -429,23 +448,23 @@ STRIPE_CANCEL_URL = env(
 # Must be explicitly set to True when Stripe Tax is activated in Dashboard.
 # If False, automatic_tax will be disabled at checkout to prevent
 # silently charging without tax (regulatory non-compliance).
-STRIPE_TAX_ENABLED = env("SF_STRIPE_TAX_ENABLED", default=False, cast=bool)
+STRIPE_TAX_ENABLED = env("SB_STRIPE_TAX_ENABLED", default=False, cast=bool)
 
 # --- Base Currency for Billing ---
 # All plan prices are stored in this currency. When displaying prices to
 # users, the frontend sends the user's preferred currency and the backend
 # converts using the exchange rates stored in ExchangeRate model.
-BASE_CURRENCY = env("SF_BASE_CURRENCY", default="USD")
+BASE_CURRENCY = env("SB_BASE_CURRENCY", default="USD")
 
 # --- Exchange Rate API ---
 # Free API for fetching daily exchange rates. No API key required.
 # Used by the update_exchange_rates Celery task.
 EXCHANGE_RATE_API_URL = env(
-    "SF_EXCHANGE_RATE_API_URL",
+    "SB_EXCHANGE_RATE_API_URL",
     default="https://open.er-api.com/v6/latest",
 )
 
 # --- F7: Terms of Service Version ---
 # Increment this when updating Terms of Service. Used to track which
 # version the user accepted. Displayed in the ToS acceptance audit trail.
-TOS_VERSION = env("SF_TOS_VERSION", default="1.0")
+TOS_VERSION = env("SB_TOS_VERSION", default="1.0")

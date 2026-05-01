@@ -1,16 +1,95 @@
+# sattaledger/backend/docker-compose.yml
 services:
-  redis:
-    image: redis:latest
-    container_name: local-redis
-    ports:
-      - "6379:6379"
-
-  db:
-    image: postgres:latest
-    container_name: local-postgres
+  sb-db:
+    image: postgres:15-alpine
+    container_name: sb-postgres
     environment:
-      POSTGRES_USER: django_user
-      POSTGRES_PASSWORD: django_password
-      POSTGRES_DB: django_db
+      POSTGRES_DB: ${SB_DB_NAME}
+      POSTGRES_USER: ${SB_DB_USER}
+      POSTGRES_PASSWORD: ${SB_DB_PASSWORD}
+    # No ports exposed to host to avoid conflict with CloudPanel PostgreSQL
+    volumes:
+      - sb_postgres_data:/var/lib/postgresql/data/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SB_DB_USER} -d ${SB_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sattabase_net
+
+  sb-redis:
+    image: redis:7-alpine
+    container_name: sb-redis
+    # No ports exposed to host to avoid conflict with CloudPanel Redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - sb_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+    networks:
+      - sattabase_net
+
+  sb-backend:
+    build: ./backend
+    container_name: sb-backend
+    restart: always
+    env_file: .env
     ports:
-      - "5432:5432"
+      - "127.0.0.1:8090:8090" # Only accessible to local reverse proxy
+    volumes:
+      - ./backend/staticfiles:/app/staticfiles
+      - ./backend/media:/app/media
+    depends_on:
+      sb-db:
+        condition: service_healthy
+      sb-redis:
+        condition: service_healthy
+    networks:
+      - sattabase_net
+
+  sb-frontend:
+    build: ./frontend
+    container_name: sb-frontend
+    restart: always
+    ports:
+      - "127.0.0.1:4321:4321" # Only accessible to local reverse proxy
+    networks:
+      - sattabase_net
+
+  sb-celery:
+    build: ./backend
+    container_name: sb-celery
+    command: celery -A config worker -l INFO -Q default,websocket,celery
+    env_file: .env
+    volumes:
+      - ./backend/media:/app/media
+    depends_on:
+      sb-db:
+        condition: service_healthy
+      sb-redis:
+        condition: service_healthy
+    networks:
+      - sattabase_net
+
+  sb-celery-beat:
+    build: ./backend
+    container_name: sb-celery-beat
+    command: celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file: .env
+    depends_on:
+      sb-db:
+        condition: service_healthy
+      sb-redis:
+        condition: service_healthy
+    networks:
+      - sattabase_net
+
+networks:
+  sattabase_net:
+    driver: bridge
+
+volumes:
+  sb_postgres_data:
+  sb_redis_data:

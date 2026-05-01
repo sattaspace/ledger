@@ -1,0 +1,18 @@
+# sattaledger/docker-compose.override.yml
+# This override file is used to set environment variables for production deployment.
+services:
+  sb-backend:
+    environment:
+      - SB_DB_HOST=sb-db
+      - SB_REDIS_HOST=sb-redis
+      - DEBUG=False
+
+  sb-celery:
+    environment:
+      - SB_DB_HOST=sb-db
+      - SB_REDIS_HOST=sb-redis
+
+  sb-celery-beat:
+    environment:
+      - SB_DB_HOST=sb-db
+      - SB_REDIS_HOST=sb-redis

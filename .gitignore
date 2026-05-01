@@ -121,8 +121,14 @@ dmypy.json
 Thumbs.db
 
 # Project specific
-logs/
-media/
+logs/*
+!logs/.gitkeep
+media/*
+!media/.gitkeep
+backend/logs/*
+!backend/logs/.gitkeep
+backend/media/*
+!backend/media/.gitkeep
 staticfiles/
 
 # Dependencies
@@ -195,3 +201,4 @@ server.log
 local-*
 test
 prompt
+

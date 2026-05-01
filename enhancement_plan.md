@@ -843,8 +843,8 @@ class AdminPermission(models.TextChoices):
 - [x] 6.2.1 Create `common/api_key_auth.py` — `validate_api_key(request)` function that: extracts `X-API-Key` from header, hashes it with SHA-256, looks up `ServiceCredential` by hash, checks `is_active`, sets `request.service_credential` and `request.service_domain_from_key` on the request object
 - [x] 6.2.2 Update `last_used_at` on `ServiceCredential` on each valid request (atomic `.update()` to avoid race conditions)
 - [x] 6.2.3 Add `IsServiceAuthenticated` permission class in `common/permissions.py` — checks `request.service_credential is not None`
-- [x] 6.2.4 Add `SF_API_KEY_ENFORCED` setting in `sattaledger/settings.py` (default `False`) — soft deprecation period
-- [x] 6.2.5 When `SF_API_KEY_ENFORCED=False`: validate key if provided, log warning if missing, allow request through. When `True`: reject with `401 UnauthorizedException`
+- [x] 6.2.4 Add `API_KEY_ENFORCED` setting in `sattaledger/settings.py` (default `False`) — soft deprecation period
+- [x] 6.2.5 When `API_KEY_ENFORCED=False`: validate key if provided, log warning if missing, allow request through. When `True`: reject with `401 UnauthorizedException`
 - [x] 6.2.6 Apply API key validation to `BillingProtectedController.get_auth_me()` — `validate_api_key()` called at method level
 - [x] 6.2.7 Update `GET /billing/auth/me` to use `request.service_domain_from_key.domain` when credential present, fallback to `X-Service-Domain` header
 - [ ] 6.2.8 Write unit tests: valid key, invalid key, revoked key, missing key (both enforced and non-enforced modes), credential–domain mismatch — **pending**
@@ -968,7 +968,7 @@ Each sister concern domain has its OWN database with its OWN models. The SDK pro
 > - `validate_api_key()` in `common/api_key_auth.py` — SHA-256 hash lookup, sets `request.service_credential` and `request.service_domain_from_key`
 > - `validate_return_url()` in `billing/stripe/checkout.py` — validates against `ServiceDomain` + `STRIPE_APP_DOMAIN`, cached 5-min
 > - `ServiceDomainCorsMiddleware` — `@sync_and_async_middleware` pattern, dynamic CORS from DB
-> - `SF_API_KEY_ENFORCED` setting — soft (log warning) vs hard (401) enforcement
+> - `API_KEY_ENFORCED` setting — soft (log warning) vs hard (401) enforcement
 > - `AdminApiKeyController` at `/admin/api-keys` — create, list, revoke, rotate
 > - `return_url` support in `build_success_url()`, `build_cancel_url()`, `create_portal()` — all backward-compatible (optional param, `None` default)
 
