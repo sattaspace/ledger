@@ -10,10 +10,11 @@
  *   const result = await apiClient.post("/auth/login", { email, password });
  */
 
-const API_BASE_URL =
-  typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE_URL
-    ? (import.meta as any).env.VITE_API_BASE_URL
-    : "https://baseapi.sattaspace.com/api/v1";
+// Vite will find this exact string and replace it during 'npm run build'
+const envUrl = import.meta.env.PUBLIC_API_BASE_URL;
+export const API_BASE_URL = envUrl || "https://baseapi.sattaspace.com/api/v1";
+
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -207,7 +208,7 @@ interface RequestOptions extends RequestInit {
   /** Query parameters to append to the URL. NOT a standard fetch option. */
   params?: Record<string, string | number | boolean>;
 }
-
+ 
 function buildUrl(path: string, params?: Record<string, string | number | boolean>): string {
   let url = `${API_BASE_URL}${path}`;
   if (params && Object.keys(params).length > 0) {

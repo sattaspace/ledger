@@ -22,7 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 environ.Env.read_env(os.path.join(BASE_DIR.parent, ".env"))
 
 SECRET_KEY = env("SB_SECRET_KEY")
-DEBUG = env("SB_DEBUG")
+DEBUG = env.bool("SB_DEBUG", default=False)
 
 ALLOWED_HOSTS = env.list("SB_ALLOWED_HOSTS")
 
@@ -243,6 +243,10 @@ if DEBUG:
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 30
 X_FRAME_OPTIONS = "SAMEORIGIN"
+
+SECURE_SSL_REDIRECT = False
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
 
 if not DEBUG:
     CSRF_COOKIE_SECURE = True
