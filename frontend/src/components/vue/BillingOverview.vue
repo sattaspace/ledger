@@ -391,7 +391,7 @@ async function executeCancel(productSlug: string, reason: string = "") {
   actionLoading.value = `cancel-${productSlug}`;
   try {
     // SEC-02 Fix: Pass cancellation reason to the backend API
-    await billingApi.cancelSubscription(productSlug);
+    await billingApi.cancelSubscription(productSlug, reason);
     if (reason) {
       showToast(`Subscription canceled (reason: ${reason}). Access continues until period end.`, "success");
     } else {
@@ -663,8 +663,14 @@ async function loadTransactions() {
       <div class="mb-8">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold">Your Subscriptions</h2>
+          <!-- UX-03 Fix: Use stats.activeCount (active/trialing) instead of
+               activeSubscriptions.length (includes past_due/canceled) for the
+               "N active" label. This ensures the header count matches the
+               Active Plans stat card below, eliminating user confusion.
+               activeSubscriptions is still used for rendering the subscription
+               card list which shows all non-expired subs. -->
           <span class="text-sm text-[var(--color-muted-foreground)]">
-            {{ activeSubscriptions.length }} active
+            {{ stats.activeCount }} active
           </span>
         </div>
 
@@ -884,6 +890,13 @@ async function loadTransactions() {
               Your billing account uses <strong>{{ lockedCurrency.toUpperCase() }}</strong>.
               Switch pricing to {{ lockedCurrency.toUpperCase() }} to continue.
             </p>
+            <!-- UX-10 Part 2 Fix: Added currency mismatch disclaimer about approximate
+                 converted prices. Previously, the banner only showed the recovery action
+                 without explaining that converted prices are estimates. This matches
+                 the disclaimer already shown on PlanComparison.vue. -->
+            <p class="mt-1 text-xs text-blue-600/70 dark:text-blue-400/70">
+              Prices shown in other currencies are approximate. Final charges are processed in {{ lockedCurrency.toUpperCase() }}.
+            </p>
             <button class="btn-primary text-xs mt-2" @click="switchCurrency(lockedCurrency)">
               Switch to {{ lockedCurrency.toUpperCase() }}
             </button>
@@ -953,10 +966,28 @@ async function loadTransactions() {
                   + {{ formatPrice(Math.round(tx.tax * 100), tx.currency) }} tax
                 </span>
               </div>
-              <div v-if="tx.hosted_url" class="shrink-0">
+              <!-- UX-14 Fix: Added PDF download button using tx.pdf_url.
+                   Previously, only hosted_url (Stripe invoice page) was rendered.
+                   Users had no way to download the PDF directly from the UI. -->
+              <div class="flex items-center gap-2 shrink-0">
                 <a
+                  v-if="tx.pdf_url"
+                  :href="tx.pdf_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="btn-ghost text-xs text-[var(--color-muted-foreground)] hover:text-foreground"
+                  title="Download PDF"
+                >
+                  <svg class="h-3.5 w-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  PDF
+                </a>
+                <a
+                  v-if="tx.hosted_url"
                   :href="tx.hosted_url"
                   target="_blank"
+                  rel="noopener noreferrer"
                   class="btn-ghost text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700"
                 >
                   View

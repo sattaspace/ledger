@@ -214,8 +214,12 @@ export const billingApi = {
     return apiClient.get<AuthMeSchema>("/billing/auth/me", { headers });
   },
 
-  async getSubscriptions(): Promise<SubscriptionOutputSchema[]> {
-    return apiClient.get<SubscriptionOutputSchema[]>("/billing/subscriptions");
+  async getSubscriptions(limit?: number, offset?: number): Promise<SubscriptionOutputSchema[]> {
+    const params: Record<string, string | number> = {};
+    if (limit) params.limit = limit;
+    if (offset) params.offset = offset;
+    const result = await apiClient.get<{ items: SubscriptionOutputSchema[] }>("/billing/subscriptions", { params });
+    return result.items || result;
   },
 
   async syncSubscriptions(): Promise<SubscriptionOutputSchema[]> {
@@ -226,8 +230,10 @@ export const billingApi = {
     return apiClient.get<SubscriptionDetailSchema>(`/billing/subscriptions/${productSlug}`);
   },
 
-  async cancelSubscription(productSlug: string): Promise<{ message: string }> {
-    return apiClient.post<{ message: string }>(`/billing/subscriptions/${productSlug}/cancel`);
+  async cancelSubscription(productSlug: string, reason?: string): Promise<{ message: string }> {
+    const params: Record<string, string> = {};
+    if (reason) params.reason = reason;
+    return apiClient.post<{ message: string }>(`/billing/subscriptions/${productSlug}/cancel`, undefined, { params });
   },
 
   async reactivateSubscription(productSlug: string): Promise<{ message: string }> {
@@ -352,13 +358,19 @@ export function getUserCurrency(): string {
  * Defaults to the user's profile currency (F13), falling back to "USD".
  * Explicit currency param overrides the user's profile currency.
  *
+ * UX-13 Fix: Uses ``navigator.language`` (user's browser locale)
+ * instead of hardcoded ``"en-US"``.  Non-English users now see
+ * number formatting appropriate for their locale (e.g. 9,00€ for
+ * German users, ৳৯০০ for Bengali users).
+ *
  * Example: 900 → "$9.00"
  */
 export function formatPrice(cents: number, currency?: string | null): string {
   if (cents === 0) return "Free";
   const effectiveCurrency = (currency && currency.length === 3) ? currency : _userCurrency;
   const amount = cents / 100;
-  return new Intl.NumberFormat("en-US", {
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en-US";
+  return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: effectiveCurrency.toUpperCase(),
     minimumFractionDigits: 2,
@@ -394,10 +406,16 @@ export function getStatusStyle(status: string): { bg: string; text: string; dot:
 
 /**
  * Format a date string for display.
+ *
+ * UX-13 Fix: Uses ``navigator.language`` (user's browser locale)
+ * instead of hardcoded ``"en-US"``.  Dates are now formatted
+ * according to the user's locale preferences (e.g. "2. Mai 2026" for
+ * German, "2026年5月2日" for Japanese).
  */
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en-US";
+  return new Date(dateStr).toLocaleDateString(locale, {
     year: "numeric",
     month: "short",
     day: "numeric",

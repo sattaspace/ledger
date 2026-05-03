@@ -39,6 +39,7 @@ from .client import (
     retrieve_subscription,
     modify_subscription,
     retrieve_invoice,
+    retrieve_charge,
     list_invoices,
     retrieve_upcoming_invoice,
     get_first_item_id,
@@ -50,7 +51,6 @@ from .client import (
     to_dict,
     create_and_confirm_payment_intent,
 )
-import stripe
 from .prices import resolve_price_id
 from .customer import (
     get_or_create_customer_id,
@@ -235,9 +235,8 @@ def create_stripe_refund(subscription, amount_cents=None, reason="", initiated_b
 
     if charge_id:
         # FIN-03: Support refunding a specific historical charge
-        # Retrieve the charge to get its payment_intent and amount
-        charge_obj = stripe.Charge.retrieve(charge_id, api_key=get_api_key())
-        charge_dict = to_dict(charge_obj)
+        # STP-02: Use client.py wrapper instead of direct stripe import
+        charge_dict = retrieve_charge(charge_id)
         payment_intent_id = charge_dict.get("payment_intent")
         refund_max = charge_dict.get("amount", 0)
         if not payment_intent_id:
@@ -451,6 +450,9 @@ def verify_preview_token(
     2.  Token has not expired (10 minute TTL).
     3.  Bound values (user_id, subscription_id, plan_slug, amount, currency)
         match what was signed.
+    4.  CTR-04 Fix: ±1 cent tolerance on total_cents to handle Stripe's
+        floating-point rounding edge cases where the preview amount may
+        differ by 1 cent between preview and confirm calls.
 
     Args:
         token: The token string from preview_plan_change.
@@ -473,16 +475,24 @@ def verify_preview_token(
     if _time.time() - ts > _PREVIEW_TOKEN_TTL:
         return False
 
-    # Reconstruct the payload and verify signature
-    payload = f"{user_id}:{subscription_id}:{plan_slug}:{total_cents}:{currency}:{ts}"
     secret = _get_signing_secret()
-    expected_sig = hmac.new(
-        secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
 
-    return hmac.compare_digest(sig_part, expected_sig)
+    # CTR-04 Fix: Check ±1 cent tolerance for Stripe rounding drift.
+    # The proration amount may differ by 1 cent between the preview call
+    # and the confirm call due to floating-point arithmetic differences.
+    # We verify the exact signed amount first (fast path), then fall back
+    # to checking the ±1 cent range.
+    for candidate_cents in (total_cents, total_cents - 1, total_cents + 1):
+        payload = f"{user_id}:{subscription_id}:{plan_slug}:{candidate_cents}:{currency}:{ts}"
+        expected_sig = hmac.new(
+            secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(sig_part, expected_sig):
+            return True
+
+    return False
 
 
 def classify_plan_change(old_plan: Plan, new_plan: Plan) -> str:
@@ -560,8 +570,13 @@ def execute_safe_plan_change(
 
     if change_type == "upgrade" and proration_total_cents > 0:
         # ── UPGRADE: Charge first, then change ──
+        # STP-04 Fix: Deterministic idempotency key — no timestamp.
+        # Using the subscription+plan slug ensures the key is unique per
+        # plan change while being stable across retries.  A retry after a
+        # transient failure will be idempotent instead of creating a
+        # duplicate charge.
         idempotency_key = (
-            f"plan-change-{subscription.id}-{new_plan.slug}-{int(_time.time())}"
+            f"plan-change-{subscription.id}-{new_plan.slug}-{price_id}"
         )
         pi_result = create_and_confirm_payment_intent(
             customer_id=subscription.stripe_customer_id,

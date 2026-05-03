@@ -56,7 +56,7 @@ async function handleSubmit() {
   clearErrors();
 
   try {
-    await login({ email: form.email.trim(), password: form.password });
+    await login({ email: form.email.trim(), password: form.password, remember: form.remember });
     showToast("Welcome back! Redirecting to dashboard...", "success");
     setTimeout(() => {
       window.location.href = "/dashboard";

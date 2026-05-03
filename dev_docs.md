@@ -1,7 +1,7 @@
-# Sattabase — Development Documentation
+# Satta Ledger — Development Documentation
 
-> Central Auth & Subscription Platform for Multi-Tenant SaaS
-> Version: 2.0.0 | Last Updated: April 2026
+> Personal Accounting & Billing SaaS
+> Version: 1.0.0 | Last Updated: May 2026
 
 ---
 
@@ -17,35 +17,28 @@
 8. [Backend — Service Layer](#8-backend--service-layer)
 9. [Backend — API Endpoints](#9-backend--api-endpoints)
 10. [Authentication System](#10-authentication-system)
-11. [Billing & Subscription System](#11-billing--subscription-system)
-12. [Service-to-Service Auth (SDK Prerequisites)](#12-service-to-service-auth-sdk-prerequisites)
-13. [Frontend — Library Layer](#13-frontend--library-layer)
-14. [Frontend — Components & Pages](#14-frontend--components--pages)
-15. [Security](#15-security)
-16. [Infrastructure](#16-infrastructure)
-17. [Conventions & Patterns](#17-conventions--patterns)
+11. [Frontend — Library Layer](#11-frontend--library-layer)
+12. [Frontend — Components & Pages](#12-frontend--components--pages)
+13. [Security](#13-security)
+14. [Infrastructure](#14-infrastructure)
+15. [Conventions & Patterns](#15-conventions--patterns)
 
 ---
 
 ## 1. Project Overview
 
-Sattabase is a full-stack multi-tenant SaaS platform that serves as a central authentication and subscription management hub for multiple independent service domains. The system is built with a decoupled architecture: a Django Ninja backend serves a RESTful JSON API, while an Astro.js frontend consumes it via a centralized API client. The platform handles user registration and authentication (JWT + OTP), subscription billing (via Stripe), feature-level access control per service domain, automated background tasks (via Celery), and service-to-service authentication (via API keys).
-
-### Core Architecture
-
-Each service domain (e.g., `finance.sattabase.tld`, `analytics.sattabase.tld`) authenticates against Sattabase and receives domain-specific access permissions based on the user's subscription plan. The `/billing/auth/me` endpoint is the central integration point — it returns user info, subscription status, and a flat access map for the requesting domain. Service domains call this endpoint to determine which features to show or hide in their own UI.
+Satta Ledger is a full-stack multi-tenant SaaS application for personal accounting, financial notifications, and subscription billing. The system is built with a decoupled architecture: a Django Ninja backend serves a RESTful JSON API, while an Astro.js frontend consumes it via a centralized API client. Authentication is JWT-based with OTP-verified flows for email verification, password reset, and email changes. The billing module integrates Stripe for subscription lifecycle management (checkout, portal, webhooks, invoices, refunds, proration). The project is designed for multi-tenant SaaS use with role-based access, soft-delete patterns, and comprehensive rate limiting.
 
 ### Key Design Decisions
 
 - **Email as primary identifier** — the `username` field exists only for Django compatibility; all authentication uses `email` as `USERNAME_FIELD`.
 - **OTP-based verification** — no token-bearing URLs; all verification flows use 6-digit OTPs sent via email and validated against Redis cache.
 - **Soft delete pattern** — user accounts are never hard-deleted; `is_deleted` and `deleted_at` fields enable data retention and potential account recovery.
-- **Async-first services** — every service method has both sync and async variants (`register_user` / `aregister_user`) for compatibility with Django 5.2's async ORM under Daphne/ASGI.
-- **Stripe-first mutations** — all payment state changes go through Stripe first; local DB is synced via webhooks. This ensures Stripe remains the single source of truth for billing.
-- **Safe plan changes** — plan changes use a two-step preview/confirm flow with a time-limited `preview_token` to prevent stale proration data.
-- **Service-to-service API keys** — service domains authenticate via `X-API-Key` header with SHA-256 hashed credentials. Enforcement is opt-in via `API_KEY_ENFORCED` setting for backward compatibility.
-- **Dynamic CORS** — origins are checked against active `ServiceDomain` records in the database, cached for 5 minutes. Falls back to `CORS_ALLOW_ALL_ORIGINS` in DEBUG mode.
+- **Async-first services** — every service method has both sync and async variants (`register_user` / `aregister_user`) for compatibility with Django 5.2's async ORM under Daphne/uvicorn.
 - **Separate upload endpoint for avatars** — avatar uploads use `PUT /users/me/avatar` with `multipart/form-data` (via `ninja.UploadedFile`), separate from the JSON-based profile update endpoint.
+- **Stripe as billing engine** — all subscription lifecycle operations (checkout, renewal, cancellation, refund) go through Stripe APIs. The local database mirrors Stripe state via webhooks for fast reads and audit trails.
+- **Modular Stripe integration** — Stripe API calls are encapsulated in `billing/stripe/` sub-package (client, checkout, customer, portal, prices, gdpr, webhooks) rather than scattered across the codebase.
+- **Idempotent plan changes** — plan changes use a two-step preview-then-confirm flow with server-side tokens to prevent double-charges.
 
 ---
 
@@ -63,48 +56,37 @@ Each service domain (e.g., `finance.sattabase.tld`, `analytics.sattabase.tld`) a
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      DJANGO NINJA API                           │
-│                      (Port 8000 / Daphne ASGI)                  │
+│                      (Port 8000)                                │
 │                                                                 │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────────┐            │
 │  │Controller │→ │   Service    │→ │  ORM / Cache   │            │
 │  │  (HTTP)   │  │  (Business)  │  │  (PostgreSQL)  │            │
-│  └──────────┘  └──────────────┘  └───────┬───────┘            │
-│                                               │                 │
-│  Apps: users | billing | common | api        │                 │
-│  Auth: ninja_jwt (access + refresh + blacklist)                 │
-│  Billing: Stripe SDK + Webhooks                                  │
-│  Tasks: Celery + django-celery-beat                             │
-│                                        ┌──────▼──────┐         │
-│                                        │   Redis     │         │
-│                                        │ OTP / Rate   │         │
-│                                        │ Limit / Cache│        │
-│                                        └──────┬──────┘         │
-│                                               │                 │
-│                                        ┌──────▼──────┐         │
-│                                        │   Stripe    │         │
-│                                        │ Payments &  │         │
-│                                        │ Subscriptions│        │
-│                                        └─────────────┘         │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    SERVICE DOMAINS (SDK)                         │
+│  └──────────┘  └──────┬───────┘  └───────┬───────┘            │
+│                        │                   │                    │
+│               ┌────────▼────────┐  ┌──────▼──────┐            │
+│               │ billing/stripe/ │  │   Redis     │            │
+│               │ (Stripe API)    │  │ OTP / Rate   │            │
+│               └────────┬────────┘  │ Limit / Celery│           │
+│                        │           └─────────────┘            │
+│               ┌────────▼────────┐                                │
+│               │ Stripe Webhooks │                                │
+│               │ (async inbound) │                                │
+│               └─────────────────┘                                │
 │                                                                 │
-│  finance.sattabase.tld  ──┐                                      │
-│  analytics.sattabase.tld ─┤── X-Service-Domain + X-API-Key      │
-│  reports.sattabase.tld   ──┘── → /billing/auth/me → access map   │
+│  Apps: users | api | common | billing                           │
+│  Auth: ninja_jwt (access + refresh + blacklist)                  │
+│  Payments: Stripe (checkout, portal, webhooks, invoices)        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Request Lifecycle
 
-1. **Frontend** — Vue component calls a function from `src/lib/auth.ts`
+1. **Frontend** — Vue component calls a function from `src/lib/auth.ts` or `src/lib/billing.ts`
 2. **API Client** — `src/lib/api.ts` wraps the call with JWT headers and error handling
-3. **Middleware** — `service_domain_cors_middleware` checks origin, injects CORS headers
-4. **Backend Router** — Ninja Extra auto-discovers controllers, routes to handler
-5. **Controller** — validates rate limit, parses payload via Pydantic schema
-6. **Service** — executes business logic (OTP generation, cache checks, DB writes, Stripe calls)
-7. **Response** — serialized via `ModelSchema` / `Schema`, returned as JSON
+3. **Backend Router** — Ninja Extra auto-discovers controllers, routes to handler
+4. **Controller** — validates rate limit, parses payload via Pydantic schema
+5. **Service** — executes business logic (OTP generation, cache checks, DB writes, Stripe API calls)
+6. **Response** — serialized via `ModelSchema` / `Schema`, returned as JSON
 
 ### Authentication Flow
 
@@ -120,23 +102,23 @@ Login ──→ Validate credentials ──→ Issue JWT pair ──→ Record l
          └─ 401 response → auto-refresh via api.ts → retry original request
 ```
 
-### Billing Flow (Checkout)
+### Subscription Billing Flow
 
 ```
 User selects plan ──→ POST /billing/subscriptions/{slug}/checkout
-    │                      │
-    │                      ├─ Create/get Stripe customer
-    │                      ├─ Create Stripe Checkout session
-    │                      └─ Return checkout_url
     │
     ▼
-Stripe Checkout ──→ Payment success/failure
+Stripe Checkout Session created ──→ Redirect to Stripe hosted page
     │
     ▼
-Webhook: checkout.session.completed ──→ Create/activate local subscription
+Payment success ──→ Stripe webhook: checkout.session.completed
     │
     ▼
-GET /billing/auth/me ──→ Returns updated subscription + access map
+Subscription activated ──→ Invoice generated ──→ Access granted
+    │
+    ├─ Plan change ──→ Preview proration ──→ Confirm with token
+    ├─ Cancel ──→ Portal URL or API cancel ──→ Access until period end
+    └─ Refund ──→ Admin-only ──→ Stripe refund API ──→ Webhook confirms
 ```
 
 ---
@@ -148,17 +130,18 @@ GET /billing/auth/me ──→ Returns updated subscription + access map
 | Component | Technology | Version |
 |---|---|---|
 | Language | Python | 3.10+ |
-| Framework | Django + Django Ninja | 5.2 / latest |
-| ASGI Server | Daphne | latest |
+| Framework | Django + Django Ninja | 5.2 / 1.6 |
+| ASGI Server | Daphne | 4.2 |
 | Database | PostgreSQL | latest |
-| Cache / Broker | Redis | latest |
-| Task Queue | Celery + django-celery-beat | latest |
-| Payments | Stripe Python SDK | latest |
-| JWT | ninja_jwt | latest |
-| API Framework | ninja_extra | latest |
-| CORS | django-cors-headers | latest |
+| Cache / Broker | Redis | 7.4 |
+| Task Queue | Celery + django-celery-beat | 5.6 / 2.9 |
+| JWT | ninja_jwt | 5.4 |
+| API Framework | ninja_extra | 0.31 |
+| Payments | Stripe SDK | 15.1 |
+| Real-time | Django Channels + channels-redis | 4.3 |
 | Email | Django SMTP (Gmail) | — |
 | File Storage | Django FileSystemStorage (Pillow) | — |
+| Schema Validation | Pydantic | 2.13 |
 
 ### Frontend
 
@@ -189,17 +172,12 @@ sattaledger/
 │   ├── api/                          # API configuration
 │   │   ├── views.py                  # NinjaExtraAPI instance, exception handlers
 │   │   └── ...
-│   ├── common/                       # Shared cross-app utilities
+│   ├── common/                       # Shared utilities
 │   │   ├── models.py                 # TimeStampedModel, SoftDeleteModel, ActivatorModel
-│   │   ├── permissions.py            # IsAuthenticated, IsAdmin, IsVerified, IsSelfOrAdmin, IsServiceAuthenticated
+│   │   ├── permissions.py            # IsAuthenticated, IsAdmin, IsVerified, IsSelfOrAdmin
 │   │   ├── rate_limit.py             # check_rate_limit(), get_client_ip()
-│   │   ├── exceptions.py             # UnauthorizedException, ForbiddenException, NotFoundException, etc.
-│   │   ├── schemas.py                # PaginationInput, PaginatedResponse, MessageResponse, ApiKey schemas
-│   │   ├── utils.py                  # get_paginated_data(), generate_api_key()
-│   │   ├── cors_middleware.py        # service_domain_cors_middleware (dynamic CORS)
-│   │   ├── api_key_auth.py           # validate_api_key() — service-to-service auth
-│   │   ├── controllers.py            # AdminApiKeyController (4 endpoints)
-│   │   └── management/commands/      # seed_exchange_rates, billing_seed_data
+│   │   ├── exceptions.py             # Custom APIException classes
+│   │   └── ...
 │   ├── users/                        # User authentication & profile app
 │   │   ├── models.py                 # User, UserLoginHistory, Choice constants
 │   │   ├── managers.py               # CustomUserManager (sync + async)
@@ -209,41 +187,48 @@ sattaledger/
 │   │   ├── admin.py                  # Django admin registration
 │   │   ├── signals.py                # Model signals
 │   │   └── migrations/               # Database migrations
-│   ├── billing/                      # Billing & subscription app
-│   │   ├── models.py                 # 13 models: Product, Plan, Subscription, etc.
-│   │   ├── schemas.py                # 21+ Pydantic schemas for billing
-│   │   ├── services.py               # BillingService (subscription logic)
-│   │   ├── controllers.py            # 4 controllers: Public, Protected, Admin, Webhook
-│   │   ├── currency_service.py       # Multi-currency conversion (exchange rates)
-│   │   ├── stripe_errors.py          # Stripe error translation
-│   │   ├── tasks.py                  # 6 Celery tasks (dunning, revenue, etc.)
-│   │   ├── admin.py                  # Django admin (12 models, inlines, read-only)
-│   │   ├── stripe/                   # Stripe SDK wrapper (isolation layer)
-│   │   │   ├── client.py             # Low-level Stripe adapter (ONLY file importing `stripe`)
-│   │   │   ├── customer.py           # Customer management
-│   │   │   ├── checkout.py           # Checkout sessions + return_url validation
-│   │   │   ├── portal.py             # Customer portal sessions
-│   │   │   ├── prices.py             # Price resolution
-│   │   │   ├── gdpr.py               # GDPR compliance
-│   │   │   └── webhooks/             # Webhook processing
-│   │   │       ├── router.py         # Entry point: verify, record, process, reconcile
-│   │   │       ├── sync.py           # sync_subscription_from_stripe
-│   │   │       └── handlers/         # 10 event handlers (checkout, subscription, invoice, charge)
-│   │   └── tests/                    # 6 test files
+│   ├── billing/                      # Stripe billing & subscription app
+│   │   ├── models.py                 # Product, Plan, Subscription, Invoice, Refund, etc.
+│   │   ├── schemas.py                # Billing Pydantic schemas
+│   │   ├── services.py               # BillingService (business logic)
+│   │   ├── controllers.py            # BillingController (HTTP routing)
+│   │   ├── views.py                  # Ninja router (endpoint definitions)
+│   │   ├── tasks.py                  # Celery tasks (revenue recognition, dunning, FX)
+│   │   ├── currency_service.py       # Multi-currency price conversion
+│   │   ├── stripe_errors.py          # Custom Stripe exception classes
+│   │   ├── admin.py                  # Django admin registration
+│   │   ├── stripe/                   # Stripe API integration package
+│   │   │   ├── client.py             # Low-level Stripe API client wrapper
+│   │   │   ├── checkout.py           # Checkout Session creation
+│   │   │   ├── customer.py           # Stripe Customer CRUD
+│   │   │   ├── portal.py             # Customer Portal session creation
+│   │   │   ├── prices.py             # Stripe Price/Plan sync
+│   │   │   ├── gdpr.py               # GDPR customer data deletion
+│   │   │   └── webhooks/             # Webhook processing pipeline
+│   │   │       ├── router.py         # Event type routing
+│   │   │       ├── sync.py           # Synchronous processing orchestration
+│   │   │       └── handlers/         # Individual event handlers
+│   │   │           ├── checkout.py   # checkout.session.completed
+│   │   │           ├── subscription.py # customer.subscription.*
+│   │   │           ├── invoice.py    # invoice.* events
+│   │   │           └── charge.py     # charge.* events (refunds, disputes)
+│   │   └── migrations/               # 13 billing migrations
 │   ├── sattaledger/                  # Django project settings
 │   │   ├── settings.py               # All configuration
 │   │   ├── urls.py                   # Root URL configuration
 │   │   ├── asgi.py                   # ASGI entry (Daphne)
 │   │   └── ...
 │   ├── manage.py
-│   └── media/                        # Uploaded files (avatars)
+│   ├── requirements.txt              # Python dependencies
+│   └── media/                        # Uploaded files (avatars, product icons)
 │       └── avatars/YYYY/MM/
 │
 ├── frontend/
 │   ├── src/
 │   │   ├── lib/                      # Shared utilities
-│   │   │   ├── api.ts                # Centralized API client (fetch wrapper)
+│   │   │   ├── api.ts                # Centralized API client (fetch wrapper + token storage)
 │   │   │   ├── auth.ts               # Auth functions + types + choice options
+│   │   │   ├── billing.ts            # Billing API client + types + formatting helpers
 │   │   │   └── toast.ts              # Toast notification system
 │   │   ├── components/
 │   │   │   ├── astro/                # Astro static components
@@ -257,10 +242,13 @@ sattaledger/
 │   │   │       ├── ForgotPasswordForm.vue
 │   │   │       ├── ResetPasswordForm.vue
 │   │   │       ├── VerifyEmailForm.vue
+│   │   │       ├── EmailChangeConfirm.vue
 │   │   │       ├── ProfileCard.vue   # Profile view/edit + avatar upload
 │   │   │       ├── SettingsPanel.vue # Account settings (password, email, delete)
-│   │   │       ├── SearchableSelect.vue  # Reusable dropdown with search
-│   │   │       └── DashboardHome.vue
+│   │   │       ├── DashboardHome.vue
+│   │   │       ├── BillingOverview.vue   # Subscription management + transactions
+│   │   │       ├── PlanComparison.vue    # Plan selection, upgrade/downgrade, proration
+│   │   │       └── SearchableSelect.vue  # Reusable dropdown with search
 │   │   ├── layouts/
 │   │   │   ├── BaseLayout.astro      # Root layout
 │   │   │   ├── AuthLayout.astro      # Unauthenticated layout
@@ -272,19 +260,24 @@ sattaledger/
 │   │   │   │   ├── register.astro
 │   │   │   │   ├── forgot-password.astro
 │   │   │   │   ├── reset-password.astro
-│   │   │   │   └── verify-email.astro
+│   │   │   │   ├── verify-email.astro
+│   │   │   │   └── email-change/
+│   │   │   │       └── confirm.astro # Email change OTP confirmation
 │   │   │   └── dashboard/
 │   │   │       ├── index.astro
 │   │   │       ├── profile.astro     # Profile management
-│   │   │       └── settings.astro    # Account settings
+│   │   │       ├── settings.astro    # Account settings
+│   │   │       └── billing/
+│   │   │           ├── index.astro   # Billing overview page
+│   │   │           └── plans/
+│   │   │               └── [slug].astro  # Plan comparison page
 │   │   └── env.d.ts
 │   ├── package.json
 │   └── tsconfig.json
 │
 ├── docker-compose.yml                # PostgreSQL + Redis
-├── enhancement_plan.md               # Enhancement roadmap (Phases 1-8)
-├── dev_docs.md                       # This file
-└── .env                              # Environment variables (not in repo)
+├── .env                              # Environment variables (not in repo)
+└── dev_docs.md                       # This file
 ```
 
 ---
@@ -297,6 +290,7 @@ sattaledger/
 - Node.js 22.12+
 - Docker & Docker Compose
 - Git
+- Stripe account (test mode for development)
 
 ### Infrastructure
 
@@ -320,21 +314,16 @@ python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # venv\Scripts\activate   # Windows
 
-# Install dependencies
+# Install dependencies (or use requirements.txt)
 pip install django daphne ninja-extra ninja_jwt django-ninja-jwt-token-blacklist \
-    django-cors-headers django-redis channels django-celery-results \
-    django-celery-beat django-environ Pillow stripe
+    django-cors-headers django-redis channels channels-redis \
+    django-celery-results django-celery-beat django-environ \
+    Pillow stripe pydantic psycopg2-binary
 
 # Create .env file (see Environment Variables section below)
 
 # Run migrations
 python manage.py migrate
-
-# Seed billing data (optional — creates sample products, plans, domains)
-python manage.py billing_seed_data
-
-# Seed exchange rates (optional)
-python manage.py seed_exchange_rates
 
 # Create superuser
 python manage.py createsuperuser
@@ -342,10 +331,8 @@ python manage.py createsuperuser
 # Start development server (Daphne ASGI)
 daphne -b 0.0.0.0 -p 8000 sattaledger.asgi:application
 
-# Start Celery worker (for background tasks)
+# In a separate terminal, start Celery worker + beat scheduler
 celery -A sattaledger worker -l info
-
-# Start Celery beat scheduler (for periodic tasks)
 celery -A sattaledger beat -l info
 ```
 
@@ -371,32 +358,31 @@ npm run build
 
 | Variable | Description | Example |
 |---|---|---|
-| `SB_DEBUG` | Debug mode | `True` |
-| `SB_SECRET_KEY` | Django secret key | `django-insecure-...` |
-| `SB_ALLOWED_HOSTS` | Allowed hosts | `localhost,127.0.0.1` |
+| `SF_DEBUG` | Debug mode | `True` |
+| `SF_SECRET_KEY` | Django secret key | `django-insecure-...` |
+| `SF_ALLOWED_HOSTS` | Allowed hosts | `localhost,127.0.0.1` |
 | `SFDB_NAME` | PostgreSQL database name | `django_db` |
 | `SFDB_USER` | PostgreSQL username | `django_user` |
 | `SFDB_PASSWORD` | PostgreSQL password | `django_password` |
 | `SFDB_HOST` | PostgreSQL host | `localhost` |
 | `SFDB_PORT` | PostgreSQL port | `5432` |
-| `SB_REDIS_HOST` | Redis host | `localhost` |
-| `SB_REDIS_PORT` | Redis port | `6379` |
-| `SB_EMAIL_HOST` | SMTP host | `smtp.gmail.com` |
-| `SB_EMAIL_PORT` | SMTP port | `587` |
-| `SB_EMAIL_HOST_USER` | SMTP username | `ledger@gmail.com` |
-| `SB_EMAIL_HOST_PASSWORD` | SMTP password (app password) | `app-specific-pass` |
-| `SB_DEFAULT_FROM_EMAIL` | Sender email | `ledger@gmail.com` |
+| `SF_REDIS_HOST` | Redis host | `localhost` |
+| `SF_REDIS_PORT` | Redis port | `6379` |
+| `SF_STRIPE_SECRET_KEY` | Stripe secret key | `sk_test_...` |
+| `SF_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_test_...` |
+| `SF_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
+| `SF_STRIPE_APP_DOMAIN` | App domain for portal return URLs | `https://app.example.com` |
+| `SF_EMAIL_HOST` | SMTP host | `smtp.gmail.com` |
+| `SF_EMAIL_PORT` | SMTP port | `587` |
+| `SF_EMAIL_HOST_USER` | SMTP username | `ledger@gmail.com` |
+| `SF_EMAIL_HOST_PASSWORD` | SMTP password (app password) | `app-specific-pass` |
+| `SF_DEFAULT_FROM_EMAIL` | Sender email | `ledger@gmail.com` |
 | `JWT_SIGNING_KEY` | JWT signing key (prod) | `your-random-key` |
 | `JWT_ACCESS_TOKEN_MINUTES` | Access token lifetime | `60` |
 | `JWT_REFRESH_TOKEN_DAYS` | Refresh token lifetime | `7` |
-| `SB_STRIPE_SECRET_KEY` | Stripe secret key | `sk_live_...` |
-| `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_live_...` |
-| `SB_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
-| `SB_STRIPE_APP_DOMAIN` | Sattabase app domain | `https://sattabase.tld` |
-| `API_KEY_ENFORCED` | Enforce X-API-Key on auth/me | `False` |
-| `VITE_API_BASE_URL` | Frontend API URL | `http://localhost:8000/api/v1` |
+| `PUBLIC_API_BASE_URL` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
 
-> **Note**: In production, `JWT_SIGNING_KEY` must be explicitly set and must differ from `SB_SECRET_KEY`. The server will refuse to start without it.
+> **Note**: In production, `JWT_SIGNING_KEY` must be explicitly set and must differ from `SF_SECRET_KEY`. The server will refuse to start without it.
 
 ---
 
@@ -467,8 +453,8 @@ Inherits from `AbstractUser`, `TimeStampedModel`, and `SoftDeleteModel`.
 **Database table:** `users_user`
 
 **Properties:**
-- `full_name` — `"First Last"` or falls back to email
-- `display_name` — first name or email prefix (before `@`)
+- `full_name` → `"First Last"` or falls back to email
+- `display_name` → first name or email prefix (before `@`)
 
 **Choice Fields:**
 
@@ -495,22 +481,10 @@ Tracks every successful login event for security auditing.
 
 ### Billing Models (`billing/models.py`)
 
-The billing app contains 13 models organized in a hierarchical structure:
+#### TextChoices (Enums)
 
-```
-Product ──┬── Plan ──┬── AccessEntry
-          │          └── Subscription ──┬── Refund
-          │                             ├── Invoice
-          │                             ├── PlanChangeLog
-          │                             └── RevenueRecognitionEntry
-          │
-          └── ServiceDomain ── ServiceCredential
-```
-
-#### Enums
-
-| Enum | Values |
-|---|---|
+| Class | Values |
+|-------|--------|
 | `BillingCycle` | `monthly`, `yearly`, `lifetime` |
 | `SubscriptionStatus` | `active`, `past_due`, `canceled`, `trialing`, `paused`, `expired` |
 | `AccessValueType` | `string`, `boolean`, `integer` |
@@ -519,252 +493,249 @@ Product ──┬── Plan ──┬── AccessEntry
 
 #### Product
 
-Represents a subscription product (e.g., "Finance App", "Analytics Suite"). Each product has its own set of plans and service domains.
+Represents a billable product (e.g. "Satta Ledger Finance", "Satta Ledger Pro"). Each product contains one or more plans.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `name` | CharField | unique | Product name |
-| `slug` | SlugField | unique | URL-safe identifier |
+| `name` | CharField | unique | Product display name |
+| `slug` | CharField | unique | URL-safe identifier |
 | `description` | TextField | blank | Product description |
-| `icon` | ImageField | blank, null | Product icon |
-| `home_url` | URLField | blank | Product home page URL |
-| `is_active` | BooleanField | default `True` | Active status |
-| `stripe_product_id` | CharField | blank, null | Stripe product ID |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| `icon` | ImageField | blank, upload `product_icons/` | Product icon |
+| `home_url` | URLField | blank | Product homepage URL |
+| `is_active` | BooleanField | default `True` | Whether product is available |
+| `stripe_product_id` | CharField | blank, unique | Stripe Product ID |
 
 **Database table:** `billing_product`
 
+#### Plan
+
+A pricing tier within a product (e.g. "Free", "Starter", "Professional").
+
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| `product` | ForeignKey(Product) | CASCADE, related `plans` | Parent product |
+| `name` | CharField | — | Plan display name |
+| `slug` | CharField | — | URL-safe identifier |
+| `price_cents` | PositiveBigIntegerField | — | Price in smallest currency unit |
+| `currency` | CharField(3) | default `USD` | ISO 4217 currency code |
+| `billing_cycle` | CharField | `BillingCycle` choices | Billing period |
+| `trial_days` | PositiveIntegerField | default `0` | Free trial length |
+| `features` | JSONField | default `[]` | Feature list for display |
+| `stripe_price_id` | CharField | blank, unique | Stripe Price ID |
+| `sort_order` | PositiveIntegerField | default `0` | Display ordering |
+| `is_active` | BooleanField | default `True` | Whether plan is available |
+| `is_featured` | BooleanField | default `False` | Highlight in UI |
+| `tax_inclusive` | BooleanField | default `False` | Whether price includes tax |
+
+**Unique constraint:** `(product, slug)`
+**Database table:** `billing_plan`
+
 #### ServiceDomain
 
-Represents a domain that belongs to a product (e.g., `finance.sattabase.tld`). Used for domain-aware auth/me responses and dynamic CORS.
+Maps custom domains to products. Used for multi-product routing via `X-Service-Domain` header.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `domain` | CharField | unique | Domain name |
-| `product` | ForeignKey(Product) | CASCADE | Parent product |
+| `product` | ForeignKey(Product) | CASCADE | Associated product |
 | `is_primary` | BooleanField | default `False` | Primary domain for product |
-| `is_active` | BooleanField | default `True` | Active status |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| `is_active` | BooleanField | default `True` | Whether domain is active |
 
 **Database table:** `billing_service_domain`
 
-#### Plan
-
-A subscription plan within a product (e.g., "Free", "Pro", "Enterprise"). Plans define pricing, billing cycles, and feature lists. Each plan has access entries that determine what features are available.
-
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `product` | ForeignKey(Product) | CASCADE | Parent product |
-| `name` | CharField(100) | | Plan name |
-| `slug` | SlugField | unique with `product` | URL-safe identifier |
-| `description` | TextField | blank | Plan description |
-| `price_cents` | PositiveIntegerField | default `0` | Price in cents |
-| `currency` | CharField(3) | default `USD` | ISO 4217 currency code |
-| `billing_cycle` | CharField(20) | choices | Billing frequency |
-| `trial_days` | PositiveIntegerField | default `0` | Trial period days |
-| `features` | JSONField | default `list` | Feature list for display |
-| `stripe_price_id` | CharField | blank, null | Stripe price ID |
-| `sort_order` | PositiveIntegerField | default `0` | Display order |
-| `is_active` | BooleanField | default `True` | Active status |
-| `is_featured` | BooleanField | default `False` | Featured plan badge |
-| `tax_inclusive` | BooleanField | default `False` | Tax included in price |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
-
-**Database table:** `billing_plan`
-**Unique constraint:** `(product_id, slug)`
-
 #### AccessEntry
 
-Defines a feature access rule for a plan. The access map returned by `/billing/auth/me` is built from these entries. Value types determine how the frontend interprets the access: boolean for feature flags, integer for limits (e.g., max bank accounts), string for configuration values.
+Key-value feature flags tied to a plan. Controls what features a user can access.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `plan` | ForeignKey(Plan) | CASCADE | Parent plan |
-| `key` | CharField(100) | unique with `plan` | Access key (e.g., `reports`, `max_bank_accounts`) |
-| `value` | CharField(255) | | Access value |
-| `value_type` | CharField(10) | choices | `string`, `boolean`, `integer` |
+| `plan` | ForeignKey(Plan) | CASCADE, related `access_entries` | Parent plan |
+| `key` | CharField | — | Feature key (e.g. `max_projects`) |
+| `value` | CharField | — | Feature value |
+| `value_type` | CharField | `AccessValueType` choices | Value type for parsing |
 | `description` | TextField | blank | Human-readable description |
 
+**Unique constraint:** `(plan, key)`
 **Database table:** `billing_access_entry`
-**Unique constraint:** `(plan_id, key)`
 
 #### Subscription
 
-Links a user to a plan and product. Tracks billing period, trial status, Stripe IDs, and dunning state. The `user` + `product` combination is unique — a user can have one subscription per product.
+Links a user to a plan within a product. Represents the active billing relationship.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `user` | ForeignKey(User) | CASCADE | Subscribed user |
-| `plan` | ForeignKey(Plan) | PROTECT | Current plan (protected from deletion) |
-| `product` | ForeignKey(Product) | CASCADE | Parent product (denormalized) |
-| `status` | CharField(20) | choices | Current subscription status |
-| `stripe_subscription_id` | CharField | unique, blank | Stripe subscription ID |
-| `stripe_customer_id` | CharField | blank | Stripe customer ID |
-| `current_period_start` | DateTimeField | null | Billing period start |
-| `current_period_end` | DateTimeField | null | Billing period end |
+| `plan` | ForeignKey(Plan) | PROTECT | Current plan |
+| `product` | ForeignKey(Product) | PROTECT | Denormalized product ref |
+| `status` | CharField | `SubscriptionStatus` choices | Current status |
+| `stripe_subscription_id` | CharField | unique | Stripe Subscription ID |
+| `stripe_customer_id` | CharField | blank | Stripe Customer ID |
+| `current_period_start` | DateTimeField | — | Current billing period start |
+| `current_period_end` | DateTimeField | — | Current billing period end |
 | `trial_start` | DateTimeField | null | Trial start |
 | `trial_end` | DateTimeField | null | Trial end |
-| `canceled_at` | DateTimeField | null | Cancellation timestamp |
-| `expires_at` | DateTimeField | null | Expiration timestamp |
-| `has_used_trial` | BooleanField | default `False` | Whether trial was used |
-| `tos_accepted_at` | DateTimeField | null | Terms acceptance timestamp |
-| `tos_version` | CharField(20) | blank | Terms version accepted |
+| `canceled_at` | DateTimeField | null | When cancellation was requested |
+| `expires_at` | DateTimeField | null | When access actually ends |
+| `has_used_trial` | BooleanField | default `False` | Whether free trial was used |
+| `tos_accepted_at` | DateTimeField | null | Terms of service acceptance |
+| `tos_version` | CharField | blank | TOS version accepted |
 | `currency` | CharField(3) | default `USD` | Subscription currency |
 | `last_dunning_email_at` | DateTimeField | null | Last dunning email sent |
-| `dunning_step` | PositiveIntegerField | default `0` | Current dunning escalation step |
-| `past_due_at` | DateTimeField | null | When became past due |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| `dunning_step` | PositiveIntegerField | default `0` | Current dunning attempt |
+| `past_due_at` | DateTimeField | null | When subscription became past due |
 
+**Unique constraint:** `(user, product)`
 **Database table:** `billing_subscription`
-**Unique constraint:** `(user_id, product_id)`
 
-#### Refund
+#### Invoice
 
-Tracks refund requests with Stripe integration. Supports a two-person approval workflow for larger refunds.
+Mirrors Stripe invoices for fast local reads and audit trails.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `subscription` | ForeignKey(Subscription) | CASCADE | Related subscription |
-| `stripe_refund_id` | CharField | unique, blank | Stripe refund ID |
-| `stripe_charge_id` | CharField | blank | Stripe charge ID |
-| `amount_cents` | PositiveIntegerField | | Refund amount in cents |
-| `currency` | CharField(3) | | ISO 4217 currency code |
-| `reason` | TextField | | Refund reason |
-| `status` | CharField(20) | choices | `pending`, `completed`, `failed` |
-| `initiated_by` | ForeignKey(User) | SET_NULL | Admin who initiated |
-| `initiated_by_ip` | GenericIPAddressField | null | Initiator IP |
-| `approved_by` | ForeignKey(User) | SET_NULL | Admin who approved |
-| `approved_at` | DateTimeField | null | Approval timestamp |
-| `reason_category` | CharField(50) | blank | Category tag |
-| `admin_notes` | TextField | blank | Internal notes |
-| `stripe_response` | JSONField | null | Raw Stripe response |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| `stripe_invoice_id` | CharField | unique | Stripe Invoice ID |
+| `subscription` | ForeignKey(Subscription) | PROTECT | Related subscription |
+| `stripe_subscription_id` | CharField | — | Denormalized Stripe sub ID |
+| `number` | CharField | — | Invoice number |
+| `status` | CharField | `InvoiceStatus` choices | Invoice status |
+| `amount_paid_cents` | PositiveBigIntegerField | — | Amount paid |
+| `amount_due_cents` | PositiveBigIntegerField | — | Amount due |
+| `tax_cents` | PositiveBigIntegerField | default `0` | Tax amount |
+| `discount_cents` | PositiveBigIntegerField | default `0` | Discount amount |
+| `currency` | CharField(3) | — | ISO 4217 currency |
+| `period_start` | DateTimeField | — | Billing period start |
+| `period_end` | DateTimeField | — | Billing period end |
+| `description` | TextField | blank | Invoice description |
+| `hosted_url` | URLField | blank | Stripe hosted invoice URL |
+| `pdf_url` | URLField | blank | Stripe invoice PDF URL |
+| `stripe_fee_cents` | PositiveBigIntegerField | default `0` | Stripe processing fee |
+| `stripe_fee_currency` | CharField(3) | blank | Fee currency |
+| `attempt_count` | PositiveIntegerField | default `0` | Payment attempt count |
+| `next_payment_attempt` | DateTimeField | null | Next retry date |
+| `stripe_response` | JSONField | default `dict` | Raw Stripe API response |
+
+**Database table:** `billing_invoice`
+
+#### InvoiceLineItem
+
+Structured line items for each invoice.
+
+| Field | Type | Description |
+|---|---|---|
+| `invoice` | ForeignKey(Invoice) | Parent invoice (CASCADE) |
+| `stripe_line_item_id` | CharField | Stripe Line Item ID |
+| `description` | TextField | Line item description |
+| `amount_cents` | PositiveBigIntegerField | Line item amount |
+| `currency` | CharField(3) | ISO 4217 currency |
+| `quantity` | DecimalField | Quantity |
+| `period_start` | DateTimeField | Service period start |
+| `period_end` | DateTimeField | Service period end |
+| `proration` | BooleanField | Whether this is a proration |
+| `discount_amount_cents` | PositiveBigIntegerField | Discount on this line |
+| `tax_amount_cents` | PositiveBigIntegerField | Tax on this line |
+| `type` | CharField | Line item type |
+
+**Database table:** `billing_invoice_line_item`
+
+#### Refund
+
+Tracks refund requests and their Stripe processing status. Admin-initiated only.
+
+| Field | Type | Description |
+|---|---|---|
+| `subscription` | ForeignKey(Subscription) | Related subscription |
+| `stripe_refund_id` | CharField (unique) | Stripe Refund ID |
+| `stripe_charge_id` | CharField | Associated Stripe Charge |
+| `amount_cents` | PositiveBigIntegerField | Refund amount |
+| `currency` | CharField(3) | ISO 4217 currency |
+| `reason` | TextField | Refund reason |
+| `status` | CharField | `RefundStatus` choices |
+| `initiated_by` | ForeignKey(User) | Admin who initiated |
+| `initiated_by_ip` | GenericIPAddressField | Admin IP |
+| `approved_by` | ForeignKey(User) | Admin who approved |
+| `approved_at` | DateTimeField | Approval timestamp |
+| `reason_category` | CharField | Categorization |
+| `admin_notes` | TextField | Internal notes |
+| `stripe_response` | JSONField | Raw Stripe response |
 
 **Database table:** `billing_refund`
 
 #### ExchangeRate
 
-Stores daily exchange rates for multi-currency plan price conversion. Fetched from open exchange rate APIs.
+Cached exchange rates for multi-currency price display.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `base_currency` | CharField(3) | | Base currency code |
-| `target_currency` | CharField(3) | | Target currency code |
-| `rate` | DecimalField(18,6) | | Exchange rate |
-| `fetched_at` | DateTimeField | auto_now_add | When the rate was fetched |
+| `base_currency` | CharField(3) | — | Source currency |
+| `target_currency` | CharField(3) | — | Target currency |
+| `rate` | DecimalField | — | Exchange rate |
+| `fetched_at` | DateTimeField | auto | When rate was fetched |
 
-**Database table:** `billing_exchange_rate`
 **Unique constraint:** `(base_currency, target_currency)`
-
-#### Invoice
-
-Stores Stripe invoice data for billing history. Read-only — mutations go through Stripe.
-
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `stripe_invoice_id` | CharField | unique | Stripe invoice ID |
-| `subscription` | ForeignKey(Subscription) | PROTECT | Related subscription |
-| `stripe_subscription_id` | CharField | blank | Stripe subscription ID |
-| `number` | CharField | blank | Invoice number |
-| `status` | CharField(20) | choices | Invoice status |
-| `amount_paid_cents` | IntegerField | default `0` | Amount paid in cents |
-| `amount_due_cents` | IntegerField | default `0` | Amount due in cents |
-| `tax_cents` | IntegerField | default `0` | Tax in cents |
-| `discount_cents` | IntegerField | default `0` | Discount in cents |
-| `currency` | CharField(3) | | ISO 4217 currency code |
-| `period_start` | DateTimeField | null | Billing period start |
-| `period_end` | DateTimeField | null | Billing period end |
-| `description` | TextField | blank | Invoice description |
-| `hosted_url` | URLField | blank | Stripe hosted URL |
-| `pdf_url` | URLField | blank | Stripe PDF URL |
-| `stripe_fee_cents` | IntegerField | null | Stripe fee in cents |
-| `stripe_fee_currency` | CharField(3) | null | Fee currency |
-| `attempt_count` | IntegerField | default `0` | Payment attempt count |
-| `next_payment_attempt` | DateTimeField | null | Next retry date |
-| `stripe_response` | JSONField | null | Raw Stripe response |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
-
-**Database table:** `billing_invoice`
+**Database table:** `billing_exchange_rate`
 
 #### PlanChangeLog
 
-Records every plan change for audit trail. Tracks from/to plans, proration amounts, and who initiated the change.
+Audit trail of plan changes with proration details.
 
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `subscription` | ForeignKey(Subscription) | CASCADE | Related subscription |
-| `from_plan` | ForeignKey(Plan) | PROTECT | Previous plan |
-| `to_plan` | ForeignKey(Plan) | PROTECT | New plan |
-| `proration_amount_cents` | IntegerField | default `0` | Proration amount |
-| `currency` | CharField(3) | | ISO 4217 currency code |
-| `stripe_proration_id` | CharField | blank | Stripe proration ID |
-| `initiated_by` | ForeignKey(User) | SET_NULL | User who initiated |
-| `proration_behavior` | CharField(20) | blank | `create_prorations` or `none` |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| Field | Type | Description |
+|---|---|---|
+| `subscription` | ForeignKey(Subscription) | Related subscription |
+| `from_plan` | ForeignKey(Plan) | Previous plan |
+| `to_plan` | ForeignKey(Plan) | New plan |
+| `proration_amount_cents` | BigIntegerField | Proration charge/credit |
+| `currency` | CharField(3) | ISO 4217 currency |
+| `stripe_proration_id` | CharField | Stripe Proration ID |
+| `initiated_by` | ForeignKey(User) | User who changed plan |
+| `proration_behavior` | CharField | `create_prorations` or `none` |
 
 **Database table:** `billing_plan_change_log`
 
 #### WebhookEventLog
 
-Records every Stripe webhook event for idempotent processing and debugging. Processed events are tracked to prevent duplicate handling.
+Deduplication and audit log for all incoming Stripe webhooks.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `event_id` | CharField | unique | Stripe event ID |
-| `event_type` | CharField(100) | | Event type (e.g., `invoice.payment_succeeded`) |
-| `processed` | BooleanField | default `False` | Whether the event was processed |
-| `error_message` | TextField | blank | Error message if processing failed |
-| `payload` | JSONField | | Raw Stripe event payload |
-| `created_at` | DateTimeField | auto_now_add | Event received timestamp |
+| `event_type` | CharField | — | Event type (e.g. `invoice.paid`) |
+| `processed` | BooleanField | default `False` | Whether event was processed |
+| `error_message` | TextField | blank | Error if processing failed |
+| `payload` | JSONField | — | Raw webhook payload |
+| `created_at` | DateTimeField | auto | Event received timestamp |
 
 **Database table:** `billing_webhook_event_log`
 
 #### RevenueRecognitionEntry
 
-Daily ASC 606 revenue recognition entries. Generated by the `recognize_revenue` Celery task. Each entry represents one day of recognized revenue for a subscription.
+Daily revenue recognition entries for accounting (generated by Celery tasks).
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `subscription` | ForeignKey(Subscription) | CASCADE | Related subscription |
 | `plan` | ForeignKey(Plan) | PROTECT | Plan at time of recognition |
-| `amount_cents` | IntegerField | | Recognized amount in cents |
-| `currency` | CharField(3) | | ISO 4217 currency code |
-| `period_start` | DateTimeField | | Billing period start |
-| `period_end` | DateTimeField | | Billing period end |
-| `recognized_date` | DateField | | Date of recognition |
-| `stripe_invoice_id` | CharField | blank | Source Stripe invoice |
-| `source` | CharField(20) | choices | `scheduled`, `webhook`, `backfill` |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `updated_at` | DateTimeField | auto | Last modification |
+| `amount_cents` | BigIntegerField | — | Recognized amount |
+| `currency` | CharField(3) | — | ISO 4217 currency |
+| `period_start` | DateField | — | Service period start |
+| `period_end` | DateField | — | Service period end |
+| `recognized_date` | DateField | — | Accounting recognition date |
+| `stripe_invoice_id` | CharField | blank | Source invoice |
+| `source` | CharField | — | Recognition source |
 
+**Unique constraint:** `(subscription, recognized_date)`
 **Database table:** `billing_revenue_recognition`
-**Unique constraint:** `(subscription_id, recognized_date)`
 
-#### ServiceCredential
+### Model Relationship Hierarchy
 
-Stores API key credentials for service-to-service authentication. The raw API key is never stored — only a SHA-256 hash. Each service domain can have one active credential.
-
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `name` | CharField(100) | | Human-readable name (e.g., "Finance Backend") |
-| `service_domain` | OneToOneField(ServiceDomain) | CASCADE | Parent service domain |
-| `api_key_hash` | CharField(64) | unique, indexed | SHA-256 hash of API key |
-| `api_key_prefix` | CharField(12) | indexed | First 12 chars for identification |
-| `permissions` | JSONField | default `{}` | Scoped permissions (e.g., `{"auth": true}`) |
-| `is_active` | BooleanField | default `True` | Can be revoked instantly |
-| `last_used_at` | DateTimeField | null | Last successful auth timestamp |
-| `created_at` | DateTimeField | auto | Creation timestamp |
-| `created_by` | ForeignKey(User) | SET_NULL | Admin who created the key |
-
-**Database table:** `billing_service_credential`
-**API key format:** `sb_live_{43_chars}` (total 50 characters)
+```
+ServiceDomain → Product → Plan → AccessEntry
+                             └── Subscription → Refund
+                                          ├── Invoice → InvoiceLineItem
+                                          ├── PlanChangeLog
+                                          ├── RevenueRecognitionEntry
+                                          └── WebhookEventLog (standalone log)
+ExchangeRate (standalone)
+```
 
 ---
 
@@ -772,7 +743,7 @@ Stores API key credentials for service-to-service authentication. The raw API ke
 
 ### User Schemas (`users/schemas.py`)
 
-All schemas serve as both request validation contracts and automatic OpenAPI documentation.
+All user-related schemas serve as both request validation contracts and automatic OpenAPI documentation.
 
 #### Type Aliases for Choice Fields
 
@@ -815,44 +786,25 @@ LanguageType = Literal["en", "es", "fr", ...]            # 30 values
 
 ### Billing Schemas (`billing/schemas.py`)
 
-| Schema | Type | Key Fields | Used By |
-|---|---|---|---|
-| `ProductOutputSchema` | Output | id, name, slug, description, home_url, is_active, created_at | Product listing |
-| `ProductDetailSchema` | Output | ProductOutputSchema + plans, service_domains | Product detail |
-| `PlanOutputSchema` | ModelSchema | All plan fields + display_price, is_free, converted_price_cents | Plan listing |
-| `PlanDetailSchema` | Output | PlanOutputSchema + access_entries: list[AccessEntryOutputSchema] | Plan detail |
-| `AccessEntryOutputSchema` | Output | key, value (Any), description | Access entries |
-| `ServiceDomainOutputSchema` | Output | id, domain, product_id, is_primary, is_active | Domain listing |
-| `SubscriptionInfoSchema` | Output | plan_name, plan_slug, status, current_period_end, trial_end, is_active | auth/me response |
-| `SubscriptionOutputSchema` | Output | Full subscription + computed plan_name, plan_slug, product_name, product_slug | Subscription listing |
-| `SubscriptionDetailSchema` | Output | SubscriptionOutputSchema + plan: PlanDetailSchema, access: dict | Subscription detail |
-| `AuthMeSchema` | Output | user: UserOutputSchema, subscription: SubscriptionInfoSchema?, access: dict | `/billing/auth/me` |
-| `CheckoutInputSchema` | Input | plan_slug, billing_cycle?, tos_accepted, return_url? | Checkout creation |
-| `CheckoutOutputSchema` | Output | checkout_url?, reactivated | Checkout response |
-| `CheckoutConfirmInputSchema` | Input | session_id | Checkout confirmation |
-| `CheckoutConfirmOutputSchema` | Output | plan_name, plan_slug, status, trial_end, current_period_end | Confirm response |
-| `PortalInputSchema` | Input | return_url? | Customer portal |
-| `PortalOutputSchema` | Output | portal_url | Portal response |
-| `ChangePlanInputSchema` | Input | plan_slug, proration_behavior | Legacy plan change |
-| `ProrationPreviewOutputSchema` | Output | subtotal, tax, total, next_billing, currency, preview_token, change_type, is_upgrade | Plan preview |
-| `ConfirmPlanChangeInputSchema` | Input | plan_slug, preview_token | Plan change confirm |
-| `ConfirmPlanChangeOutputSchema` | Output | plan_name, plan_slug, status, change_type, effective_when, amount_charged, currency | Confirm response |
-| `RefundInputSchema` | Input | amount_cents?, reason, target_user_id?, reason_category, admin_notes | Admin refund |
-| `RefundOutputSchema` | Output | refund_id, stripe_refund_id, amount_cents, currency, status | Refund response |
+Billing schemas handle product/plan/subscription/invoice/refund request/response DTOs.
 
-### Common Schemas (`common/schemas.py`)
+#### Key Request Schemas
 
-| Schema | Type | Key Fields | Used By |
-|---|---|---|---|
-| `PaginationInput` | Input | page (default 1, min 1), page_size (default 20, max 100) | All paginated endpoints |
-| `PaginationMeta` | Output | total_items, total_pages, current_page, page_size, has_next, has_previous | Pagination metadata |
-| `PaginatedResponse[T]` | Generic | meta: PaginationMeta, results: list[T] | All paginated responses |
-| `MessageResponse` | Output | message, success: True | Action confirmations |
-| `ErrorResponse` | Output | detail, code? | Error responses |
-| `ApiKeyCreateInputSchema` | Input | name, service_domain_id | API key creation |
-| `ApiKeyOutputSchema` | Output | id, name, api_key_prefix, service_domain, permissions, is_active, last_used_at, created_at, created_by | API key listing |
-| `ApiKeyCreateOutputSchema` | Output | ApiKeyOutputSchema fields + raw_api_key (shown once) | API key creation response |
-| `ApiKeyRotateOutputSchema` | Output | new_api_key, old_prefix, new_prefix | API key rotation response |
+| Schema | Fields | Used By |
+|---|---|---|
+| `CheckoutInputSchema` | plan_slug, billing_cycle?, tos_accepted? | `POST /billing/subscriptions/{slug}/checkout` |
+| `ChangePlanInputSchema` | plan_slug, proration_behavior? | `POST /billing/subscriptions/{slug}/change-plan` |
+| `ConfirmPlanChangeInputSchema` | plan_slug, preview_token | `POST /billing/subscriptions/{slug}/confirm-plan-change` |
+| `RefundInputSchema` | amount_cents?, reason | `POST /billing/admin/subscriptions/{slug}/refund` |
+
+#### Key Response Schemas
+
+| Schema | Fields | Used By |
+|---|---|---|
+| `ProductDetailSchema` | id, name, slug, description, plans[], service_domains[] | `GET /billing/products/{slug}` |
+| `SubscriptionDetailSchema` | Full subscription with nested plan + access map | `GET /billing/subscriptions/{slug}` |
+| `ProrationPreviewOutputSchema` | subtotal, tax, total, next_billing, change_type, preview_token | Plan change preview |
+| `TransactionItemSchema` | id, type, amounts, hosted_url, pdf_url, card_brand | Transaction history |
 
 ### Password Validation
 
@@ -861,7 +813,7 @@ All password fields are validated by `_validate_password_strength()`:
 - At least 1 uppercase letter
 - At least 1 lowercase letter
 - At least 1 digit
-- At least 1 special character
+- At least 1 special character (`!@#$%^&*(),.?":{}|<>_\-+=[]\/~`;'`)
 
 ### OTP Validation
 
@@ -871,9 +823,11 @@ All OTP fields are validated to be exactly 6 digits (numeric string).
 
 ## 8. Backend — Service Layer
 
-### AuthService (`users/services.py`)
+### User Services (`users/services.py`)
 
-Handles all authentication-related operations. Every method has both sync and async variants.
+#### AuthService
+
+Handles all authentication-related operations.
 
 | Method | Description | Async Variant |
 |---|---|---|
@@ -890,7 +844,7 @@ Handles all authentication-related operations. Every method has both sync and as
 | `confirm_email_change_otp()` | Validate OTP, apply email change | `aconfirm_email_change_otp()` |
 | `delete_account()` | Verify password, soft_delete user, deactivate | `adelete_account()` |
 
-### UserService (`users/services.py`)
+#### UserService
 
 Handles user profile operations.
 
@@ -902,39 +856,37 @@ Handles user profile operations.
 | `get_user_by_slug()` | Get user by public UUID slug | `aget_user_by_slug()` |
 | `update_profile()` | Update whitelisted profile fields | `aupdate_profile()` |
 
-### BillingService (`billing/services.py`)
+### Billing Services (`billing/services.py`)
 
-Core billing business logic. All methods are static and have both sync and async variants.
+Core billing operations including subscription lifecycle, plan changes, access control, and Stripe orchestration.
 
 | Method | Description |
 |---|---|
-| `get_active_products()` | List all active products |
-| `get_product_by_slug()` | Get product by slug with plans and domains |
-| `get_plans_for_product()` | List active plans for a product (with optional currency conversion) |
-| `get_user_subscriptions()` | List all subscriptions for a user |
-| `get_user_subscription()` | Get subscription for a specific product |
-| `get_subscription_detail()` | Full subscription detail with plan and access map |
-| `build_auth_me()` | Assemble auth/me response: user + subscription + access map |
-| `cancel_subscription()` | Cancel subscription at period end (Stripe-first) |
-| `reactivate_subscription()` | Reactivate canceled subscription |
-| `create_checkout_session()` | Create Stripe checkout session with deduplication |
-| `confirm_checkout()` | Confirm Stripe checkout, activate subscription |
-| `preview_plan_change()` | Preview proration and generate time-limited token |
-| `confirm_plan_change()` | Confirm plan change with preview token verification |
-| `get_service_domain()` | Get service domain by domain name |
-| `get_transaction_history()` | Get billing/transaction history from Stripe |
+| `get_auth_me_data()` | Get user + subscription + access map (read-first pattern) |
+| `get_or_create_free_subscription()` | Auto-grant free plan (atomic + row-level lock) |
+| `create_checkout_session()` | Create Stripe Checkout for new/reactivated subscriptions |
+| `confirm_checkout()` | Verify checkout session and activate subscription |
+| `cancel_subscription()` | Cancel at period end or immediately |
+| `reactivate_subscription()` | Reactivate canceled subscription before period end |
+| `change_plan()` | Change subscription plan with proration |
+| `preview_plan_change()` | Generate proration preview token |
+| `confirm_plan_change()` | Execute plan change using preview token |
+| `get_subscription_detail()` | Get full subscription with plan + access |
+| `list_subscriptions()` | List user subscriptions (paginated) |
+| `get_transaction_history()` | List Stripe transactions (paginated) |
+| `create_portal_session()` | Create Stripe Customer Portal session |
 
-### CurrencyService (`billing/currency_service.py`)
+### Celery Tasks (`billing/tasks.py`)
 
-Multi-currency support with exchange rate management. Rates are fetched from open exchange APIs and cached in the database.
+Background async jobs for billing operations.
 
-| Function | Description |
-|---|---|
-| `get_exchange_rate()` | Lookup rate (direct, reverse, or cross-currency via USD) |
-| `convert_price()` | Convert a price from one currency to another |
-| `convert_plan_prices()` | Batch convert plan prices for display |
-| `fetch_exchange_rates()` | Fetch latest rates from APIs (primary: open.er-api.com, fallback: frankfurter.app) |
-| `update_exchange_rates()` | Fetch and upsert rates into database |
+| Task | Description | Schedule |
+|---|---|---|
+| `recognize_daily_revenue` | Generate daily revenue recognition entries | Daily |
+| `process_dunning` | Send payment failure reminder emails | Daily |
+| `update_exchange_rates` | Fetch latest FX rates from Stripe | Hourly |
+| `cleanup_stale_webhook_logs` | Remove processed webhook logs older than 30 days | Daily |
+| `sync_stripe_prices` | Sync Stripe prices to local Plan records | On-demand |
 
 ### OTP Management
 
@@ -966,124 +918,94 @@ The `CustomUserManager` extends `BaseUserManager` with:
 
 All endpoints are documented in the auto-generated OpenAPI spec at `/api/v1/docs`.
 
-### Current API: 45 Endpoints
-
-| Controller | Auth | Prefix | Endpoints |
-|---|---|---|---|
-| `AuthController` | Public | `/auth` | 10 |
-| `UserController` | JWT | `/users` | 11 |
-| `BillingPublicController` | Public | `/billing` | 3 |
-| `BillingProtectedController` | JWT + Verified | `/billing` | 13 |
-| `BillingAdminController` | Staff | `/billing/admin` | 5 |
-| `BillingWebhookController` | Stripe-Sig | `/billing/webhooks` | 1 |
-| `AdminApiKeyController` | Staff | `/admin/api-keys` | 4 (common app) |
-
 ### Public Endpoints (no auth required)
 
 #### Authentication (`/api/v1/auth/`)
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| GET | `/auth/choices` | Get timezone/currency/language choices | 200: `ChoicesSchema` |
-| POST | `/auth/register` | Register new account | 201: `MessageSchema` |
-| POST | `/auth/login` | Login with credentials | 200: `TokenOutputSchema` |
-| POST | `/auth/token/refresh` | Refresh access token | 200: `TokenOutputSchema` |
-| POST | `/auth/token/verify` | Verify access token validity | 200: `MessageSchema` |
-| POST | `/auth/token/blacklist` | Blacklist a refresh token | 200: `MessageSchema` |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| GET | `/auth/choices` | Get timezone/currency/language choices | — | 200: `ChoicesSchema` |
+| POST | `/auth/register` | Register new account | `RegisterInputSchema` | 201: `MessageSchema` |
+| POST | `/auth/login` | Login with credentials | `LoginInputSchema` | 200: `TokenOutputSchema` |
+| POST | `/auth/token/refresh` | Refresh access token | `TokenRefreshInputSchema` | 200: `TokenOutputSchema` |
+| POST | `/auth/token/verify` | Verify access token validity | `TokenVerifyInputSchema` | 200: `MessageSchema` |
+| POST | `/auth/token/blacklist` | Blacklist a refresh token | `TokenBlacklistInputSchema` | 200: `MessageSchema` |
 
 #### Password Reset (OTP-based)
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| POST | `/auth/password-reset/request` | Request password reset OTP | 200: `MessageSchema` |
-| POST | `/auth/password-reset/confirm` | Reset password with OTP | 200: `MessageSchema` |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| POST | `/auth/password-reset/request` | Request password reset OTP | `PasswordResetRequestSchema` | 200: `MessageSchema` |
+| POST | `/auth/password-reset/confirm` | Reset password with OTP | `PasswordResetConfirmSchema` | 200: `MessageSchema` |
 
 #### Email Verification (OTP-based)
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| POST | `/auth/verify-email/request` | Request verification OTP | 200: `MessageSchema` |
-| POST | `/auth/verify-email/confirm` | Verify email with OTP | 200: `MessageSchema` |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| POST | `/auth/verify-email/request` | Request verification OTP | `EmailVerifyRequestSchema` | 200: `MessageSchema` |
+| POST | `/auth/verify-email/confirm` | Verify email with OTP | `EmailVerifyConfirmSchema` | 200: `MessageSchema` |
 
-#### Billing — Public (`/api/v1/billing/`)
+#### Billing — Products & Plans (public read)
 
-| Method | Path | Description | Response |
+| Method | Path | Description | Query Params | Response |
+|---|---|---|---|---|
+| GET | `/billing/products` | List all public products | — | Product list |
+| GET | `/billing/products/{slug}` | Get product detail with plans | `?currency=` | `ProductDetailSchema` |
+| GET | `/billing/products/{slug}/plans` | List plans for a product | `?currency=` | Plan list |
+
+### Stripe Webhook Endpoint
+
+| Method | Path | Description | Auth |
 |---|---|---|---|
-| GET | `/billing/products` | List all active products | 200: `list[ProductOutputSchema]` |
-| GET | `/billing/products/{slug}` | Product detail with plans + domains | 200: `ProductDetailSchema` |
-| GET | `/billing/products/{slug}/plans` | List plans for a product | 200: `list[PlanOutputSchema]` |
+| POST | `/billing/webhook/stripe` | Receive Stripe webhook events | Stripe webhook signature |
 
 ### Protected Endpoints (JWT Bearer token required)
 
 #### Profile (`/api/v1/users/`)
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| GET | `/users/me` | Get current user profile | 200: `UserOutputSchema` |
-| GET | `/users/{slug}` | Get user by slug | 200: `UserOutputSchema` |
-| PUT | `/users/me` | Update profile fields | 200: `UserOutputSchema` |
-| PUT | `/users/me/avatar` | Upload/update avatar | 200: `UserOutputSchema` |
-| DELETE | `/users/me/avatar` | Remove avatar | 200: `UserOutputSchema` |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| GET | `/users/me` | Get current user profile | — | 200: `UserOutputSchema` |
+| GET | `/users/{slug}` | Get user by slug | — | 200: `UserOutputSchema` |
+| PUT | `/users/me` | Update profile fields | `UserProfileUpdateInputSchema` | 200: `UserOutputSchema` |
+| PUT | `/users/me/avatar` | Upload/update avatar | `multipart/form-data` (file field: `avatar`) | 200: `UserOutputSchema` |
+| DELETE | `/users/me/avatar` | Remove avatar | — | 200: `UserOutputSchema` |
 
 #### Account Security
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| POST | `/users/me/change-password` | Change password | 200: `MessageSchema` |
-| POST | `/users/me/confirm-identity` | Verify identity (password gate) | 200: `MessageSchema` |
-| POST | `/users/me/change-email` | Request email change OTP | 200: `MessageSchema` |
-| POST | `/users/me/change-email/confirm` | Confirm email change with OTP | 200: `MessageSchema` |
-| POST | `/users/me/delete-account` | Soft-delete account | 200: `MessageSchema` |
-| POST | `/users/me/logout` | Logout notification | 200: `MessageSchema` |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| POST | `/users/me/change-password` | Change password | `ChangePasswordInputSchema` | 200: `MessageSchema` |
+| POST | `/users/me/confirm-identity` | Verify identity (password gate) | `PasswordConfirmSchema` | 200: `MessageSchema` |
+| POST | `/users/me/change-email` | Request email change OTP | `ChangeEmailRequestSchema` | 200: `MessageSchema` |
+| POST | `/users/me/change-email/confirm` | Confirm email change with OTP | `ChangeEmailConfirmOTPSchema` | 200: `MessageSchema` |
+| POST | `/users/me/delete-account` | Soft-delete account | `DeleteAccountRequestSchema` | 200: `MessageSchema` |
+| POST | `/users/me/logout` | Logout notification | — | 200: `MessageSchema` |
 
-#### Billing — Protected (`/api/v1/billing/`)
+#### Billing — Subscriptions
 
-Requires `JWTAuth + IsAuthenticated + IsVerified`.
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| GET | `/billing/auth/me` | Get user subscription + access | Header: `X-Service-Domain` | `AuthMeSchema` |
+| GET | `/billing/subscriptions` | List user subscriptions | `?limit=&offset=` | Subscription list |
+| GET | `/billing/subscriptions/{productSlug}` | Get subscription detail | — | `SubscriptionDetailSchema` |
+| POST | `/billing/subscriptions/{productSlug}/checkout` | Create Stripe checkout session | `CheckoutInputSchema` | `{checkout_url, reactivated}` |
+| POST | `/billing/checkout/confirm` | Confirm checkout after redirect | `{session_id}` | Subscription info |
+| POST | `/billing/subscriptions/{productSlug}/cancel` | Cancel subscription | Query: `?reason=` | `MessageSchema` |
+| POST | `/billing/subscriptions/{productSlug}/reactivate` | Reactivate canceled sub | — | Subscription info |
+| POST | `/billing/subscriptions/{productSlug}/change-plan` | Change plan directly | `ChangePlanInputSchema` | Subscription info |
+| POST | `/billing/subscriptions/{productSlug}/preview-plan-change` | Preview proration costs | `{plan_slug, proration_behavior}` | `ProrationPreviewOutputSchema` |
+| POST | `/billing/subscriptions/{productSlug}/confirm-plan-change` | Confirm plan change | `ConfirmPlanChangeInputSchema` | `ConfirmPlanChangeOutputSchema` |
+| POST | `/billing/portal` | Create Stripe Portal session | — | `{portal_url}` |
+| GET | `/billing/subscriptions/transactions` | Transaction history | `?limit=&starting_after=` | Transaction list |
 
-| Method | Path | Description | Response |
-|---|---|---|---|
-| GET | `/billing/auth/me` | User + subscription + access map (domain-aware) | 200: `AuthMeSchema` |
-| GET | `/billing/subscriptions` | List all user subscriptions | 200: `list[SubscriptionOutputSchema]` |
-| GET | `/billing/subscriptions/transactions` | Transaction history from Stripe | 200 |
-| GET | `/billing/subscriptions/{product_slug}` | Subscription detail for a product | 200: `SubscriptionDetailSchema` |
-| POST | `/billing/subscriptions/{product_slug}/cancel` | Cancel at period end | 200: `MessageSchema` |
-| POST | `/billing/subscriptions/{product_slug}/reactivate` | Reactivate canceled subscription | 200: `MessageSchema` |
-| POST | `/billing/subscriptions/{product_slug}/checkout` | Create Stripe checkout session | 200: `CheckoutOutputSchema` |
-| POST | `/billing/checkout/confirm` | Confirm Stripe checkout | 200: `CheckoutConfirmOutputSchema` |
-| POST | `/billing/portal` | Create Stripe Customer Portal session | 200: `PortalOutputSchema` |
-| POST | `/billing/subscriptions/{product_slug}/preview-plan-change` | Preview proration + get token | 200: `ProrationPreviewOutputSchema` |
-| POST | `/billing/subscriptions/{product_slug}/confirm-plan-change` | Confirm plan change | 200: `ConfirmPlanChangeOutputSchema` |
+#### Billing — Admin (IsAdmin required)
 
-### Admin Endpoints (Staff only)
-
-#### Billing Admin (`/api/v1/billing/admin/`)
-
-Requires `JWTAuth + IsAuthenticated + IsAdmin`.
-
-| Method | Path | Description | Response |
-|---|---|---|---|
-| GET | `/billing/admin/refunds` | List all refunds | 200: `list[RefundOutputSchema]` |
-| POST | `/billing/admin/refunds/{product_slug}` | Create refund (admin) | 200: `RefundOutputSchema` |
-| GET | `/billing/admin/transactions` | Admin transaction history | 200 |
-| POST | `/billing/admin/sync-customer/{user_id}` | Sync Stripe customer data | 200: `MessageSchema` |
-| POST | `/billing/admin/export/{user_id}` | GDPR data export | 200 |
-
-#### API Key Management (`/api/v1/admin/api-keys/`)
-
-Requires `JWTAuth + IsAuthenticated + IsAdmin`.
-
-| Method | Path | Description | Response |
-|---|---|---|---|
-| GET | `/admin/api-keys/` | List all service credentials (paginated) | 200: `PaginatedResponse[ApiKeyOutputSchema]` |
-| POST | `/admin/api-keys/` | Create new API key (raw key shown once) | 201: `ApiKeyCreateOutputSchema` |
-| PATCH | `/admin/api-keys/{key_id}/revoke` | Revoke API key | 200: `MessageResponse` |
-| POST | `/admin/api-keys/{key_id}/rotate` | Rotate API key (revoke old, create new) | 200: `ApiKeyRotateOutputSchema` |
-
-### Webhook Endpoint
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/billing/webhooks/stripe` | Stripe signature | Process Stripe webhook events |
+| Method | Path | Description | Request Body | Response |
+|---|---|---|---|---|
+| POST | `/billing/admin/subscriptions/{productSlug}/refund` | Issue refund | `RefundInputSchema` | `RefundOutputSchema` |
+| GET | `/billing/admin/refunds/{productSlug}` | List refunds for subscription | `?limit=&offset=` | Refund list |
+| POST | `/billing/admin/sync-customer` | Sync customer data with Stripe | — | `MessageSchema` |
 
 ### Error Response Format
 
@@ -1126,9 +1048,19 @@ For simple errors:
 
 ### Token Storage
 
-Tokens are stored in `localStorage` on the client:
-- `access_token` — used in `Authorization: Bearer` header
-- `refresh_token` — used for token refresh
+Tokens are persisted in the browser's Web Storage with two strategies:
+
+| "Remember me" | Storage | Duration | Cross-tab |
+|---|---|---|---|
+| Unchecked (default) | `sessionStorage` | Survives reloads, cleared on tab close | No |
+| Checked | `localStorage` | Persists across tabs and browser restarts | Yes |
+
+Storage keys:
+- `auth_access_token` — used in `Authorization: Bearer` header
+- `auth_refresh_token` — used for token refresh
+- `auth_remember_me` — `"true"` or `"false"` (controls which storage backend is used)
+
+On page load, tokens are recovered from storage into memory before any Vue component mounts. The `initTokens()` function runs immediately when `api.ts` is imported.
 
 ### Token Refresh Flow (Automatic)
 
@@ -1136,8 +1068,8 @@ The `api.ts` client handles 401 responses automatically:
 
 1. Original request fails with 401
 2. If a refresh token exists, call `POST /auth/token/refresh`
-3. On success: store new tokens, retry original request with new access token
-4. On failure: clear tokens, redirect to `/auth/login`
+3. On success: store new tokens (both memory and storage), retry original request with new access token
+4. On failure: clear all tokens (memory and both storage backends), redirect to `/auth/login`
 
 This is transparent to all Vue components — they simply call `apiClient.get()`, `.post()`, etc. and never handle token refresh manually.
 
@@ -1168,232 +1100,31 @@ Rate limiting is implemented via Redis-based sliding window. Configured per endp
 | Email change | `email_change:{user_id}:{client_ip}` | 5 | 1 hour |
 | Email change confirm | `email_change_confirm:{user_id}:{client_ip}` | 10 | 1 hour |
 | Account deletion | `delete_account:{user_id}:{client_ip}` | 3 | 1 hour |
+| Checkout confirm | `checkout_confirm:{user_id}:{client_ip}` | 10 | 1 hour |
+| Cancel subscription | `cancel_sub:{user_id}:{client_ip}` | 5 | 1 hour |
+| Reactivate subscription | `reactivate_sub:{user_id}:{client_ip}` | 5 | 1 hour |
+| Change plan | `change_plan:{user_id}:{client_ip}` | 5 | 1 hour |
+| Sync subscriptions | `sync_subs:{user_id}` | 5 | 1 hour |
 
-Client IP is extracted from `X-Forwarded-For` header (supports ngrok/reverse proxy).
-
----
-
-## 11. Billing & Subscription System
-
-### Stripe Integration Architecture
-
-The Stripe SDK is isolated in `billing/stripe/client.py` — this is the **only file** in the project that imports the `stripe` package. All other modules interact with Stripe through wrapper functions in the `billing/stripe/` directory. This isolation makes testing easy (mock `client.py`) and keeps Stripe-specific code out of business logic.
-
-```
-Controllers → Services → billing/stripe/*.py → billing/stripe/client.py → Stripe API
-                     ↑
-              stripe_errors.py (translates Stripe errors)
-```
-
-### Stripe SDK Wrapper (`billing/stripe/`)
-
-| Module | Purpose |
-|---|---|
-| `client.py` | Low-level Stripe adapter. Wraps products, prices, customers, checkout sessions, subscriptions, invoices, portal, refunds, webhooks, payment intents. Returns plain dicts. |
-| `customer.py` | `get_or_create_customer_id()`, `find_customer_id()`, `sync_customer_to_local()` |
-| `checkout.py` | `create_checkout()`, `confirm_checkout()`, `validate_return_url()`, `build_success_url()`, `build_cancel_url()` |
-| `portal.py` | `create_portal()` — creates Customer Portal session URL |
-| `prices.py` | `ensure_product()`, `ensure_base_price()`, `resolve_price_id()` |
-| `gdpr.py` | `delete_or_anonymize_customer()`, `export_user_billing_data()` |
-
-### Webhook Processing
-
-Webhooks are received at `POST /billing/webhooks/stripe` and processed idempotently. The system records every event in `WebhookEventLog` before processing, preventing duplicate handling.
-
-#### Webhook Events Handled (10)
-
-| Event | Handler | Action |
-|---|---|---|
-| `checkout.session.completed` | `handle_checkout_completed` | Create/activate subscription |
-| `customer.subscription.created` | `handle_subscription_created` | Sync subscription from Stripe |
-| `customer.subscription.updated` | `handle_subscription_updated` | Sync subscription status/plan changes |
-| `customer.subscription.deleted` | `handle_subscription_deleted` | Mark subscription as canceled/expired |
-| `invoice.payment_succeeded` | `handle_invoice_payment_succeeded` | Clear past_due status, record invoice |
-| `invoice.payment_failed` | `handle_invoice_payment_failed` | Set past_due status, trigger dunning |
-| `customer.subscription.trial_will_end` | `handle_trial_will_end` | Notify user trial ending |
-| `charge.refunded` | `handle_charge_refunded` | Record refund in local DB |
-| `customer.updated` | `handle_customer_updated` | Sync customer metadata |
-| `invoice.created` | `handle_invoice_created` | Record draft invoice |
-
-### Subscription Lifecycle
-
-```
-No Subscription
-    │
-    ▼
-Checkout ──→ Stripe Checkout Session ──→ webhook: completed ──→ Active/Trialing
-    │
-    ├─ Cancel ──→ Canceled (still active until period end) ──→ webhook: deleted ──→ Expired
-    ├─ Reactivate ──→ Active (before period end)
-    │
-    ├─ Plan Change (Preview → Confirm):
-    │   1. POST preview-plan-change → get proration + preview_token (5-min TTL)
-    │   2. POST confirm-plan-change (with preview_token) → Stripe update → webhook sync
-    │
-    └─ Payment Failure:
-        Dunning workflow (4 steps, each with email):
-        1. Day 3: Reminder
-        2. Day 5: Urgent
-        3. Day 7: Restrict features
-        4. Day 14: Cancel subscription
-```
-
-### Plan Change Safety (Two-Step Flow)
-
-Direct plan changes are risky because proration data can become stale between preview and execution. The two-step flow prevents this:
-
-1. **Preview** — `POST /billing/subscriptions/{slug}/preview-plan-change` calculates proration on Stripe, stores it with a `preview_token` (JWT with 5-minute TTL, stored in Redis)
-2. **Confirm** — `POST /billing/subscriptions/{slug}/confirm-plan-change` verifies the token, executes the plan change if still valid, and invalidates the token
-
-### Multi-Currency Support
-
-Plan prices are stored in their native currency. When a user views plans in a different currency, the system:
-1. Looks up the exchange rate from `ExchangeRate` table
-2. Supports direct rates (USD→EUR), reverse rates (EUR→USD), and cross-rates via USD
-3. Falls back to the native price if no rate is available
-4. Rates are fetched daily by the `update_exchange_rates` Celery task
-
-### Checkout `return_url` Support
-
-The checkout and portal flows accept an optional `return_url` parameter. When provided:
-- **Checkout**: The success/cancel URLs include `return_url` as a query parameter. After Stripe checkout, the user is redirected back to the specified URL with `billing_updated=1` appended.
-- **Portal**: The portal session's `return_url` is set to the provided URL.
-- **Validation**: `validate_return_url()` checks the URL against registered `ServiceDomain.domain` entries plus the app's own domain, preventing open redirect attacks.
-- **Backward compatibility**: All `return_url` changes are opt-in — when `return_url` is `None` (default), the original behavior is preserved. Zero impact on the standalone system.
-
-### Celery Background Tasks
-
-Six automated tasks run on schedules managed by `django-celery-beat` (DatabaseScheduler):
-
-| Task | Schedule | Description |
-|---|---|---|
-| `reconcile_webhooks` | Every 6 hours | Retry unprocessed webhook events |
-| `sync_customer_data` | Daily | Sync Stripe customer metadata to local DB |
-| `dunning_retry` | Daily | 4-step dunning escalation for past-due subscriptions |
-| `update_exchange_rates` | Daily | Fetch latest exchange rates from APIs |
-| `cleanup_stale_webhook_events` | Weekly | Delete webhook events older than 90 days |
-| `recognize_revenue` | Daily | ASC 606 daily revenue recognition |
-
-#### Dunning Workflow (4-Step Escalation)
-
-Automated recovery for past-due subscriptions:
-
-| Step | Days Past Due | Action |
-|---|---|---|
-| 1 | 3 days | Send reminder email |
-| 2 | 5 days | Send urgent email |
-| 3 | 7 days | Send final warning, restrict features |
-| 4 | 14 days | Cancel subscription automatically |
-
-### Stripe Error Translation (`billing/stripe_errors.py`)
-
-The `handle_stripe_error()` function translates cryptic Stripe error messages into user-friendly ones. It pattern-matches on error message strings, error codes, and HTTP status classes. On 401 errors, an admin alert is sent (likely indicates a revoked API key).
-
-### Django Admin (Billing)
-
-All 13 billing models are registered in Django admin with:
-- Read-only fieldsets (no manual data editing)
-- Inlines for related models (e.g., plans inline on product, access entries inline on plan)
-- Custom actions: plan comparison, subscription status changes
-- The `ServiceCredentialAdmin` is fully read-only — creation is done via API endpoints only
+Client IP is extracted from `X-Forwarded-For` header with `TRUSTED_PROXIES` CIDR support.
 
 ---
 
-## 12. Service-to-Service Auth (SDK Prerequisites)
-
-### Overview
-
-Service domains authenticate against Sattabase using API keys. This enables secure machine-to-machine communication where the service backend (not the user's browser) calls Sattabase API endpoints.
-
-### API Key Authentication (`common/api_key_auth.py`)
-
-The `validate_api_key(request)` function is called at the controller level (not as middleware) to validate service credentials:
-
-1. **Extract** — reads `X-API-Key` from request header
-2. **Hash** — SHA-256 hashes the raw key (same algorithm used at creation time)
-3. **Lookup** — queries `ServiceCredential` by hash with `select_related("service_domain", "created_by")`
-4. **Validate** — checks `credential.is_active` and `credential.service_domain.is_active`
-5. **Audit** — atomically updates `last_used_at` via `.filter(pk=...).update()` to avoid race conditions
-6. **Attach** — sets `request.service_credential` and `request.service_domain_from_key` on the request object
-
-### Enforcement Modes
-
-Controlled by `API_KEY_ENFORCED` setting (default `False`):
-
-| Mode | Behavior |
-|---|---|
-| `False` (default) | If key provided: validate it. If missing/invalid: log warning, allow request through. Backward compatible. |
-| `True` (production) | If key missing or invalid: reject with 401 `UnauthorizedException`. All requests must have valid credentials. |
-
-### Key Generation (`common/utils.py`)
-
-```python
-generate_api_key() → (raw_key, prefix, sha256_hash)
-# raw_key: "sb_live_a1b2c3d4e5f6..."  (50 chars total, shown ONCE at creation)
-# prefix:  "sb_live_a1"                  (first 12 chars, for log identification)
-# hash:    SHA-256 hex digest            (64 chars, stored in DB)
-```
-
-The raw key is returned to the admin **exactly once** at creation time via the `POST /admin/api-keys/` endpoint. It cannot be retrieved again. If lost, the key must be rotated.
-
-### Auth/Me Domain Resolution Priority
-
-When `GET /billing/auth/me` receives a request, the domain is resolved in this priority order:
-
-1. **API Key** — If `X-API-Key` is present and valid, use `request.service_domain_from_key.domain` (the domain associated with the credential)
-2. **Header** — If `X-Service-Domain` header is present, look up the domain by name
-3. **None** — If neither is provided, return plain user profile without subscription/access data (standalone mode)
-
-### Dynamic CORS (`common/cors_middleware.py`)
-
-The `service_domain_cors_middleware` dynamically checks request origins against active `ServiceDomain` records:
-
-- Origins are cached for **5 minutes** under cache key `"sattabase_allowed_cors_origins"`
-- Only `is_active=True` domains are allowed
-- In DEBUG mode (`CORS_ALLOW_ALL_ORIGINS=True`), the middleware is a no-op (skips validation)
-- Injected headers: `Access-Control-Allow-Origin`, `Allow-Methods`, `Allow-Headers`, `Allow-Credentials`, `Max-Age` (24h), `Expose-Headers` (`X-API-Key`, `X-Service-Domain`)
-- Implemented as a function-based middleware using `@sync_and_async_middleware` decorator for Django 5.2 ASGI/WSGI compatibility with Daphne
-
-### IsServiceAuthenticated Permission (`common/permissions.py`)
-
-A permission class for endpoints that require valid service credentials (separate from user JWT auth):
-
-```python
-class IsServiceAuthenticated(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            hasattr(request, "service_credential")
-            and request.service_credential is not None
-            and request.service_credential.is_active
-        )
-```
-
-### API Key Management Endpoints
-
-| Method | Path | Description | Notes |
-|---|---|---|---|
-| GET | `/admin/api-keys/` | List all credentials | Paginated, filterable by `service_domain_id` and `is_active` |
-| POST | `/admin/api-keys/` | Create new API key | Returns `raw_api_key` in response (only time visible). Enforces one active key per domain. |
-| PATCH | `/admin/api-keys/{id}/revoke` | Revoke API key | Sets `is_active=False`. Rejects already-revoked keys. |
-| POST | `/admin/api-keys/{id}/rotate` | Rotate API key | Revokes old key, creates new credential for same domain. Returns new `raw_api_key`. |
-
-All mutation endpoints log via `logger.info` with user_id, email, action, IP, and path for audit purposes.
-
----
-
-## 13. Frontend — Library Layer
+## 11. Frontend — Library Layer
 
 ### API Client (`src/lib/api.ts`)
 
 Centralized fetch wrapper that handles authentication, error handling, and token refresh.
 
 **Key features:**
-- Auto-attaches `Authorization: Bearer` header from localStorage
+- Auto-attaches `Authorization: Bearer` header from in-memory token (recovered from storage on init)
 - Auto-refreshes expired access tokens (transparent 401 handling)
+- Persists refreshed tokens to storage so they survive page reloads
 - Standardized error format with field-level error extraction
-- Configurable base URL via `VITE_API_BASE_URL` env variable
+- Configurable base URL via `PUBLIC_API_BASE_URL` env variable
 - FormData upload support via `upload()` and `uploadPut()` methods
 - `getMediaUrl()` helper to resolve relative media paths against the backend origin
+- `cache: "no-store"` on every request to prevent stale data
 
 **Exported API:**
 
@@ -1406,7 +1137,7 @@ apiClient.delete<T>(path, options?)
 apiClient.upload<T>(path, formData)       // POST with multipart/form-data
 apiClient.uploadPut<T>(path, formData)    // PUT with multipart/form-data
 
-authHelpers.setTokens(access, refresh)
+authHelpers.setTokens(access, refresh, remember?)
 authHelpers.clearTokens()
 authHelpers.isAuthenticated()
 
@@ -1420,7 +1151,7 @@ Authentication functions and shared types.
 **Exported types:**
 
 ```typescript
-interface LoginPayload { email: string; password: string; }
+interface LoginPayload { email: string; password: string; remember?: boolean; }
 interface RegisterPayload { email, password, first_name, last_name, timezone, currency, language }
 interface AuthTokens { access: string; refresh: string; }
 interface UserProfile { id, slug, email, first_name, last_name, phone, avatar,
@@ -1450,7 +1181,7 @@ getCachedChoices(): Choices | null       // Returns cached data without API call
 
 | Function | Endpoint | Description |
 |---|---|---|
-| `login(payload)` | POST /auth/login | Login and store tokens |
+| `login(payload)` | POST /auth/login | Login, store tokens (respects `remember` flag) |
 | `register(payload)` | POST /auth/register | Register new account |
 | `logout()` | POST /users/me/logout | Clear tokens, redirect |
 | `requestPasswordReset(email)` | POST /auth/password-reset/request | Request password reset OTP |
@@ -1465,13 +1196,54 @@ getCachedChoices(): Choices | null       // Returns cached data without API call
 | `updateAvatar(file)` | PUT /users/me/avatar | Upload avatar (multipart) |
 | `deleteAvatar()` | DELETE /users/me/avatar | Remove avatar |
 | `deleteAccount(password)` | POST /users/me/delete-account | Soft-delete account |
-| `isAuthenticated()` | — | Check localStorage for token |
+| `isAuthenticated()` | — | Check in-memory token (recovered from storage on init) |
 | `requireAuth()` | — | Redirect to login if unauthenticated |
 | `getErrorMessage(error)` | — | Extract user-friendly error string |
 | `fetchChoices()` | GET /auth/choices | Fetch timezone/currency/language choices (cached) |
 | `getCachedChoices()` | — | Return cached choices if already fetched |
 | `detectUserTimezone(choices?)` | — | Auto-detect browser timezone, validate against choices |
 | `detectUserLanguage(choices?)` | — | Auto-detect browser language, validate against choices |
+
+### Billing Library (`src/lib/billing.ts`)
+
+Billing API client, types, and formatting helpers. Uses the same `apiClient` from `api.ts` for all requests.
+
+**Exported types (17 interfaces):**
+
+`AccessEntrySchema`, `PlanSchema`, `PlanDetailSchema`, `ServiceDomainSchema`, `ProductSchema`, `ProductDetailSchema`, `SubscriptionInfoSchema`, `SubscriptionOutputSchema`, `SubscriptionDetailSchema`, `AuthMeSchema`, `CheckoutInputSchema`, `RefundInputSchema`, `RefundOutputSchema`, `ProrationPreviewOutputSchema`, `ConfirmPlanChangeOutputSchema`, `TransactionItemSchema`, `ChangePlanInputSchema`
+
+**Exported API (`billingApi` object):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `getProducts()` | GET /billing/products | List all public products |
+| `getProductBySlug(slug, currency?)` | GET /billing/products/{slug} | Get product with plans + currency conversion |
+| `getPlansForProduct(slug, currency?)` | GET /billing/products/{slug}/plans | List plans with optional FX conversion |
+| `getAuthMe(domain?)` | GET /billing/auth/me | Get subscription + access (supports `X-Service-Domain` header) |
+| `getSubscriptions()` | GET /billing/subscriptions | List user subscriptions |
+| `getSubscriptionDetail(slug)` | GET /billing/subscriptions/{slug} | Get subscription with plan + access map |
+| `cancelSubscription(slug, reason?)` | POST /billing/subscriptions/{slug}/cancel | Cancel subscription |
+| `reactivateSubscription(slug)` | POST /billing/subscriptions/{slug}/reactivate | Reactivate canceled subscription |
+| `changePlan(slug, planSlug, behavior?)` | POST /billing/subscriptions/{slug}/change-plan | Change plan directly |
+| `createCheckout(slug, planSlug, cycle?, tos?)` | POST /billing/subscriptions/{slug}/checkout | Create Stripe checkout session |
+| `confirmCheckout(sessionId)` | POST /billing/checkout/confirm | Confirm checkout after redirect |
+| `createPortalSession()` | POST /billing/portal | Create Stripe Customer Portal session |
+| `refundSubscription(slug, payload)` | POST /billing/admin/subscriptions/{slug}/refund | **Admin-only** refund |
+| `previewPlanChange(slug, planSlug, behavior?)` | POST /billing/subscriptions/{slug}/preview-plan-change | Preview proration costs |
+| `confirmPlanChange(slug, planSlug, token)` | POST /billing/subscriptions/{slug}/confirm-plan-change | Confirm plan change |
+| `getTransactionHistory(limit?, after?)` | GET /billing/subscriptions/transactions | Paginated transaction history |
+| `syncCustomerData()` | POST /billing/admin/sync-customer | **Admin-only** sync with Stripe |
+
+**Exported helper functions:**
+
+| Function | Description |
+|---|---|
+| `setUserCurrency(currency)` | Set user's preferred display currency (default: `"USD"`) |
+| `getUserCurrency()` | Get current display currency |
+| `formatPrice(cents, currency?)` | Format cents to `"$9.00"` (returns `"Free"` for 0) |
+| `formatCycle(cycle)` | Map billing cycle to `"/mo"`, `"/yr"`, or `"one-time"` |
+| `getStatusStyle(status)` | Return Tailwind CSS badge classes for subscription status |
+| `formatDate(dateStr)` | Format ISO date to `"Mon DD, YYYY"` |
 
 ### Toast System (`src/lib/toast.ts`)
 
@@ -1485,17 +1257,18 @@ showToast(message, type?, options?)
 
 ---
 
-## 14. Frontend — Components & Pages
+## 12. Frontend — Components & Pages
 
 ### Auth Pages (unauthenticated)
 
 | Page | Path | Component | Description |
 |---|---|---|---|
-| Login | `/auth/login` | `LoginForm.vue` | Email/password login form |
+| Login | `/auth/login` | `LoginForm.vue` | Email/password login with "Remember me" |
 | Register | `/auth/register` | `RegisterForm.vue` | Registration with timezone/currency/language selection |
 | Forgot Password | `/auth/forgot-password` | `ForgotPasswordForm.vue` | Enter email to request reset OTP |
 | Reset Password | `/auth/reset-password` | `ResetPasswordForm.vue` | Enter OTP + new password |
 | Verify Email | `/auth/verify-email` | `VerifyEmailForm.vue` | Enter OTP to verify email |
+| Email Change Confirm | `/auth/email-change/confirm` | `EmailChangeConfirm.vue` | Confirm email change with OTP |
 
 All auth pages use `AuthLayout.astro` which provides a centered, minimal layout.
 
@@ -1506,6 +1279,8 @@ All auth pages use `AuthLayout.astro` which provides a centered, minimal layout.
 | Dashboard | `/dashboard/` | `DashboardHome.vue` | Overview / landing after login |
 | Profile | `/dashboard/profile` | `ProfileCard.vue` | View/edit profile, avatar upload |
 | Settings | `/dashboard/settings` | `SettingsPanel.vue` | Password change, email change, account deletion |
+| Billing Overview | `/dashboard/billing` | `BillingOverview.vue` | Subscriptions, transactions, invoices, cancel/reactivate |
+| Plan Comparison | `/dashboard/billing/plans/{slug}` | `PlanComparison.vue` | Plan selection, upgrade/downgrade with proration preview |
 
 All dashboard pages use `DashboardLayout.astro` which includes `Navbar.astro` and `Sidebar.astro`.
 
@@ -1514,6 +1289,8 @@ All dashboard pages use `DashboardLayout.astro` which includes `Navbar.astro` an
 | Component | Type | Description |
 |---|---|---|
 | `SearchableSelect.vue` | Vue island | Dropdown with search, grouped options, keyboard nav |
+| `BillingOverview.vue` | Vue island | Subscription management, transaction history, cancel/reactivate, portal link |
+| `PlanComparison.vue` | Vue island | Plan cards, feature comparison, upgrade/downgrade flows, proration modal |
 | `EmptyState.astro` | Astro component | Centered empty state with icon and message |
 | `LoadingSpinner.astro` | Astro component | CSS-only loading spinner |
 
@@ -1531,7 +1308,7 @@ The avatar system spans multiple layers:
 
 ---
 
-## 15. Security
+## 13. Security
 
 ### Middleware Stack
 
@@ -1539,10 +1316,9 @@ The avatar system spans multiple layers:
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "corsheaders.middleware.CorsMiddleware",                          # Static CORS (django-cors-headers)
-    "common.cors_middleware.service_domain_cors_middleware",         # Dynamic CORS (ServiceDomain DB)
+    "corsheaders.middleware.CorsMiddleware",           # CORS handling
     "django.middleware.common.CommonMiddleware",
-    "ninja.compatibility.files.fix_request_files_middleware",        # File upload support
+    "ninja.compatibility.files.fix_request_files_middleware",  # File upload support
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -1550,23 +1326,12 @@ MIDDLEWARE = [
 ]
 ```
 
-The `service_domain_cors_middleware` uses `@sync_and_async_middleware` (Django 5.2 pattern) for ASGI/WSGI compatibility with Daphne. It checks request origins against active `ServiceDomain` records in the database, with a 5-minute cache.
-
 ### JWT Authentication Flow
 
 1. Client sends `Authorization: Bearer <access_token>` header
 2. `JWTAuth.authenticate()` decodes the token, extracts `user_id`
 3. User is fetched from DB with `is_active=True, is_deleted=False` filter
 4. If valid, `request.user` is set; otherwise returns `None` (401)
-
-### Service-to-Service API Key Auth
-
-1. Service backend sends `X-API-Key: sb_live_...` header
-2. `validate_api_key()` hashes the key, looks up `ServiceCredential` by hash
-3. Checks `credential.is_active` and `credential.service_domain.is_active`
-4. Atomically updates `last_used_at`
-5. Sets `request.service_credential` and `request.service_domain_from_key`
-6. If `API_KEY_ENFORCED=True` and key is missing/invalid: rejects with 401
 
 ### Password Security
 
@@ -1590,6 +1355,16 @@ The `service_domain_cors_middleware` uses `@sync_and_async_middleware` (Django 5
 - `get_by_natural_key()` (used by Django auth backend) excludes deleted users
 - JWT auth explicitly checks `is_deleted=False`
 
+### Stripe Security
+
+- Webhook events verified with Stripe signature (`stripe.webhooks.construct_event`)
+- Webhook deduplication via `WebhookEventLog` (unique `event_id`)
+- Idempotent plan changes using server-side preview tokens with expiry
+- Row-level DB locking (`select_for_update()`) in webhook handlers to prevent race conditions
+- Stripe API errors caught specifically (no bare `except Exception`)
+- `rel="noopener noreferrer"` on all external links (Stripe portal, hosted invoices)
+- Admin-only access for refund and sync endpoints (rate-limited, logged)
+
 ### Production Security Headers
 
 In production (`DEBUG=False`):
@@ -1607,33 +1382,20 @@ In production (`DEBUG=False`):
 
 | Permission | Description |
 |---|---|
-| `IsAuthenticated` | User must be logged in (`request.user.is_authenticated`) |
-| `IsAdmin` | User must be staff (`is_authenticated and is_staff`) |
-| `IsVerified` | User must have verified email (`is_authenticated and is_email_verified`) |
-| `IsSelfOrAdmin` | User must be the object owner or staff (object-level check) |
-| `IsServiceAuthenticated` | Service credential must be valid (`request.service_credential is not None and .is_active`) |
-
-### Custom Exceptions (`common/exceptions.py`)
-
-| Exception | HTTP Status | Description |
-|---|---|---|
-| `BadRequestException` | 400 | Invalid request data |
-| `UnauthorizedException` | 401 | Authentication required |
-| `ForbiddenException` | 403 | Insufficient permissions |
-| `NotFoundException` | 404 | Resource not found |
-| `ConflictException` | 409 | Duplicate resource |
-| `TooManyRequestsException` | 429 | Rate limit exceeded |
-| `AccountNotActiveException` | 403 | Account is inactive/deleted |
+| `IsAuthenticated` | User must be logged in |
+| `IsAdmin` | User must be staff |
+| `IsVerified` | User must have verified email |
+| `IsSelfOrAdmin` | User must be the object owner or staff |
 
 ---
 
-## 16. Infrastructure
+## 14. Infrastructure
 
 ### Docker Compose
 
 ```yaml
 services:
-  redis:      # Port 6379 — OTP cache, rate limiting, Celery broker, CORS cache
+  redis:      # Port 6379 — OTP cache, rate limiting, Celery broker, Channels
   db:         # Port 5432 — PostgreSQL database
 ```
 
@@ -1641,24 +1403,20 @@ services:
 
 | Purpose | DB | TTL |
 |---|---|---|
-| OTP storage (all flows) | DB 2 (via default cache) | 10 minutes |
-| Rate limiting | DB 2 (via default cache) | Variable (5 min to 1 hour) |
-| CORS origin cache | DB 2 (via default cache) | 5 minutes |
-| Plan change preview tokens | DB 2 (via default cache) | 5 minutes |
+| OTP storage (all flows) | DB 0 (via default cache) | 10 minutes |
+| Rate limiting | DB 0 (via default cache) | Variable (5 min to 1 hour) |
 | Celery broker | DB 1 | — |
 | Django Channels | DB 0 (configured separately) | — |
 
-### Celery Configuration
+### Celery Tasks
 
-| Setting | Value |
-|---|---|
-| Broker | `redis://{host}:{port}/1` |
-| Result Backend | `django-db` |
-| Beat Scheduler | `DatabaseScheduler` (managed via Django admin) |
-| Task Time Limit | 30 minutes |
-| Timezone | UTC |
-
-Schedules are managed via `django-celery-beat`'s `DatabaseScheduler`, allowing runtime configuration through the Django admin interface without code changes.
+| Task | Schedule | Description |
+|---|---|---|
+| `recognize_daily_revenue` | Daily | Generate revenue recognition entries |
+| `process_dunning` | Daily | Send payment failure reminders |
+| `update_exchange_rates` | Hourly | Fetch FX rates from Stripe |
+| `cleanup_stale_webhook_logs` | Daily | Remove old webhook logs |
+| `sync_stripe_prices` | On-demand | Sync Stripe prices to local DB |
 
 ### Email Configuration
 
@@ -1676,27 +1434,15 @@ Schedules are managed via `django-celery-beat`'s `DatabaseScheduler`, allowing r
 | `MEDIA_URL` | `/media/` |
 | `MEDIA_ROOT` | `backend/media/` |
 | Avatar upload path | `media/avatars/YYYY/MM/` |
+| Product icon path | `product_icons/` |
 | Allowed types | JPEG, PNG, GIF, WebP |
 | Max size | 2 MB |
 | Storage backend | `FileSystemStorage` (local disk) |
 | Production serving | Reverse proxy (nginx) required |
 
-### Stripe Configuration
-
-| Setting | Description |
-|---|---|
-| `SB_STRIPE_SECRET_KEY` | Stripe secret key for API calls |
-| `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key (frontend) |
-| `SB_STRIPE_WEBHOOK_SECRET` | Webhook signing secret for event verification |
-| `SB_STRIPE_APP_DOMAIN` | Sattabase base URL (used in checkout/portal URLs) |
-| `SB_STRIPE_PORTAL_RETURN_URL` | Default return URL for Customer Portal |
-| `SB_STRIPE_SUCCESS_URL` | Default success URL for checkout |
-| `SB_STRIPE_CANCEL_URL` | Default cancel URL for checkout |
-| `SB_STRIPE_TAX_ENABLED` | Whether to enable Stripe Tax |
-
 ---
 
-## 17. Conventions & Patterns
+## 15. Conventions & Patterns
 
 ### Backend Patterns
 
@@ -1712,22 +1458,6 @@ Controllers are thin HTTP handlers. All business logic lives in services. Contro
 
 Every service and manager method has both sync and async variants. Async variants are prefixed with `a` (e.g., `register_user` / `aregister_user`). Async methods use Django 5.2's async ORM (`aget`, `afirst`, `asave`, `aexists`) and `sync_to_async` wrappers for cache operations.
 
-**Stripe-First Mutations**
-
-All billing state changes go through Stripe first, then the local database is synced via webhooks. This ensures Stripe is always the single source of truth. Direct DB writes for billing are avoided except for non-payment operations (e.g., admin notes, audit fields).
-
-**Safe Plan Changes (Two-Step)**
-
-Plan changes use a preview/confirm pattern with a time-limited `preview_token` stored in Redis. This prevents stale proration data from being applied. The token has a 5-minute TTL and is invalidated after use.
-
-**API Key Security**
-
-- Raw API keys are never stored — only SHA-256 hashes
-- Keys are shown to the admin exactly once at creation time
-- `last_used_at` is updated atomically to avoid race conditions
-- Enforcement mode is configurable via `API_KEY_ENFORCED` for gradual rollout
-- Only the key prefix (first 12 chars) is logged for identification
-
 **Whitelisted Field Updates**
 
 The `update_profile()` service only updates fields in an explicit `allowed_fields` list. This prevents mass-assignment vulnerabilities. To add a new updatable field, add it to the whitelist in both `update_profile()` and `aupdate_profile()`.
@@ -1736,38 +1466,52 @@ The `update_profile()` service only updates fields in an explicit `allowed_field
 
 All email fields are normalized to lowercase and stripped of whitespace before database operations. This prevents duplicate accounts due to case differences.
 
-**Dynamic CORS via Database**
+**Stripe Integration Pattern**
 
-Rather than maintaining a hardcoded list of allowed origins, the system checks origins against active `ServiceDomain` records in the database. This means adding a new service domain to the system automatically enables CORS for that domain without any code or configuration changes.
+All Stripe API calls go through `billing/stripe/client.py` which configures the `stripe` library with `STRIPE_SECRET_KEY` and provides typed wrapper methods. Controllers and services never import `stripe` directly (except webhook handlers which use inline imports for specific Stripe object types).
 
-**ASGI-Compatible Middleware**
+**Webhook Processing Pipeline**
 
-All custom middleware uses Django 5.2's `@sync_and_async_middleware` decorator pattern for compatibility with both Daphne (ASGI) and traditional WSGI servers. The middleware checks `iscoroutinefunction(get_response)` to determine the correct execution path.
+```
+Stripe → POST /billing/webhook/stripe
+  → Verify signature (stripe.webhooks.construct_event)
+  → Deduplicate (WebhookEventLog, unique event_id)
+  → Route by event_type (billing/stripe/webhooks/router.py)
+  → Handler processes event (handlers/checkout.py, subscription.py, invoice.py, charge.py)
+  → Handler updates DB (with select_for_update where needed)
+  → Mark event as processed
+```
+
+**Idempotent Plan Changes**
+
+Plan changes use a two-step flow to prevent double-charges:
+1. `POST /preview-plan-change` → server generates HMAC token with proration details, stores in cache
+2. `POST /confirm-plan-change` → server validates token (exact amount match with ±1 cent tolerance), executes change
+
+**Row-Level Locking**
+
+Webhook handlers that modify subscription state use `select_for_update()` inside `transaction.atomic()` to prevent race conditions when multiple webhook events arrive simultaneously.
 
 ### Frontend Patterns
 
 **Centralized API Client**
 
-All HTTP requests go through `apiClient` in `api.ts`. This ensures consistent headers, error handling, and token management across the entire frontend. Vue components never call `fetch()` directly.
+All API calls go through `src/lib/api.ts`. Vue components never use `fetch()` directly. This ensures consistent auth headers, error handling, and token refresh across the entire application.
 
-**Backend-Driven Choices**
+**Storage-Based Token Persistence**
 
-Timezone, currency, and language options are fetched from the backend API (`GET /auth/choices`) rather than hardcoded. This keeps frontend and backend in sync and allows adding new options without a frontend deploy.
+JWT tokens are persisted in `sessionStorage` (default) or `localStorage` ("Remember me"). On page load, `initTokens()` recovers them into memory before any component mounts. This balances security (tokens cleared on tab close) with convenience (survives full page reloads).
 
-**Toast Notifications**
+**Billing Currency Display**
 
-All user feedback uses the `showToast()` function from `toast.ts`. No `alert()` or `confirm()` calls in the codebase. Toasts auto-dismiss after a configurable duration and support action buttons.
+The `billingApi` supports optional `?currency=` query parameter on product/plan endpoints. When provided, the backend converts prices using cached exchange rates. The frontend provides `formatPrice()` and `getUserCurrency()` helpers for consistent display.
 
-### Database Patterns
+**Toast-First Feedback**
 
-**Denormalized Product on Subscription**
+User-facing actions (login, plan changes, cancellations) provide immediate feedback via the toast system (`showToast()`). Errors from API calls are displayed both as inline form errors (when applicable) and as toast notifications.
 
-The `Subscription` model has a `product` FK that duplicates the product from `plan.product`. This denormalization avoids expensive joins when listing subscriptions and makes the data resilient to plan changes.
+**Confirmation Patterns for Destructive Actions**
 
-**Protected Foreign Keys**
-
-The `Subscription.plan` FK uses `on_delete=models.PROTECT`. This prevents accidental deletion of plans that have active subscribers. An admin must cancel/move subscriptions before deleting a plan.
-
-**JSONField for Flexible Data**
-
-`Plan.features` (list of strings for display), `ServiceCredential.permissions` (dict of permission flags), and `WebhookEventLog.payload` (raw Stripe event) use JSONField for schema flexibility without requiring migrations for structural changes.
+- Plan downgrade (paid → free): `window.confirm()` dialog (not toast)
+- Subscription cancel: Confirmation dialog in BillingOverview with reason input
+- Account deletion: Requires current password + explicit confirmation in SettingsPanel

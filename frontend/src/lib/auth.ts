@@ -2,7 +2,8 @@
  * Auth utilities — provides helper functions for authentication state
  * management across Vue components (client-side only).
  *
- * Uses localStorage for JWT tokens.
+ * Tokens are persisted in sessionStorage (default) or localStorage
+ * (when "Remember me" is checked). See api.ts for details.
  */
 
 import { authHelpers, apiClient } from "./api";
@@ -13,6 +14,7 @@ import type { ApiError } from "./api";
 export interface LoginPayload {
   email: string;
   password: string;
+  remember?: boolean;
 }
 
 export interface RegisterPayload {
@@ -108,10 +110,12 @@ export function getCachedChoices(): Choices | null {
 
 /**
  * Login — POST /auth/login → store tokens
+ * @param payload.remember - If true, tokens persist in localStorage (30 days).
+ *                          If false/omitted, tokens use sessionStorage (tab-only).
  */
 export async function login(payload: LoginPayload): Promise<AuthTokens> {
   const data = await apiClient.post<AuthTokens>("/auth/login", payload);
-  authHelpers.setTokens(data.access, data.refresh);
+  authHelpers.setTokens(data.access, data.refresh, payload.remember ?? false);
   return data;
 }
 
@@ -285,7 +289,8 @@ export async function deleteAvatar(): Promise<UserProfile> {
 
 /**
  * Check if user is authenticated (has a non-expired access token).
- * Note: This only checks localStorage — it doesn't validate the token with the server.
+ * Note: This checks the in-memory token (recovered from storage on init).
+ * It doesn't validate the token with the server.
  */
 export function isAuthenticated(): boolean {
   return authHelpers.isAuthenticated();

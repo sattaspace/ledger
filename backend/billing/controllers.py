@@ -362,38 +362,60 @@ class BillingProtectedController:
 
     @http_get(
         "/subscriptions",
-        response=list[SubscriptionOutputSchema],
+        response=dict,
         summary="List user subscriptions",
         description=(
             "Return all subscriptions for the authenticated user "
-            "across all products."
+            "across all products. CTR-08 Fix: Now supports pagination "
+            "via limit/offset query parameters."
         ),
     )
-    async def list_subscriptions(self, request: HttpRequest):
-        """List all subscriptions for the current user."""
-        subscriptions = await BillingService.aget_user_subscriptions(request.user)
-        return [
-            {
-                "id": sub.id,
-                "user_id": sub.user_id,
-                "status": sub.status,
-                "cancel_at_period_end": sub.cancel_at_period_end,
-                "currency": sub.currency or None,
-                "current_period_start": sub.current_period_start,
-                "current_period_end": sub.current_period_end,
-                "trial_start": sub.trial_start,
-                "trial_end": sub.trial_end,
-                "canceled_at": sub.canceled_at,
-                "expires_at": sub.expires_at,
-                "created_at": sub.created_at,
-                "updated_at": sub.updated_at,
-                "plan_name": sub.plan.name,
-                "plan_slug": sub.plan.slug,
-                "product_name": sub.product.name,
-                "product_slug": sub.product.slug,
-            }
-            for sub in subscriptions
-        ]
+    async def list_subscriptions(
+        self,
+        request: HttpRequest,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        """List all subscriptions for the current user.
+
+        CTR-08 Fix: Added pagination support to prevent unbounded result
+        sets for users with many subscriptions. Defaults to 50 per page,
+        max 100.
+        """
+        limit = min(max(limit, 1), 100)
+        offset = max(offset, 0)
+
+        all_subscriptions = await BillingService.aget_user_subscriptions(request.user)
+        paginated = all_subscriptions[offset:offset + limit]
+
+        return {
+            "items": [
+                {
+                    "id": sub.id,
+                    "user_id": sub.user_id,
+                    "status": sub.status,
+                    "cancel_at_period_end": sub.cancel_at_period_end,
+                    "currency": sub.currency or None,
+                    "current_period_start": sub.current_period_start,
+                    "current_period_end": sub.current_period_end,
+                    "trial_start": sub.trial_start,
+                    "trial_end": sub.trial_end,
+                    "canceled_at": sub.canceled_at,
+                    "expires_at": sub.expires_at,
+                    "created_at": sub.created_at,
+                    "updated_at": sub.updated_at,
+                    "plan_name": sub.plan.name,
+                    "plan_slug": sub.plan.slug,
+                    "product_name": sub.product.name,
+                    "product_slug": sub.product.slug,
+                }
+                for sub in paginated
+            ],
+            "total": len(all_subscriptions),
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < len(all_subscriptions),
+        }
 
     # =========================================================================
     # Transaction History (UX-05: user-facing endpoint)
@@ -450,6 +472,8 @@ class BillingProtectedController:
         fetches the live state from Stripe, and overwrites the local DB.
         Returns the updated subscription list.
         """
+        check_rate_limit_or_raise(request, "sync_subscriptions")
+
         logger.warning(
             "[SYNC-DIAG] sync_subscriptions called for user %s (id=%s)",
             request.user.email, request.user.id,
@@ -532,7 +556,7 @@ class BillingProtectedController:
             "Requires email verification."
         ),
     )
-    async def cancel_subscription(self, request: HttpRequest, product_slug: str):
+    async def cancel_subscription(self, request: HttpRequest, product_slug: str, reason: str = ""):
         """Cancel a subscription at period end.
 
         Stripe-first flow:
@@ -540,8 +564,14 @@ class BillingProtectedController:
         2. If has Stripe sub → call cancel_subscription_on_stripe()
         3. On Stripe success → update local DB
         4. If Stripe fails → raise error, DB untouched
+
+        SEC-02: Accepts optional ``reason`` query param for cancellation analytics.
+        The reason is logged but not persisted to the subscription model (which
+        has no reason field).  It is recorded via the cancellation metadata
+        on Stripe and in the application log.
         """
         require_verified_email(request)
+        check_rate_limit_or_raise(request, "cancel_sub")
 
         subscription = await BillingService.aget_subscription_for_product(
             request.user, product_slug
@@ -552,6 +582,13 @@ class BillingProtectedController:
         if subscription.status not in ("active", "trialing"):
             raise BadRequestException(
                 f"Cannot cancel a subscription with status '{subscription.status}'."
+            )
+
+        # SEC-02: Log cancellation reason for analytics
+        if reason:
+            logger.info(
+                "CANCEL_REASON: user_id=%s, sub_id=%s, product=%s, reason=%s",
+                request.user.id, subscription.id, product_slug, reason,
             )
 
         # ── Step 1: Stripe first ──────────────────────────────────────
@@ -585,11 +622,13 @@ class BillingProtectedController:
 
         Stripe-first flow:
         1. Validate subscription state (canceled)
-        2. If has Stripe sub → call reactivate_subscription_on_stripe()
-        3. On Stripe success → update local DB
-        4. If Stripe fails → raise error, DB untouched
+        2. Check period has not expired (CTR-13)
+        3. If has Stripe sub → call reactivate_subscription_on_stripe()
+        4. On Stripe success → update local DB
+        5. If Stripe fails → raise error, DB untouched
         """
         require_verified_email(request)
+        check_rate_limit_or_raise(request, "reactivate_sub")
 
         subscription = await BillingService.aget_subscription_for_product(
             request.user, product_slug
@@ -599,6 +638,17 @@ class BillingProtectedController:
 
         if subscription.status != "canceled":
             raise BadRequestException("Only canceled subscriptions can be reactivated.")
+
+        # CTR-13 Fix: Check if the billing period has already expired.
+        # After period_end, the Stripe subscription cannot be meaningfully
+        # reactivated — the customer would need to go through checkout again.
+        if subscription.current_period_end:
+            from django.utils import timezone as tz
+            if subscription.current_period_end < tz.now():
+                raise BadRequestException(
+                    "This subscription's billing period has expired. "
+                    "Please subscribe to a new plan."
+                )
 
         # ── Step 1: Stripe first ──────────────────────────────────────
         if subscription.stripe_subscription_id:
@@ -643,6 +693,7 @@ class BillingProtectedController:
         - Paid → Free (cancels at period end)
         """
         require_verified_email(request)
+        check_rate_limit_or_raise(request, "change_plan")
 
         subscription = await BillingService.aget_subscription_for_product(
             request.user, product_slug
@@ -858,7 +909,12 @@ class BillingProtectedController:
                     update_fields=["tos_accepted_at", "tos_version", "updated_at"]
                 )
                 return {"checkout_url": None, "reactivated": True}
-            except (ValueError, Exception) as e:
+            except (ValueError, stripe.error.StripeError) as e:
+                # CTR-12 Fix: Catch only ValueError (from business logic)
+                # and StripeError (from API calls) — NOT generic Exception.
+                # Previously, `(ValueError, Exception)` swallowed ALL errors
+                # including DB timeouts, connection errors, and programming
+                # bugs, masking them as "Unable to update your subscription".
                 logger.error(
                     f"Reactivation failed for sub {sub.id}: {e}", exc_info=True
                 )
@@ -950,7 +1006,13 @@ class BillingProtectedController:
         2. Validate payment_status == 'paid' and user ownership
         3. Update the local subscription (plan, status, Stripe IDs, period dates)
         4. Return the activated subscription data
+
+        CTR-10 Fix: Requires email verification — unverified users should not
+        be able to activate subscriptions (they could be fraudulent signups).
         """
+        require_verified_email(request)
+        check_rate_limit_or_raise(request, "confirm_checkout")
+
         try:
             result = await sync_to_async(_confirm_checkout)(
                 session_id=payload.session_id,

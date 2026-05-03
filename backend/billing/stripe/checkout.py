@@ -255,8 +255,14 @@ def confirm_checkout(session_id: str, user) -> dict:
     """
     try:
         session = _retrieve_checkout(session_id)
-    except Exception:
-        raise ValueError(f"Invalid checkout session: {session_id}")
+    except stripe.error.InvalidRequestError as e:
+        raise ValueError(f"Invalid checkout session: {session_id}") from e
+    except stripe.error.AuthenticationError as e:
+        logger.error(f"Stripe auth failed retrieving checkout {session_id}: {e}")
+        raise ValueError("Payment service configuration error. Please contact support.") from e
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error retrieving checkout {session_id}: {e}")
+        raise ValueError(f"Unable to verify checkout session. Please try again.") from e
 
     if session.get("payment_status") != "paid":
         raise ValueError(

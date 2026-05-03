@@ -202,3 +202,5 @@ local-*
 test
 prompt
 
+SattaAddressBackend/
+SattaAddressFrontend/

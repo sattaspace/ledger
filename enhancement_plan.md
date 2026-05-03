@@ -35,1498 +35,1123 @@ Service Domain (e.g., finance.sattabase.tld)
 
 ---
 
-## 2. Completed Work (Phases 1–5)
+## 2. Model Architecture
 
-The following have been fully implemented and are in production code:
+### Entity Relationship
 
-### Phase 1: Core Models & Admin — DONE
+```
+Product (one per service domain)
+  └── Plan (multiple per product — Free, Standard, Pro, etc.)
+        ├── AccessEntry (many key-value pairs per plan)
+        └── Subscription (one per user per product)
+              ├── user → FK User
+              ├── plan → FK Plan
+              ├── status → active / past_due / canceled / trialing
+              └── billing period (start, end)
+```
 
-- `billing` Django app with 12 models
-- Django admin with inlines, custom actions, read-only enforcement
-- Migrations, plan comparison via admin, seed data ready
+### New Django App: `billing`
 
-### Phase 2: Enhanced auth/me Endpoint — DONE
-
-- `GET /api/v1/billing/auth/me` with `X-Service-Domain` header
-- Returns user + subscription + access map (domain-aware)
-- Fallback to plain user profile when no domain header
-
-### Phase 3: Stripe Integration — DONE
-
-- Stripe SDK wrapper in `billing/stripe/` (client, customer, checkout, portal, prices, gdpr, webhooks)
-- Webhook handler: 10 event types, idempotent processing, signature verification
-- Checkout flow with deduplication, ToS tracking
-- Customer portal integration
-
-### Phase 4: Subscription Management — DONE
-
-- Full subscription lifecycle: list, detail, cancel, reactivate, checkout, confirm
-- Safe plan change: `preview-plan-change` → `preview_token` → `confirm-plan-change`
-- Stripe-first mutations with local DB sync via webhooks
-- Transaction history, GDPR data export
-- Admin endpoints: refund, admin transactions, customer sync
-
-### Phase 5: Automation & Notifications — DONE
-
-- 6 Celery tasks: reconcile webhooks (6hr), exchange rates (daily), customer sync (daily), dunning retry (daily), revenue recognition (daily), webhook cleanup (weekly)
-- Dunning workflow: 4-step escalation (3→5→7→14 day stages)
-- ASC 606 daily revenue recognition
-- Dual-API currency conversion with stale rate alerting
-
-### Current API: 41 Endpoints
-
-| Controller | Auth | Endpoints |
-|-----------|------|-----------|
-| `AuthController` | Public | 10 (register, login, token, password reset, email verify) |
-| `UserController` | JWT | 11 (profile CRUD, avatar, password change, email change, delete account) |
-| `BillingPublicController` | Public | 3 (products, plans listing) |
-| `BillingProtectedController` | JWT + Verified | 13 (auth/me, subscriptions, checkout, cancel, reactivate, plan change, portal, export) |
-| `BillingAdminController` | Staff only | 3 (refund, admin transactions, customer sync) |
-| `BillingWebhookController` | Stripe-Sig | 1 (stripe webhook) |
+A new Django app `billing` will house all subscription-related models, services, and controllers. This keeps billing concerns cleanly separated from the existing `users` app.
 
 ---
 
-## 3. SDK Strategy — Service Domain Integration
+## 3. Data Models (Detailed)
 
-### 3.1 Problem Statement
+### 3.1 ServiceDomain
 
-Service domains need to authenticate users and determine what features they can access. Today the only integration method is raw HTTP calls with JWT tokens. Every sister concern must independently implement token management, refresh logic, error handling, domain header injection, and access map parsing.
-
-### 3.2 SDK Scope — Auth + Permissions Only
-
-**Billing, payments, and subscription management are NOT part of the SDK.** Stripe is the single source of truth for all payment state. The Sattabase frontend owns the entire billing UX — checkout, plan changes, cancellations, invoices, refunds. Sister service domains never touch payment flows directly.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SDK Scope (Auth + Access)                    │
-│                                                                 │
-│  ✅ login / register / logout                                   │
-│  ✅ token lifecycle (refresh, verify, blacklist)                 │
-│  ✅ auth/me → user + subscription status + access map            │
-│  ✅ feature gate helpers (hasAccess, getAccess)                  │
-│  ✅ billing redirect helper → send user to Sattabase for plan mgmt│
-│  ✅ password reset / email verification flows                    │
-│                                                                 │
-│  ❌ checkout / plan change / cancel / reactivate                │
-│  ❌ invoice listing / transaction history                       │
-│  ❌ refund initiation / approval                                │
-│  ❌ Stripe Customer Portal                                      │
-│  ❌ any payment-related mutation                                 │
-└─────────────────────────────────────────────────────────────────┘
-
-When a user needs to manage billing (upgrade, downgrade, cancel, view invoices):
-  → SDK provides redirect URL to Sattabase billing page
-  → User completes the flow on Sattabase centrally
-  → User returns to sister domain
-  → Sister domain calls auth/me → access map is updated
-```
-
-**Why this scope:**
-- Payment state belongs to Stripe + Sattabase only — no partial writes from service domains
-- Billing UX is centralized — one place to maintain, one codebase to update
-- SDK surface area is small and stable — auth schemas rarely change, billing schemas change often
-- Service domains stay simple — they only care about "who is this user?" and "what can they do?"
-
-### 3.3 SDK Architecture Decision
-
-**Approach: Hand-written lightweight SDK with typed clients.**
-
-While Django Ninja generates an OpenAPI spec, the SDK surface is intentionally small (auth + permissions only). A hand-written SDK gives us full control over:
-- Token lifecycle management (auto-refresh, retry on 401)
-- Domain header injection (`X-Service-Domain`)
-- Feature gate helpers (`hasAccess`, `getAccess`)
-- Billing redirect URL generation
-- Framework-specific integrations (Django middleware, Vue composables)
-
-The OpenAPI spec remains available at `/api/v1/openapi.json` for any service that wants to generate its own client for the full API. The SDK is the **recommended** path for the common auth + permissions use case.
-
-### 3.4 SDK Design — Python Package (`sattabase-sdk`)
-
-A lightweight Python SDK for service domain backends. Handles authentication, token lifecycle, access control, and billing redirects.
-
-#### Package Structure
-
-```
-sattabase-sdk/
-├── pyproject.toml
-├── src/
-│   └── sattabase/
-│       ├── __init__.py
-│       ├── client.py          # SattabaseClient — main entry point
-│       ├── auth.py            # Auth methods (login, register, token refresh)
-│       ├── access.py          # Permission/access helpers
-│       ├── redirect.py        # Billing redirect URL generation
-│       ├── exceptions.py      # Typed exceptions
-│       ├── models.py          # Pydantic models (mirrors backend schemas)
-│       ├── middleware.py      # Django/Flask middleware (auto-auth per request)
-│       └── config.py          # Configuration
-└── tests/
-```
-
-#### Client Interface
-
-```python
-from sattabase import SattabaseClient
-
-# Initialize — single config, reused across the app
-client = SattabaseClient(
-    base_url="https://sattabase.tld/api/v1",
-    service_domain="finance.sattabase.tld",  # identifies THIS service
-    api_key="sb_live_...",                     # service credential (from admin)
- timeout=10,
-)
-
-# ── Auth: Delegate user login (service domain acts as auth proxy) ──
-result = await client.auth.login(email="user@example.com", password="...")
-# result.access_token, result.refresh_token
-
-# ── Auth Me: Get user + subscription status + access map for THIS domain ──
-# Automatically injects X-Service-Domain + X-API-Key headers
-auth_me = await client.auth.me(token=result.access_token)
-# auth_me.user.email
-# auth_me.subscription.plan_name, auth_me.subscription.status
-# auth_me.access.reports → True/False
-# auth_me.access.max_bank_accounts → 5
-
-# ── Feature Gates: Check permissions ──
-if auth_me.has_access("reports"):
-    # Show reports
-    pass
-
-max_accounts = auth_me.get_access("max_bank_accounts", default=0)
-
-# ── Billing Redirect: Send user to Sattabase for plan management ──
-# SDK generates the URL — user leaves sister domain, manages billing on Sattabase,
-# then returns. Next auth/me call reflects the change.
-billing_url = client.billing.manage_subscription(token, product_slug="finance")
-# → "https://sattabase.tld/billing/finance?token=...&return_url=https://finance.sattabase.tld/settings"
-
-upgrade_url = client.billing.upgrade(token, product_slug="finance")
-# → "https://sattabase.tld/billing/finance/upgrade?token=...&return_url=..."
-
-# ── Password Reset ──
-await client.auth.request_password_reset(email="user@example.com")
-await client.auth.confirm_password_reset(email, otp="123456", new_password="...")
-
-# ── Email Verification ──
-await client.auth.request_email_verification(email="user@example.com")
-await client.auth.confirm_email_verification(email, otp="123456")
-
-# ── Token lifecycle (automatic) ──
-# Client handles refresh automatically when token expires
-# Stores tokens in provided token store (Redis, DB, session, etc.)
-```
-
-#### Token Store Interface
-
-The SDK does NOT dictate how tokens are stored. Each service domain provides a token store:
-
-```python
-class TokenStore(Protocol):
-    async def get_tokens(self, user_id: str) -> TokenPair | None: ...
-    async def set_tokens(self, user_id: str, tokens: TokenPair) -> None: ...
-    async def delete_tokens(self, user_id: str) -> None: ...
-```
-
-Implementations:
-- `RedisTokenStore` — for server-side sessions (Django/Flask backends)
-- `CookieTokenStore` — for API-only backends (tokens in httpOnly cookies)
-- `DatabaseTokenStore` — for persistent sessions
-
-#### Auto-Refresh Middleware
-
-The client intercepts 401 responses, attempts token refresh, and retries the original request:
-
-```python
-# Client config
-client = SattabaseClient(
-    base_url="...",
-    service_domain="...",
-    token_store=RedisTokenStore(redis_client),
-    auto_refresh=True,          # Enable automatic token refresh
-    max_retries=1,              # Retry once after refresh
-)
-```
-
-#### Error Handling
-
-All SDK methods raise typed exceptions:
-
-```python
-from sattabase import SattabaseClient
-from sattabase.exceptions import (
-    AuthenticationError,    # 401
-    ForbiddenError,         # 403
-    NotFoundError,          # 404
-    ConflictError,          # 409
-    RateLimitError,         # 429
-    SattabaseError,         # Base — 5xx, network errors
-)
-
-try:
-    auth_me = await client.auth.me(token)
-except AuthenticationError:
-    # Token invalid or expired → redirect to login
-except RateLimitError as e:
-    # e.retry_after → seconds until reset
-    pass
-```
-
-### 3.5 SDK Design — TypeScript Package (`@sattabase/sdk`)
-
-A lightweight TypeScript SDK for service domain frontends (Astro, Next.js, Vue, React).
-
-#### Package Structure
-
-```
-@sattabase/sdk/
-├── package.json
-├── tsconfig.json
-├── src/
-│   ├── index.ts
-│   ├── client.ts           # SattabaseClient
-│   ├── auth.ts             # Auth methods (login, register, token)
-│   ├── access.ts           # Permission/access helpers
-│   ├── redirect.ts         # Billing redirect URL generation
-│   ├── exceptions.ts       # Typed errors
-│   ├── types.ts            # TypeScript interfaces (mirrors backend schemas)
-│   ├── storage.ts          # Browser token storage (localStorage, httpOnly cookie)
-│   └── vue/
-│       └── index.ts        # Vue composable hooks
-└── tests/
-```
-
-#### Client Interface
-
-```typescript
-import { SattabaseClient } from "@sattabase/sdk";
-
-const client = new SattabaseClient({
-  baseUrl: "https://sattabase.tld/api/v1",
-  serviceDomain: "finance.sattabase.tld",
-  storage: "localStorage", // or "cookie" or custom TokenStore
-});
-
-// ── Login ──
-await client.auth.login({ email: "user@example.com", password: "..." });
-// Token automatically stored
-
-// ── Auth Me (auto-injects token + domain header) ──
-const authMe = await client.auth.me();
-// authMe.user.email
-// authMe.subscription?.plan_name
-// authMe.subscription?.status
-// authMe.access.reports → true/false
-// authMe.access.max_bank_accounts → 5
-
-// ── Feature gate helper ──
-if (client.hasAccess("reports")) {
-  // Show reports feature
-}
-
-const maxAccounts = client.getAccess<number>("max_bank_accounts", 0);
-
-// ── Billing Redirect: Send to Sattabase for plan management ──
-// User leaves to manage billing centrally, then returns
-const billingUrl = client.billing.manageSubscription({
-  productSlug: "finance",
-  returnUrl: window.location.href,  // bring user back here
-});
-window.location.href = billingUrl;
-// → "https://sattabase.tld/billing/finance?return_url=https://finance.sattabase.tld/dashboard"
-
-const upgradeUrl = client.billing.upgrade({
-  productSlug: "finance",
-  returnUrl: window.location.href,
-});
-window.location.href = upgradeUrl;
-
-// ── Logout ──
-await client.auth.logout();
-// Clears token, calls server blacklist
-
-// ── Vue Composable ──
-import { useAuth, useAccess } from "@sattabase/sdk/vue";
-
-// Reactive auth state — auto-fetches on mount
-const { user, subscription, access, loading, error, refetch } = useAuth();
-
-// Feature gate composable
-const { hasAccess, getAccess } = useAccess();
-const showReports = hasAccess("reports");
-const maxAccounts = getAccess<number>("max_bank_accounts", 0);
-```
-
-### 3.6 Service Domain Authentication Flow
-
-There are two distinct auth patterns depending on the service domain architecture:
-
-#### Pattern A: Service Domain Has Its Own Backend (Recommended)
-
-The service backend holds user tokens securely (server-side) and proxies requests to Sattabase. The user never sees Sattabase tokens.
-
-```
-User Browser → Service Backend → Sattabase API
-     │              │                │
-     │  Login ──────┤── POST /auth/login (proxy with X-API-Key)
-     │              │◄── {access, refresh} (store in Redis)
-     │              │
-     │  Dashboard ──┤── GET /billing/auth/me (with stored token + X-API-Key)
-     │              │◄── {user, subscription, access}
-     │              │
-     │              │── Return to frontend (no tokens exposed)
-     │◄─────────────┘
-
-     User needs to manage billing?
-     │
-     │── "Upgrade Plan" button
-     │◄── SDK generates redirect URL → sattabase.tld/billing/finance?return_url=...
-     │── User manages plan on Sattabase
-     │── User returns → auth/me refetches → access map updated
-```
-
-Benefits: Tokens never touch the browser, can use server-side caching, can add service-specific middleware.
-
-#### Pattern B: Service Domain Is SPA Only (Browser-Side)
-
-The browser holds tokens directly (localStorage/httpOnly cookies) and calls Sattabase API directly with CORS.
-
-```
-User Browser → Sattabase API (direct, CORS-enabled)
-     │              │
-     │── POST /auth/login ──► {access, refresh}
-     │◄───────────────────── (store in localStorage)
-     │
-     │── GET /billing/auth/me ──► {user, subscription, access}
-     │◄────────────────────────── (feature gating)
-     │
-     │── "Upgrade" button ──► redirect to sattabase.tld/billing/finance
-     │◄── user returns ──► auth/me refetches → access map updated
-```
-
-Benefits: Simpler architecture, no backend needed for auth. Sattabase must allow the service domain origin in CORS.
-
-### 3.7 Service Domain Identity — API Key System
-
-Currently, service domains identify themselves via `X-Service-Domain` header with no credential. This means any client can claim to be any domain. For production security, we need **service credentials**:
-
-#### New Model: `ServiceCredential`
+Represents a connected service domain (e.g., `finance.sattabase.tld`). Each service domain maps to one product via FK. A product can have multiple domains (e.g., subdomain + custom domain).
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `id` | BigAutoField | PK | Auto primary key |
-| `name` | CharField(100) | | Human-readable name (e.g. "Finance Backend") |
-| `service_domain` | FK(ServiceDomain) | CASCADE, unique | One credential per domain |
-| `api_key_hash` | CharField(255) | unique, indexed | SHA-256 hash of the API key (never stored raw) |
-| `api_key_prefix` | CharField(8) | indexed | First 8 chars for identification (e.g. `sb_live_a1`) |
-| `permissions` | JSONField | default `{}` | Scoped permissions (e.g. `{"auth": true, "billing_read": true}`) |
-| `is_active` | BooleanField | default True | Can be revoked instantly |
-| `last_used_at` | DateTimeField | null | Audit: when was this key last used |
+| `domain` | CharField(255) | unique, db_index | Service domain, e.g. "finance.sattabase.tld" |
+| `product` | ForeignKey(Product) | CASCADE, db_index | The product this domain serves |
+| `is_primary` | BooleanField | default False, db_index | Primary domain for the product |
+| `is_active` | BooleanField | default True, db_index | Whether domain is accepting requests |
 | `created_at` | DateTimeField | auto_now_add | Creation timestamp |
-| `created_by` | FK(User) | SET_NULL | Admin who created the key |
+| `updated_at` | DateTimeField | auto_now | Last modification |
 
-#### API Key Auth Flow
+**Database table:** `billing_service_domain`
 
-```
-Service Backend → Sattabase API
-        │
-        ▼
-Headers:
-  Authorization: Bearer <user_jwt_token>     (for user-scoped requests)
-  X-Service-Domain: finance.sattabase.tld    (domain identification)
-  X-API-Key: sb_live_a1b2c3d4...              (service credential — REQUIRED for M2M)
-        │
-        ▼
-Backend validates:
-  1. X-API-Key → hash lookup → ServiceCredential → ServiceDomain
-  2. ServiceDomain.is_active = True
-  3. ServiceDomain.product matches X-Service-Domain (if both provided)
-  4. If user JWT present → validate and return user-scoped data
-  5. If no user JWT → service-scoped requests only (product/plan listing)
-```
+### 3.2 Product
 
-#### Key Generation
+Represents a product managed by Sattabase. A product is a logical grouping of plans and access entries. Service domains link to a product via FK.
 
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `name` | CharField(100) | unique | Display name, e.g. "Satta Finance" |
+| `slug` | SlugField(50) | unique, db_index | URL-safe identifier, e.g. "finance" |
+| `description` | TextField | blank | Product description |
+| `is_active` | BooleanField | default True | Whether product is accepting new signups |
+| `icon` | ImageField | blank, null | Product icon/logo |
+| `home_url` | URLField | blank | Landing page URL |
+| `created_at` | DateTimeField | auto_now_add | Creation timestamp |
+| `updated_at` | DateTimeField | auto_now | Last modification |
+
+**Database table:** `billing_product`
+
+**Methods:**
+- `get_primary_domain()` → Returns the primary ServiceDomain for this product
+- `get_free_plan()` → Returns the plan where `price=0` for this product
+- `get_plans()` → Returns ordered queryset of active plans (by price ascending)
+
+### 3.3 Plan
+
+Represents a subscription tier within a product. Each product has multiple plans (Free, Standard, Pro, Enterprise, etc.).
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `product` | ForeignKey(Product) | CASCADE, db_index | Parent product |
+| `name` | CharField(50) | | Plan name, e.g. "Free", "Standard" |
+| `slug` | SlugField(50) | | URL-safe identifier |
+| `description` | TextField | blank | Plan description shown to users |
+| `price_cents` | PositiveIntegerField | default 0 | Price in cents (0 = free plan) |
+| `currency` | CharField(3) | default "USD" | ISO 4217 currency code |
+| `billing_cycle` | CharField(20) | choices, default "monthly" | monthly, yearly, lifetime |
+| `trial_days` | PositiveIntegerField | default 0 | Free trial duration (0 = no trial) |
+| `features` | JSONField | default dict | Public feature list for display (e.g., `{"reports": "Advanced", "storage": "10GB"}`) |
+| `stripe_price_id` | CharField(100) | blank, null | Stripe Price ID (null for free plans) |
+| `sort_order` | PositiveIntegerField | default 0 | Display order |
+| `is_active` | BooleanField | default True | Whether plan is available for new subscriptions |
+| `is_featured` | BooleanField | default False | Highlight in plan comparison UI |
+| `created_at` | DateTimeField | auto_now_add | Creation timestamp |
+| **Unique constraint** | | | `(product, slug)` must be unique |
+
+**Database table:** `billing_plan`
+
+**BillingCycle choices:**
 ```python
-import secrets, hashlib
-
-def generate_api_key() -> tuple[str, str, str]:
-    """
-    Returns: (raw_key, prefix, hash)
-    raw_key is shown ONCE to admin at creation time.
-    hash is stored in DB. prefix is for identification in logs.
-    """
-    raw = f"sb_live_{secrets.token_urlsafe(32)}"
-    prefix = raw[:12]  # "sb_live_a1"
-    key_hash = hashlib.sha256(raw.encode()).hexdigest()
-    return raw, prefix, key_hash
+class BillingCycle(models.TextChoices):
+    MONTHLY = "monthly", _("Monthly")
+    YEARLY = "yearly", _("Yearly")
+    LIFETIME = "lifetime", _("Lifetime")
 ```
 
-### 3.8 SDK Implementation Plan
+**Properties:**
+- `display_price` → Human-readable price string, e.g. "$9.00/mo"
+- `is_free` → `self.price_cents == 0`
 
-| Step | Task | Deliverable |
-|------|------|-------------|
-| 3.8.1 | Add `ServiceCredential` model + migration | DB table for API keys |
-| 3.8.2 | Add API key auth middleware (validate `X-API-Key` header) | Service-to-service auth |
-| 3.8.3 | Add API key management endpoints (admin-only: create, revoke, rotate, list) | Admin CRUD for keys |
-| 3.8.4 | Build `sattabase-sdk` Python package (auth + access + redirect) | Published to private PyPI |
-| 3.8.5 | Build `@sattabase/sdk` TypeScript package (auth + access + redirect + Vue composables) | Published to private npm |
-| 3.8.6 | Add `return_url` support to Sattabase billing pages (accept and redirect back) | Seamless billing redirect flow |
-| 3.8.7 | Write integration guide for service domains | Documentation |
-| 3.8.8 | Add `X-API-Key` requirement to auth/me endpoint (soft deprecation, then enforce) | Security hardening |
+### 3.4 AccessEntry
 
-### 3.9 Billing Redirect Flow — Detailed
+Key-value pairs defining what a plan grants. This is the core mechanism for feature gating.
 
-The redirect flow is the bridge between SDK (auth + access) and Sattabase (billing). Here's how it works end-to-end:
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `plan` | ForeignKey(Plan) | CASCADE, db_index | Parent plan |
+| `key` | CharField(100) | | Access key, e.g. "reports", "max_accounts" |
+| `value` | CharField(255) | | Access value, e.g. "true", "5", "1000" |
+| `value_type` | CharField(10) | choices, default "string" | string, boolean, integer |
+| `description` | TextField | blank | Human-readable description of this access entry |
+| **Unique constraint** | | | `(plan, key)` must be unique |
 
-```
-1. Sister Domain Frontend
-   User clicks "Upgrade Plan" button
-        │
-        ▼
-   SDK: client.billing.upgrade({ productSlug, returnUrl })
-        │
-        ▼
-   Generates URL: https://sattabase.tld/billing/{product}/upgrade
-        ?token={jwt}                    (auto-appended)
-        &return_url={sister_domain_url}  (passed by SDK)
-        │
-        ▼
-2. Sattabase Billing Page (already authenticated via token param)
-   - Shows plan comparison for the product
-   - User selects plan → Stripe Checkout
-   - Checkout completes → webhook updates subscription
-   - OR user cancels → no change
-        │
-        ▼
-3. Redirect back to sister domain
-   Sattabase redirects to: {return_url}?billing_updated=1
-        │
-        ▼
-4. Sister Domain Frontend
-   - Detects `billing_updated` query param
-   - Calls client.auth.me() to refresh access map
-   - UI updates to reflect new plan/features
-```
+**Database table:** `billing_access_entry`
 
-**What the SDK generates (not the full URL — a helper that builds it):**
-
+**ValueType choices:**
 ```python
-# Python
-client.billing.manage_subscription(product_slug, return_url)
-# → returns URL string
-
-client.billing.upgrade(product_slug, return_url)
-# → returns URL string
+class AccessValueType(models.TextChoices):
+    STRING = "string", _("String")
+    BOOLEAN = "boolean", _("Boolean")
+    INTEGER = "integer", _("Integer")
 ```
 
-```typescript
-// TypeScript
-client.billing.manageSubscription({ productSlug, returnUrl })
-// → returns URL string
+**Methods:**
+- `typed_value` → Returns the value cast to its declared type (bool for "true"/"false", int for integers)
+- `as_dict` → `{"key": self.key, "value": self.typed_value, "description": self.description}`
 
-client.billing.upgrade({ productSlug, returnUrl })
-// → returns URL string
+**Example access entries for a Standard finance plan:**
+
+| key | value | value_type | description |
+|-----|-------|------------|-------------|
+| dashboard | true | boolean | Access to main dashboard |
+| reports | true | boolean | Generate financial reports |
+| export_pdf | true | boolean | Export reports as PDF |
+| api_access | true | boolean | REST API access |
+| max_bank_accounts | 5 | integer | Maximum connected bank accounts |
+| max_team_members | 3 | integer | Maximum team collaborators |
+| priority_support | false | boolean | Priority customer support |
+| data_retention_days | 365 | integer | Historical data retention period |
+
+### 3.5 Subscription
+
+The join between a user and a plan. One subscription per user per product.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `user` | ForeignKey(User) | CASCADE, db_index | Subscribed user |
+| `plan` | ForeignKey(Plan) | PROTECT, db_index | Current plan (PROTECT prevents deleting active plans) |
+| `product` | ForeignKey(Product) | CASCADE, db_index | Cached product reference (denormalized for query speed) |
+| `status` | CharField(20) | choices, default "active" | Subscription status |
+| `stripe_subscription_id` | CharField(100) | blank, null, unique | Stripe Subscription ID |
+| `stripe_customer_id` | CharField(100) | blank, null | Stripe Customer ID |
+| `current_period_start` | DateTimeField | | Current billing period start |
+| `current_period_end` | DateTimeField | | Current billing period end |
+| `trial_start` | DateTimeField | null | Trial period start |
+| `trial_end` | DateTimeField | null | Trial period end |
+| `canceled_at` | DateTimeField | null | When user canceled (active until period end) |
+| `expires_at` | DateTimeField | null | Hard expiration for lifetime plans |
+| `created_at` | DateTimeField | auto_now_add | Creation timestamp |
+| `updated_at` | DateTimeField | auto_now | Last modification |
+| **Unique constraint** | | | `(user, product)` — one subscription per user per product |
+
+**Database table:** `billing_subscription`
+
+**SubscriptionStatus choices:**
+```python
+class SubscriptionStatus(models.TextChoices):
+    ACTIVE = "active", _("Active")
+    PAST_DUE = "past_due", _("Past Due")
+    CANCELED = "canceled", _("Canceled")
+    TRIALING = "trialing", _("Trialing")
+    PAUSED = "paused", _("Paused")
+    EXPIRED = "expired", _("Expired")
 ```
 
-The SDK does NOT make any API call for billing — it only constructs the redirect URL. All billing logic runs on Sattabase.
+**Methods:**
+- `is_active()` → True if status is active or trialing, and period_end hasn't passed
+- `get_access_map()` → Returns `{key: typed_value}` dict from plan's access entries
+- `cancel_at_period_end()` → Sets status to canceled, keeps active until period_end
+- `reactivate()` → Sets status back to active, clears canceled_at
+- `change_plan(new_plan)` → Switches to a different plan within the same product
+
+**Manager methods:**
+- `get_active_for_user(user, product)` → Get user's active subscription for a product
+- `get_or_create_free(user, product)` → Get existing subscription or create with the product's free plan
 
 ---
 
-## 4. Admin Interface — Dedicated Staff Dashboard
+## 4. Enhanced auth/me Endpoint
 
-### 4.1 Problem Statement
+The existing `GET /users/me` returns only user profile data. This must be enhanced to include subscription and access information when called from a service domain.
 
-Currently admin operations are split between Django admin (`/admin/`) and 3 API endpoints (`/billing/admin/`). Django admin is powerful but not designed for a modern staff workflow. The API endpoints exist but have no dedicated UI. We need a **unified admin interface** accessible via the Sattabase frontend, strictly gated to `is_staff=True` users.
+### 4.1 Domain Identification
 
-### 4.2 Admin Access Architecture
+Service domains identify themselves via a custom header:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Sattabase Frontend                     │
-│                                                          │
-│  /dashboard/*           → Regular user pages             │
-│  /admin/*               → Staff-only pages (is_staff)     │
-│                                                          │
-│  Access Control:                                         │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  Middleware / Route Guard                         │   │
-│  │  1. Check localStorage token                     │   │
-│  │  2. GET /users/me → check user.is_staff          │   │
-│  │  3. If not staff → redirect to /dashboard        │   │
-│  │  4. If staff → render admin layout               │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Sattabase API                          │
-│                                                          │
-│  /api/v1/billing/admin/*     → Staff-only (is_staff)     │
-│  /api/v1/users/*             → Staff can view any user   │
-│  /api/v1/billing/products/*  → Staff can manage products │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+GET /api/v1/auth/me
+Authorization: Bearer <token>
+X-Service-Domain: finance.sattabase.tld
 ```
 
-### 4.3 Admin Backend Endpoints
+Alternatively, a `client_id` approach using a registered OAuth-like credential:
 
-All admin endpoints require `JWTAuth + IsAuthenticated + is_staff=True`. Every mutation is audit-logged via `@log_admin_access` decorator (logs user_id, email, action, IP, path, timestamp).
+```
+GET /api/v1/auth/me
+Authorization: Bearer <token>
+X-Client-ID: sb_finance_prod_a1b2c3
+```
 
-#### Product Management
+**Recommended: X-Service-Domain header** — simpler for internal subdomain architecture. The `client_id` approach adds complexity (secret management, rotation) that isn't needed when all domains are first-party.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/admin/products` | Create product |
-| `GET` | `/admin/products` | List all products (with plan counts, subscriber counts) |
-| `GET` | `/admin/products/{id}` | Product detail with plans + domains |
-| `PUT` | `/admin/products/{id}` | Update product |
-| `PATCH` | `/admin/products/{id}/toggle` | Activate/deactivate product |
-| `DELETE` | `/admin/products/{id}` | Soft-delete product (only if no active subscriptions) |
+### 4.2 New Response Schema: AuthMeSchema
 
-#### Service Domain Management
+```python
+class AccessEntrySchema(Schema):
+    key: str
+    value: Any          # bool, int, or str depending on value_type
+    description: str | None = None
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/admin/products/{product_id}/domains` | Add service domain to product |
-| `PUT` | `/admin/domains/{id}` | Update domain (set primary, toggle active) |
-| `DELETE` | `/admin/domains/{id}` | Remove domain |
+class SubscriptionInfoSchema(Schema):
+    plan_name: str
+    plan_slug: str
+    status: str
+    current_period_end: datetime | None = None
+    trial_end: datetime | None = None
+    is_active: bool
 
-#### Plan Management
+class AuthMeSchema(Schema):
+    user: UserOutputSchema
+    subscription: SubscriptionInfoSchema | None = None
+    access: dict[str, Any]        # flat key-value map from AccessEntry
+```
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/admin/products/{product_id}/plans` | Create plan |
-| `GET` | `/admin/products/{product_id}/plans` | List plans for product (with access entries) |
-| `GET` | `/admin/plans/{id}` | Plan detail with full access matrix |
-| `PUT` | `/admin/plans/{id}` | Update plan (name, price, features, etc.) |
-| `PATCH` | `/admin/plans/{id}/toggle` | Activate/deactivate plan |
-| `PATCH` | `/admin/plans/{id}/feature` | Toggle `is_featured` flag |
-| `POST` | `/admin/plans/{id}/duplicate` | Duplicate plan (with all access entries) |
-| `DELETE` | `/admin/plans/{id}` | Delete plan (only if no active subscribers) |
+### 4.3 Example Responses
 
-#### Access Entry Management
+**Request from `finance.sattabase.tld`:**
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/admin/plans/{plan_id}/access-entries` | Add access entry |
-| `PUT` | `/admin/access-entries/{id}` | Update access entry (key, value, type, description) |
-| `DELETE` | `/admin/access-entries/{id}` | Remove access entry |
-| `POST` | `/admin/plans/{plan_id}/access-entries/bulk` | Bulk set access entries (replace all) |
-| `GET` | `/admin/products/{product_id}/access-matrix` | Feature comparison matrix across all plans |
+```json
+{
+  "user": {
+    "id": 1,
+    "slug": "a1b2c3d4-...",
+    "email": "rahim@example.com",
+    "first_name": "Rahim",
+    "last_name": "Uddin",
+    "phone": "+880...",
+    "avatar": "/media/avatars/2026/04/photo.jpg",
+    "timezone": "Asia/Dhaka",
+    "currency": "BDT",
+    "language": "en",
+    "is_email_verified": true,
+    "is_active": true,
+    "role": "member",
+    "created_at": "2026-04-27T10:00:00Z",
+    "full_name": "Rahim Uddin",
+    "display_name": "Rahim"
+  },
+  "subscription": {
+    "plan_name": "Standard",
+    "plan_slug": "standard",
+    "status": "active",
+    "current_period_end": "2026-05-27T00:00:00Z",
+    "trial_end": null,
+    "is_active": true
+  },
+  "access": {
+    "dashboard": true,
+    "reports": true,
+    "export_pdf": true,
+    "api_access": true,
+    "max_bank_accounts": 5,
+    "max_team_members": 3,
+    "priority_support": false,
+    "data_retention_days": 365
+  }
+}
+```
+
+**Same user on `analytics.sattabase.tld` (free plan):**
+
+```json
+{
+  "user": { "..." : "..." },
+  "subscription": {
+    "plan_name": "Free",
+    "plan_slug": "free",
+    "status": "active",
+    "is_active": true
+  },
+  "access": {
+    "dashboard": true,
+    "reports": false,
+    "real_time_data": false,
+    "max_dashboards": 2,
+    "data_retention_days": 7
+  }
+}
+```
+
+**Request without X-Service-Domain header (plain profile):**
+
+```json
+{
+  "user": { "..." : "..." },
+  "subscription": null,
+  "access": {}
+}
+```
+
+### 4.4 Backend Logic Flow
+
+```python
+async def get_auth_me(request):
+    # 1. Token already validated by JWTAuth → request.user is set
+    user = request.user
+
+    # 2. Check for domain header
+    domain = request.headers.get("X-Service-Domain")
+
+    if not domain:
+        # No domain → return plain user profile (backward compatible)
+        return {"user": user, "subscription": None, "access": {}}
+
+    # 3. Look up service domain → product
+    service_domain = await ServiceDomain.objects.filter(
+        domain=domain, is_active=True
+    ).select_related("product").afirst()
+    if not service_domain or not service_domain.product.is_active:
+        return {"user": user, "subscription": None, "access": {}}
+    product = service_domain.product
+
+    # 4. Get user's subscription for this product (or free plan)
+    subscription = await Subscription.get_or_create_free(user, product)
+    if not subscription:
+        return {"user": user, "subscription": None, "access": {}}
+
+    # 5. Build access map from plan's access entries
+    access_map = await subscription.get_access_map()
+
+    return {
+        "user": user,
+        "subscription": subscription_info,
+        "access": access_map,
+    }
+```
+
+---
+
+## 5. New API Endpoints
+
+### 5.1 Public Endpoints (no auth)
+
+#### Product & Plan Discovery
+
+| Method | Path | Description | Response |
+|--------|------|-------------|----------|
+| GET | `/billing/products` | List all active products | `list[ProductSchema]` |
+| GET | `/billing/products/{slug}` | Get product detail with plans | `ProductDetailSchema` |
+| GET | `/billing/products/{slug}/plans` | List plans for a product | `list[PlanSchema]` |
+
+### 5.2 Protected Endpoints (JWT required)
 
 #### Subscription Management
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/subscriptions` | List all subscriptions (filterable by product, plan, status) |
-| `GET` | `/admin/subscriptions/{id}` | Subscription detail with full history |
-| `PATCH` | `/admin/subscriptions/{id}/override` | Override plan, status, period dates (audit logged) |
-| `PATCH` | `/admin/subscriptions/{id}/cancel` | Force-cancel subscription |
-| `PATCH` | `/admin/subscriptions/{id}/expire` | Force-expire subscription |
-| `PATCH` | `/admin/subscriptions/{id}/extend` | Extend billing period |
-| `GET` | `/admin/subscriptions/{id}/plan-changes` | Plan change history for subscription |
-| `GET` | `/admin/subscriptions/{id}/invoices` | Invoice history for subscription |
-| `GET` | `/admin/subscriptions/{id}/refunds` | Refund history for subscription |
+| Method | Path | Description | Request Body | Response |
+|--------|------|-------------|--------------|----------|
+| GET | `/billing/subscriptions` | List user's all subscriptions | — | `list[SubscriptionSchema]` |
+| GET | `/billing/subscriptions/{product_slug}` | Get subscription for a product | — | `SubscriptionDetailSchema` |
+| POST | `/billing/subscriptions/{product_slug}/checkout` | Create Stripe checkout session | `{plan_slug, billing_cycle}` | `{checkout_url}` |
+| POST | `/billing/subscriptions/{product_slug}/cancel` | Cancel subscription (at period end) | — | `SubscriptionSchema` |
+| POST | `/billing/subscriptions/{product_slug}/reactivate` | Reactivate canceled subscription | — | `SubscriptionSchema` |
+| POST | `/billing/subscriptions/{product_slug}/change-plan` | Switch to different plan | `{plan_slug}` | `SubscriptionSchema` |
 
-#### User Management (Admin View)
+#### Billing Portal
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/users` | List all users (filterable, searchable, paginated) |
-| `GET` | `/admin/users/{id}` | User detail with all subscriptions across products |
-| `PATCH` | `/admin/users/{id}/status` | Activate/deactivate user account |
-| `PATCH` | `/admin/users/{id}/role` | Change user role (owner/admin/member) |
-| `GET` | `/admin/users/{id}/audit` | User audit trail (login history, plan changes, etc.) |
+| Method | Path | Description | Response |
+|--------|------|-------------|----------|
+| POST | `/billing/portal` | Create Stripe Customer Portal session | `{portal_url}` |
 
-#### Refund Management
+### 5.3 Webhook Endpoints (Stripe signature verification)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/admin/refunds` | List all refunds (filterable by status) |
-| `POST` | `/admin/subscriptions/{id}/refund` | Initiate refund (existing endpoint) |
-| `PATCH` | `/admin/refunds/{id}/approve` | Approve pending refund (two-person rule) |
-| `PATCH` | `/admin/refunds/{id}/reject` | Reject pending refund |
+| POST | `/billing/webhooks/stripe` | Stripe webhook handler (all events) |
 
-#### Service Credential Management
+**Handled Stripe events:**
+- `checkout.session.completed` — Activate subscription after payment
+- `customer.subscription.created` — New subscription
+- `customer.subscription.updated` — Plan change, status change
+- `customer.subscription.deleted` — Subscription ended
+- `customer.subscription.trial_will_end` — Notify user (3 days before trial ends)
+- `invoice.payment_failed` — Mark as past_due
+- `invoice.payment_succeeded` — Mark as active, update period dates
+- `invoice.paid` — Record payment
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/api-keys` | List all service credentials (with domain, last used) |
-| `POST` | `/admin/api-keys` | Create new API key (returns raw key ONCE) |
-| `PATCH` | `/admin/api-keys/{id}/revoke` | Revoke API key |
-| `POST` | `/admin/api-keys/{id}/rotate` | Rotate API key (invalidates old, creates new) |
-
-#### Admin Dashboard / Analytics
+### 5.4 Admin Endpoints (IsAdmin required)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/admin/metrics/overview` | Key metrics: MRR, active subs, churn rate, trial conversions |
-| `GET` | `/admin/metrics/revenue` | Revenue breakdown by product, plan, period |
-| `GET` | `/admin/metrics/subscriptions` | Subscription funnel: trials, conversions, cancellations |
-| `GET` | `/admin/metrics/products` | Per-product metrics: subscriber counts, plan distribution |
-| `GET` | `/admin/audit-log` | Admin action audit trail (paginated, filterable) |
+| Full CRUD | `/admin/billing/product/` | Product management (Django admin) |
+| Full CRUD | `/admin/billing/plan/` | Plan management (Django admin) |
+| Full CRUD | `/admin/billing/accessentry/` | Access entry management (Django admin) |
+| GET | `/admin/billing/subscriptions/` | View all subscriptions |
+| POST | `/admin/billing/subscriptions/{id}/override` | Manually set plan/status |
 
-#### Webhook Management
+---
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/webhooks` | Recent webhook events (paginated, filterable by type/status) |
-| `POST` | `/admin/webhooks/{id}/retry` | Manually retry a failed webhook event |
+## 6. Payment Integration (Stripe)
 
-### 4.4 Admin Frontend — Route Structure
+### 6.1 Configuration
+
+New environment variables:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SF_STRIPE_SECRET_KEY` | Stripe secret key | `sk_live_...` |
+| `SF_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key (sent to frontend) | `pk_live_...` |
+| `SF_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
+
+### 6.2 Checkout Flow
 
 ```
-/admin
-├── /admin/                           → Dashboard (metrics overview)
-│
-├── /admin/products                   → Product list
-│   ├── /admin/products/new           → Create product
-│   ├── /admin/products/:id           → Product detail
-│   │   ├── /domains                  → Domain management
-│   │   ├── /plans                    → Plan list for product
-│   │   │   ├── /plans/new            → Create plan
-│   │   │   ├── /plans/:planId        → Plan detail + access entries
-│   │   │   └── /access-matrix        → Feature comparison matrix
-│   │   └── /metrics                  → Product-specific metrics
-│
-├── /admin/subscriptions              → All subscriptions (global view)
-│   ├── /admin/subscriptions/:id      → Subscription detail
-│   │   ├── /plan-changes             → Plan change history
-│   │   ├── /invoices                 → Invoice history
-│   │   └── /refunds                  → Refund history
-│
-├── /admin/users                      → User list (searchable, filterable)
-│   ├── /admin/users/:id              → User detail + all subscriptions
-│   └── /admin/users/:id/audit        → User audit trail
-│
-├── /admin/refunds                    → Refund list
-│   └── /admin/refunds/:id            → Refund detail (approve/reject)
-│
-├── /admin/api-keys                   → Service credential management
-│   └── /admin/api-keys/new           → Create new API key
-│
-├── /admin/webhooks                   → Webhook event log
-│
-└── /admin/audit-log                  → Admin action audit trail
+User selects plan on service domain
+        │
+        ▼
+Frontend calls POST /billing/subscriptions/{product}/checkout
+        │  Body: {plan_slug: "standard", billing_cycle: "monthly"}
+        ▼
+Backend creates Stripe Checkout Session
+        │  - mode: "subscription"
+        │  - line_items: [{price: plan.stripe_price_id, quantity: 1}]
+        │  - success_url: https://finance.sattabase.tld/billing/success?session_id={CHECKOUT_SESSION_ID}
+        │  - cancel_url: https://finance.sattabase.tld/billing/cancel
+        │  - metadata: {user_id, product_slug, plan_slug}
+        ▼
+Return {checkout_url} to frontend
+        │
+        ▼
+Frontend redirects to Stripe Checkout
+        │
+        ▼
+Stripe processes payment
+        │
+        ▼
+Webhook: checkout.session.completed
+        │  → Create/update Subscription record
+        │  → Set status = active
+        ▼
+Stripe redirects to success_url
+        │
+        ▼
+Frontend calls auth/me → gets updated access
 ```
 
-### 4.5 Admin Layout
+### 6.3 Stripe Customer Management
 
-The admin interface uses a **separate layout** from the regular dashboard. Staff users see a different navigation structure:
+Each user gets a Stripe Customer record when they first initiate a checkout. The `stripe_customer_id` is stored on the Subscription model for billing portal access.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Admin Navbar (distinct from user navbar)                  │
-│  ┌────────┐  Sattabase Admin     [metrics] [audit] [user] │
-│  │  Logo  │                               [staff badge]   │
-│  └────────┘                                                │
-├──────────┬───────────────────────────────────────────────┤
-│          │                                                │
-│  Admin   │  Admin Content Area                            │
-│  Sidebar │  (tables, forms, charts, detail views)         │
-│          │                                                │
-│ Products │                                                │
-│ Subs     │                                                │
-│ Users    │                                                │
-│ Refunds  │                                                │
-│ API Keys │                                                │
-│ Webhooks │                                                │
-│ Audit    │                                                │
-│          │                                                │
-└──────────┴───────────────────────────────────────────────┘
+User → first checkout
+  → Backend: stripe.Customer.create(email=user.email, metadata={user_id})
+  → Store customer_id on subscription
 ```
 
-Key differences from user dashboard:
-- Admin navbar shows staff badge and links to admin audit log
-- Admin sidebar has admin-specific navigation (products, subscriptions, users, refunds, etc.)
-- No billing/subscription sidebar items for self (admin manages ALL subscriptions)
-- Data tables with sorting, filtering, pagination, bulk actions
-- Confirmation modals for destructive actions (delete plan, revoke API key, etc.)
+### 6.4 Webhook Security
 
-### 4.6 Admin API Schemas
+- Webhook endpoint verifies Stripe signature using `SF_STRIPE_WEBHOOK_SECRET`
+- All webhook processing is idempotent (safe to receive duplicate events)
+- Webhook failures are logged but don't crash the server
+- Stripe will retry failed webhook deliveries
 
-All admin request/response schemas follow the existing Pydantic pattern. Key schemas needed:
+---
+
+## 7. Subscription Lifecycle
+
+### State Machine
+
+```
+                    ┌──────────────┐
+        ┌──────────│    TRIALING   │──────────────┐
+        │          └──────┬───────┘               │
+        │                 │ Trial ends             │
+        │                 │ (payment succeeds)     │
+        │                 ▼                        │
+   ┌────┴────┐     ┌──────────────┐         ┌─────┴─────┐
+   │  PAUSED  │────▶│    ACTIVE    │────────▶│ PAST_DUE  │
+   └─────────┘     └──────┬───────┘         └───────────┘
+        ▲                │                       │
+        │                │ Cancel                 │ Payment
+        │                ▼                       │ succeeds
+        │          ┌──────────────┐               │
+        │          │   CANCELED   │◀──────────────┘
+        │          └──────┬───────┘
+        │                 │ Period ends
+        │                 ▼
+        │          ┌──────────────┐
+        └──────────│   EXPIRED    │
+                   └──────────────┘
+```
+
+### State Descriptions
+
+| Status | Description | Access Granted? |
+|--------|-------------|-----------------|
+| `trialing` | Free trial period — full plan access | Yes (plan access) |
+| `active` | Paid subscription, current period valid | Yes (plan access) |
+| `past_due` | Payment failed — temporary grace period | Yes (plan access) |
+| `canceled` | User canceled — active until period end | Yes (plan access) |
+| `paused` | Admin paused — no access | No (free plan access) |
+| `expired` | Period ended, not renewed | No (free plan access) |
+
+### Grace Period Logic
+
+When a subscription becomes `past_due` or `canceled`, access continues until `current_period_end`. After that:
+
+1. Celery beat task runs daily: `check_expired_subscriptions()`
+2. Finds subscriptions where `status != expired` AND `current_period_end < now()`
+3. Sets `status = expired`
+4. Optional: send email notification
+
+### Automatic Free Plan Fallback
+
+When a user has no subscription for a product (or their subscription expires), they are automatically assigned the product's free plan. This means:
+
+- New users always get access to the free tier immediately
+- Downgrading from paid always returns to free, not to nothing
+- Service domains can rely on `auth/me` always returning an `access` map
+
+---
+
+## 8. Service Domain Integration Guide
+
+### 8.1 How a Service Domain Uses Sattabase
+
+Each service domain is a **separate application** (could be any tech stack) that:
+
+1. **Authenticates** users against Sattabase (same JWT flow as current Ledger)
+2. **Calls `auth/me`** with the `X-Service-Domain` header
+3. **Reads the `access` map** to determine feature availability
+4. **Redirects to Sattabase** for billing/plan changes
+
+### 8.2 Minimal Integration Example (JavaScript)
+
+```typescript
+// Service domain's auth library
+async function getUserAccess() {
+  const response = await fetch('https://sattabase.tld/api/v1/auth/me', {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'X-Service-Domain': 'finance.sattabase.tld'
+    }
+  })
+  const data = await response.json()
+
+  // data.access is your feature map
+  if (data.access.reports) {
+    showReportsButton()
+  }
+  if (data.access.max_bank_accounts) {
+    disableAddAccountWhen(data.bankAccountCount >= data.access.max_bank_accounts)
+  }
+}
+```
+
+### 8.3 Plan Change / Upgrade Flow
+
+```
+User clicks "Upgrade" on service domain
+        │
+        ▼
+Redirect to Sattabase billing page (or modal):
+  https://sattabase.tld/billing/finance/upgrade
+        │  (pre-authenticated via JWT in URL or session)
+        ▼
+User selects new plan → Stripe checkout
+        │
+        ▼
+Webhook updates subscription
+        │
+        ▼
+User returns to service domain → auth/me reflects new plan
+```
+
+### 8.4 CORS Configuration
+
+Sattabase must allow cross-origin requests from all registered service domains:
 
 ```python
-# Product management
-class AdminProductCreateSchema(Schema): ...
-class AdminProductUpdateSchema(Schema): ...
-class AdminProductListSchema(Schema): ...  # includes plan_count, subscriber_count
+# settings.py
+CORS_ALLOWED_ORIGINS = [
+    "https://sattabase.tld",
+    "https://finance.sattabase.tld",
+    "https://analytics.sattabase.tld",
+    # ... dynamically managed
+]
 
-# Plan management
-class AdminPlanCreateSchema(Schema): ...
-class AdminAccessEntryBulkSchema(Schema): ...  # list of {key, value, value_type, description}
-class AdminAccessMatrixSchema(Schema): ...  # plans × access keys matrix
-
-# Subscription management
-class AdminSubscriptionListSchema(Schema): ...  # includes user info
-class AdminSubscriptionOverrideSchema(Schema): ...  # plan_id, status, period dates
-
-# User management
-class AdminUserListSchema(Schema): ...  # includes subscription_count, last_active
-class AdminUserDetailSchema(Schema): ...  # includes all subscriptions across products
-
-# Metrics
-class AdminMetricsOverviewSchema(Schema): ...
-class AdminMetricsRevenueSchema(Schema): ...
-class AdminMetricsSubscriptionFunnelSchema(Schema): ...
-
-# API Key management
-class AdminApiKeyCreateSchema(Schema): ...
-class AdminApiKeyOutputSchema(Schema): ...  # prefix, name, domain, last_used, is_active
-
-# Refund management
-class AdminRefundApprovalSchema(Schema): ...  # approved: bool, notes: str
+# Or use CORS_ALLOW_ALL_ORIGINS in development
 ```
-
-### 4.7 Admin Frontend Components
-
-Reusable admin UI components (built with Vue + Tailwind, matching existing design system):
-
-| Component | Purpose |
-|-----------|---------|
-| `AdminDataTable` | Sortable, filterable, paginated data table with bulk actions |
-| `AdminStatsCard` | Metric card (label, value, change %, trend icon) |
-| `AdminPageHeader` | Page title + breadcrumb + action buttons |
-| `AdminConfirmDialog` | Destructive action confirmation modal |
-| `AdminFeatureMatrix` | Plan comparison table (rows = access keys, columns = plans) |
-| `AdminSubscriptionDetail` | Subscription overview card (status badge, plan, period, user) |
-| `AdminAuditTimeline` | Chronological audit event list |
-| `AdminApiKeyCard` | API key display with copy-to-clipboard, revoke button |
-| `AdminFilterBar` | Reusable filter/search bar for data tables |
-| `AdminEmptyState` | Empty state placeholder with CTA |
-
-### 4.8 Admin Permission Model
-
-```python
-# Future: Role-based admin permissions (beyond is_staff boolean)
-class AdminPermission(models.TextChoices):
-    PRODUCTS_READ = "products:read"
-    PRODUCTS_WRITE = "products:write"
-    PLANS_READ = "plans:read"
-    PLANS_WRITE = "plans:write"
-    SUBSCRIPTIONS_READ = "subscriptions:read"
-    SUBSCRIPTIONS_WRITE = "subscriptions:write"
-    USERS_READ = "users:read"
-    USERS_WRITE = "users:write"
-    REFUNDS_READ = "refunds:read"
-    REFUNDS_WRITE = "refunds:write"
-    API_KEYS_READ = "api_keys:read"
-    API_KEYS_WRITE = "api_keys:write"
-    AUDIT_READ = "audit:read"
-    METRICS_READ = "metrics:read"
-```
-
-**Phase 1 (current):** Use `is_staff` boolean — all staff can access everything.
-**Phase 2 (future):** Add granular admin roles (e.g., "Support" can read subscriptions but not modify products, "Finance" can manage refunds but not users).
 
 ---
 
-## 5. Implementation Steps
+## 9. Admin Interface ⚠️ 1/2
 
-### Phase 6: Backend Prerequisites for SDK (6.1–6.7 COMPLETE)
+### Django Admin Panels ✅
 
-**Goal:** Add service-to-service auth infrastructure and billing redirect support to the Sattabase backend.
+| Model | Fields Shown | Actions | Status |
+|-------|-------------|---------|--------|
+| Product | name, domain, slug, is_active | Activate/Deactivate, View Plans | ✅ Registered |
+| Plan | name, product, price, billing_cycle, is_active, is_featured | Activate/Deactivate, View Access Entries, Duplicate Plan | ✅ Registered |
+| AccessEntry | plan, key, value, value_type, description | Edit, Delete | ✅ Registered |
+| Subscription | user, plan, product, status, current_period_end | Cancel, Override Plan, Extend Period | ✅ Registered |
 
-#### 6.1 Service Credential Model — DONE
+> **Also registered:** ServiceDomain, WebhookEventLog, Refund, ExchangeRate — 8 model admins total with custom list displays, filters, and inline editors.
 
-- [x] 6.1.1 Create `ServiceCredential` model in `billing/models.py` (after RevenueRecognitionEntry) with fields: `name`, `service_domain` (FK → ServiceDomain, unique, CASCADE), `api_key_hash` (unique, indexed), `api_key_prefix` (indexed), `permissions` (JSONField), `is_active`, `last_used_at`, `created_by` (FK → User, SET_NULL)
-- [x] 6.1.2 Add `generate_api_key()` utility function in `common/utils.py` — returns `(raw_key, prefix, sha256_hash)`, format `sb_live_{token_urlsafe(32)}`
-- [x] 6.1.3 Run `makemigrations` and `migrate` — **pending (run locally)**
-- [x] 6.1.4 Register `ServiceCredential` in `billing/admin.py` — read-only list display, no manual creation (admin uses API endpoint to create)
-- [x] 6.1.5 `on_delete=models.CASCADE` on ServiceDomain FK → cascades to credential when domain is deleted
-- [ ] 6.1.6 Write unit tests: key generation uniqueness, hash verification, cascade delete — **pending**
+### Plan Comparison View (custom admin page) ❌
 
-#### 6.2 API Key Auth Middleware — DONE
+A custom Django admin view at `/admin/billing/product/{id}/plan-comparison/` that displays a side-by-side table of all plans for a product with their access entries — making it easy to see and manage the feature matrix.
 
-- [x] 6.2.1 Create `common/api_key_auth.py` — `validate_api_key(request)` function that: extracts `X-API-Key` from header, hashes it with SHA-256, looks up `ServiceCredential` by hash, checks `is_active`, sets `request.service_credential` and `request.service_domain_from_key` on the request object
-- [x] 6.2.2 Update `last_used_at` on `ServiceCredential` on each valid request (atomic `.update()` to avoid race conditions)
-- [x] 6.2.3 Add `IsServiceAuthenticated` permission class in `common/permissions.py` — checks `request.service_credential is not None`
-- [x] 6.2.4 Add `API_KEY_ENFORCED` setting in `sattaledger/settings.py` (default `False`) — soft deprecation period
-- [x] 6.2.5 When `API_KEY_ENFORCED=False`: validate key if provided, log warning if missing, allow request through. When `True`: reject with `401 UnauthorizedException`
-- [x] 6.2.6 Apply API key validation to `BillingProtectedController.get_auth_me()` — `validate_api_key()` called at method level
-- [x] 6.2.7 Update `GET /billing/auth/me` to use `request.service_domain_from_key.domain` when credential present, fallback to `X-Service-Domain` header
-- [ ] 6.2.8 Write unit tests: valid key, invalid key, revoked key, missing key (both enforced and non-enforced modes), credential–domain mismatch — **pending**
-
-#### 6.3 Admin API Key Management Endpoints — DONE
-
-- [x] 6.3.1 Create `AdminApiKeyController` in `common/controllers.py` — prefix `/admin/api-keys`, auth `JWTAuth + IsAuthenticated + IsAdmin`, auto-discovered by ninja_extra
-- [x] 6.3.2 Define schemas in `common/schemas.py`: `ApiKeyCreateInputSchema` (name, service_domain_id), `ApiKeyOutputSchema` (id, name, prefix, service_domain, permissions, is_active, last_used_at, created_at, created_by), `ApiKeyCreateOutputSchema` (includes raw_api_key), `ApiKeyRotateOutputSchema` (includes new_api_key + old_prefix)
-- [x] 6.3.3 `GET /admin/api-keys/` — list all credentials with `select_related("service_domain", "created_by")`, filterable by `service_domain_id` and `is_active`, paginated
-- [x] 6.3.4 `POST /admin/api-keys/` — validate service_domain_id exists, check uniqueness, generate key, create `ServiceCredential`, return raw key in response (only time it's visible)
-- [x] 6.3.5 `PATCH /admin/api-keys/{key_id}/revoke` — set `is_active=False`, log audit action
-- [x] 6.3.6 `POST /admin/api-keys/{key_id}/rotate` — revoke old key, generate new key, create new `ServiceCredential` for same domain, return new raw key
-- [x] 6.3.7 All mutation endpoints log via logger.info with user_id, email, action, IP, path
-- [ ] 6.3.8 Write unit tests: create, list, revoke, rotate, duplicate domain prevention — **pending**
-
-#### 6.4 CORS Configuration for Service Domains — DONE
-
-- [x] 6.4.1 Create `common/cors_middleware.py` — `ServiceDomainCorsMiddleware` that dynamically checks request origin against active `ServiceDomain.domain` table
-- [x] 6.4.2 Origins cached with 5-minute TTL via Django cache framework
-- [x] 6.4.3 `CORS_ALLOW_ALL_ORIGINS = DEBUG` for local development still works (middleware skips when True)
-- [x] 6.4.4 `SECURE_SSL_REDIRECT` and `SECURE_PROXY_SSL_HEADER` already in settings (production block)
-- [ ] 6.4.5 Test CORS from a registered service domain origin and an unregistered origin — **pending**
-
-#### 6.5 Billing Redirect Support (return_url) — DONE
-
-- [x] 6.5.1 Backend: `validate_return_url()` in `billing/stripe/checkout.py` — validates URL against registered `ServiceDomain.domain` entries + app's own domain, prevents open redirect
-- [x] 6.5.2 Backend: `build_success_url()` and `build_cancel_url()` accept optional `return_url` param, validated before inclusion in Stripe redirect URLs
-- [x] 6.5.3 Backend: `CheckoutInputSchema` extended with `return_url` field; `create_checkout` controller passes it to Stripe URL builders
-- [x] 6.5.4 Backend: `PortalInputSchema` created; `create_portal` controller validates and passes `return_url` to Stripe portal session
-- [x] 6.5.5 Frontend: `BillingOverview.vue` — reads `return_url` from query param or `sessionStorage`, stores across redirect chain
-- [x] 6.5.6 Frontend: After checkout success → `confirmCheckout()` → redirect to `{return_url}?billing_updated=1`
-- [x] 6.5.7 Frontend: After checkout cancel → redirect to `{return_url}?billing_updated=0`
-- [x] 6.5.8 Frontend: After portal session → redirect to `{return_url}?billing_updated=1`
-- [x] 6.5.9 Frontend: `PlanComparison.vue` — captures `return_url` from query param, passes to `createCheckout()` API call
-- [x] 6.5.10 Frontend: `billing.ts` — `createCheckout()` and `createPortalSession()` accept `returnUrl` parameter
-- [ ] 6.5.11 Sister domain SDK must detect `billing_updated` query param and auto-refetch `auth/me` — handled in Phase 7 (SDK)
-- [ ] 6.5.12 Test: full round-trip from sister domain → Sattabase billing → back to sister domain with updated access map
-
-#### 6.6 Per-Service-Domain Rate Limiting — DONE
-
-**Problem:** Current rate limiting uses `rl:{action}:{user_id}:{client_ip}`. When a sister domain backend proxies requests to Sattabase, ALL users on that domain share the same server IP. This means one sister domain with 100 active users can exhaust the rate limit bucket for every user on that domain.
-
-**Example:**
-```
-Finance backend (IP: 10.0.1.5) proxies 50 users' auth/me calls
-→ All 50 calls use key: "auth_me:user123:10.0.1.5"
-→ Rate limit (default 5/hr) exhausted after 5th user
-→ Remaining 45 users get 429 Too Many Requests
-```
-
-**Solution:** When a valid `X-API-Key` is present (SDK traffic), use the API key prefix as the rate limit bucket instead of the client IP. This isolates rate limits per service domain.
-
-- [x] 6.6.1 Update `check_rate_limit_or_raise()` in `common/rate_limit.py` — added `_get_sdk_rate_limit_params()` helper; when `request.service_credential` exists, rate limit key uses `rl:{action}:{user_id}:sdk:{api_key_prefix}` instead of `rl:{action}:{user_id}:{client_ip}`; SDK traffic uses separate higher limits
-- [x] 6.6.2 Add `RATE_LIMIT_SDK_ATTEMPTS` setting (default: 1000/hr per service domain) — higher than per-IP limits since SDK traffic is server-to-server
-- [x] 6.6.3 Add `RATE_LIMIT_SDK_WINDOW` setting (default: 3600 seconds)
-- [ ] 6.6.4 Write unit tests: SDK traffic uses api_key_prefix bucket, direct traffic still uses client_ip bucket — **pending**
-
-#### 6.7 User Account Status Enforcement in auth/me — DONE
-
-**Problem:** When a user is deactivated (`is_active=False`) or soft-deleted (`is_deleted=True`) on Sattabase, their JWT may still be valid until it expires (up to 60 minutes). During this window, a sister domain calling `auth/me` with that JWT would still receive user data. This means:
-- Deactivated user's records remain accessible on sister domains until JWT expiry
-- Deleted user's data could still be served
-
-**Solution:** `auth/me` explicitly checks user account status before returning data. Deactivated/deleted accounts receive a 401 with a specific error code (`account_inactive` / `account_deleted`) so the SDK can force-logout the user. An `account_status` field is also added to the response for defensive checks.
-
-- [x] 6.7.1 Update `get_auth_me()` in `BillingProtectedController` — after JWT validation, check `user.is_deleted` (raise `AccountDeletedException`, code `account_deleted`) and `user.is_active` (raise `AccountInactiveException`, code `account_inactive`); checks happen before any data is returned
-- [x] 6.7.2 Add `account_status` field to `AuthMeSchema` — returns `"active"`, `"inactive"`, or `"deleted"` via `_get_account_status()` helper in `BillingService`; included in both sync and async `get_auth_me_data()` response dicts
-- [x] 6.7.3 Add `AccountInactiveException` and `AccountDeletedException` in `common/exceptions.py` — both return 401 with distinct error codes for SDK consumers to handle
-- [ ] 6.7.4 Write unit tests: auth/me for active user (normal), inactive user (401), deleted user (401), verified vs unverified email — **pending**
-
-#### 6.8 SDK Readiness Summary
-
-The Sattabase backend is ready for SDK development with the following status:
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    SDK READINESS CHECKLIST                       │
-│                                                                  │
-│  ✅ User Authentication (JWT login/register)                     │
-│  ✅ User Identity (user.id returned in auth/me)                  │
-│  ✅ Per-User Record Isolation (sister domain uses user.id as FK) │
-│  ✅ Subscription Status per Domain (auth/me domain-aware)        │
-│  ✅ Access Map / Feature Gating (plan → access entries)          │
-│  ✅ Service Domain Auth (X-API-Key → ServiceCredential)          │
-│  ✅ Dynamic CORS (ServiceDomain origins)                         │
-│  ✅ Billing Redirect (validate_return_url)                       │
-│  ✅ Admin API Key Management (create/revoke/rotate/list)         │
-│  ✅ Per-Service-Domain Rate Limiting (6.6)                       │
-│  ✅ User Account Status Enforcement (6.7)                        │
-│                                                                  │
-│  📋 User Lifecycle Webhooks (future — not blocking for MVP)      │
-│  📋 ServiceCredential.permissions enforcement (future)           │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**Per-user record isolation architecture:**
-
-```
-Sattabase (base system)           Sister Domain (e.g. finance app)
-┌───────────────────────┐        ┌──────────────────────────────────┐
-│ User (id=42)          │◄──FK── │ BankAccount (sattabase_user_id=42)│
-│ Subscription          │        │ Transaction (sattabase_user_id=42)│
-│ AccessEntry → Plan    │        │ Invoice (sattabase_user_id=42)    │
-│ Product/ServiceDomain │        │ ...all records WHERE user_id=42   │
-└───────────────────────┘        └──────────────────────────────────┘
-      ↑                                  ↑
-   SDK calls auth/me              Sister domain uses user.id
-   → gets user.id=42              from Sattabase as FK for isolation
-```
-
-Each sister concern domain has its OWN database with its OWN models. The SDK provides only the **identity layer** (who is this user?) and **permission layer** (what can they do?). The sister domain is fully responsible for its own data models, record storage, and per-user isolation using the Sattabase `user.id` as a foreign key.
+**Status:** Not implemented. ProductAdmin has inlines for PlanInline and ServiceDomainInline but no dedicated comparison URL.
 
 ---
 
-### Phase 7: Python SDK (`sattabase-sdk`)
+## 10. New Celery Tasks ⚠️ 1/5 implemented + 4 additional tasks
 
-**Goal:** Build and publish the Python SDK package for service domain backends.
+### Originally Planned Tasks
 
-> **Phase 6 context (what already exists on the backend):**
-> - `ServiceCredential` model with `api_key_hash`, `api_key_prefix` (12 chars: `sb_live_` + 6), `permissions` (JSONField)
-> - `validate_api_key()` in `common/api_key_auth.py` — SHA-256 hash lookup, sets `request.service_credential` and `request.service_domain_from_key`
-> - `validate_return_url()` in `billing/stripe/checkout.py` — validates against `ServiceDomain` + `STRIPE_APP_DOMAIN`, cached 5-min
-> - `ServiceDomainCorsMiddleware` — `@sync_and_async_middleware` pattern, dynamic CORS from DB
-> - `API_KEY_ENFORCED` setting — soft (log warning) vs hard (401) enforcement
-> - `AdminApiKeyController` at `/admin/api-keys` — create, list, revoke, rotate
-> - `return_url` support in `build_success_url()`, `build_cancel_url()`, `create_portal()` — all backward-compatible (optional param, `None` default)
+| Task | Schedule | Description | Status |
+|------|----------|-------------|--------|
+| `check_expired_subscriptions` | Daily (midnight) | Expire subscriptions past their period_end | ❌ Not implemented — dunning handles expiry only at day 14 |
+| `send_trial_ending_reminder` | Daily | Email users whose trial ends in 3 days | ❌ Not implemented — webhook handler only logs, no email sent |
+| `send_subscription_renewal_reminder` | Daily | Email users whose subscription renews in 3 days | ❌ Not implemented — no task or email mechanism |
+| `cleanup_stale_webhook_events` | Weekly | Remove processed webhook event logs older than 30 days | ✅ Implemented — `tasks.py` line 410 (weekly, 90-day retention) |
+| `sync_stripe_subscriptions` | Hourly | Reconcile local DB with Stripe (catch missed webhooks) | ❌ Not implemented — only `sync_customer_data` exists (customer profile sync, not subscription state) |
 
-#### 7.1 Project Scaffolding
+### Actually Implemented Tasks (beyond original plan)
 
-- [ ] 7.1.1 Create new repo `sattabase-sdk-python` (separate from ledger repo)
-- [ ] 7.1.2 Set up `pyproject.toml` with: `hatch` build backend, `httpx` (async HTTP), `pydantic>=2.0` (models), Python 3.10+ support
-- [ ] 7.1.3 Create package structure: `src/sattabase/` with `__init__.py`, `client.py`, `auth.py`, `access.py`, `redirect.py`, `exceptions.py`, `models.py`, `config.py`, `middleware.py`
-- [ ] 7.1.4 Create `tests/` directory with `conftest.py`, `test_auth.py`, `test_access.py`, `test_redirect.py`, `test_middleware.py`
-- [ ] 7.1.5 Set up CI: `pytest`, `ruff` (linting), `mypy` (type checking), `coverage >= 80%`
+| Task | Schedule | Description | Status |
+|------|----------|-------------|--------|
+| `reconcile_webhooks` | Every 6 hours | Retry failed webhook events (up to 50, max 24h old) | ✅ `tasks.py` line 213 |
+| `sync_customer_data` | Daily 3:30 AM UTC | Sync Stripe customer data to local profiles | ✅ `tasks.py` line 238 |
+| `dunning_retry` | Daily 4:00 AM UTC | Staged dunning: Day 3 reminder → Day 5 urgent → Day 7 restrict → Day 14 auto-cancel | ✅ `tasks.py` line 296 |
+| `update_exchange_rates` | Daily 3:00 AM UTC | Fetch exchange rates (open.er-api.com, fallback: frankfurter.app) | ✅ `tasks.py` line 383 |
+| `recognize_revenue` | Daily 2:30 AM UTC | ASC 606 daily revenue recognition for active subscriptions | ✅ `tasks.py` line 447 |
 
-#### 7.2 Configuration & Client Core
+### Still Missing
 
-- [ ] 7.2.1 Create `config.py` — `SattabaseConfig` dataclass with validated fields:
-  - `base_url: str` — Sattabase API base URL (e.g. `https://sattabase.tld/api/v1`)
-  - `service_domain: str` — identifies this service domain (e.g. `finance.sattabase.tld`)
-  - `api_key: str` — service credential raw key (format: `sb_live_{token_urlsafe(32)}`), SDK stores this in memory, never persists to disk
-  - `timeout: float = 10` — HTTP request timeout in seconds
-  - `auto_refresh: bool = True` — enable automatic token refresh on 401
-  - `max_retries: int = 1` — max retries after token refresh
-  - Validation: `api_key` must start with `sb_live_`, `base_url` must be https in non-debug mode
-- [ ] 7.2.2 Create `exceptions.py` — typed exception hierarchy:
-  - `SattabaseError(Exception)` — base, has `status: int`, `message: str`, `detail: Any | None`
-  - `AuthenticationError(SattabaseError)` — 401 (invalid/expired token or API key)
-  - `ForbiddenError(SattabaseError)` — 403 (insufficient permissions)
-  - `NotFoundError(SattabaseError)` — 404
-  - `ConflictError(SattabaseError)` — 409
-  - `RateLimitError(SattabaseError)` — 429, has `retry_after: int | None` attribute
-  - `ValidationError(SattabaseError)` — 422 (invalid request body)
-  - `ApiServerError(SattabaseError)` — 5xx + network errors
-- [ ] 7.2.3 Create `models.py` — Pydantic v2 models that **exactly mirror** the actual backend schemas:
-  - `TokenPair(BaseModel)` — fields: `access: str`, `refresh: str` (matches `TokenOutputSchema`)
-  - `User(BaseModel)` — matches `UserOutputSchema`: `id: int`, `slug: str`, `email: str`, `first_name: str`, `last_name: str`, `is_active: bool`, `is_verified: bool`, `is_staff: bool`, `date_joined: datetime`, `avatar: str | None`, `currency: str | None`
-  - `SubscriptionInfo(BaseModel)` — matches `SubscriptionInfoSchema`: `plan_name: str`, `plan_slug: str`, `status: str`, `current_period_end: datetime | None`, `trial_end: datetime | None`, `is_active: bool`
-  - `AuthMeResponse(BaseModel)` — matches `AuthMeSchema`: `user: User`, `subscription: SubscriptionInfo | None`, `access: dict[str, Any]`
-  - `MessageResponse(BaseModel)` — `message: str`, `success: bool` (generic response)
-  - Add helper methods on `AuthMeResponse`:
-    - `has_access(key: str) -> bool` — checks `self.access[key]`, coerces string `"true"`/`"false"` to bool
-    - `get_access(key: str, default: Any = None) -> Any` — returns `self.access.get(key, default)`
-    - `access_keys: list[str]` — returns `list(self.access.keys())`
-- [ ] 7.2.4 Create `client.py` — `SattabaseClient` class:
-  - `__init__(self, config: SattabaseConfig, token_store: TokenStore | None = None)` — creates `httpx.AsyncClient`, exposes `self.auth`, `self.access`, `self.billing` namespaces
-  - Derive `app_base_url` from `config.base_url` (strip `/api/v1` to get `https://sattabase.tld`) for redirect URL construction
-  - `async close()` — close httpx client (support `async with` context manager)
-- [ ] 7.2.5 Build internal `_request()` method:
-  - Accepts: `method`, `path`, `token: str | None = None`, `json: dict | None = None`, `**kwargs`
-  - Builds full URL: `f"{self.config.base_url}{path}"`
-  - Injects headers: `X-API-Key: {api_key}`, `X-Service-Domain: {service_domain}`, `Authorization: Bearer {token}` (if provided), `Content-Type: application/json`
-  - Sends request via `self._http_client`
-  - On success: returns parsed JSON response body
-  - On error: maps HTTP status to typed exception (see 7.2.2), parses error body for `detail`/`message`
-  - Logs request/response at DEBUG level (URL, method, status, timing)
-- [ ] 7.2.6 Implement auto-refresh:
-  - When `auto_refresh=True` and a request returns 401:
-    1. Check if the failing request had an `Authorization` header (skip for API-key-only requests)
-    2. Extract refresh token from `token_store` (if configured)
-    3. Call `POST /auth/token/refresh` with `{ refresh: refresh_token }`
-    4. If refresh succeeds: update `token_store` with new `TokenPair`, retry original request with new access token
-    5. If refresh fails: raise `AuthenticationError("Token refresh failed")`
-    6. Use a lock/flag to prevent concurrent refresh requests (multiple 401s should not trigger multiple refreshes)
-
-#### 7.3 Auth Module (`auth.py`)
-
-These methods map 1:1 to the existing `AuthController` endpoints. Each method uses `_request()` internally, which auto-injects `X-API-Key` and `X-Service-Domain`.
-
-- [ ] 7.3.1 `auth.login(email: str, password: str) -> TokenPair` → `POST /auth/login` body: `{ email, password }` → returns `TokenPair`
-- [ ] 7.3.2 `auth.register(email: str, password: str, first_name: str, last_name: str, ...) -> MessageResponse` → `POST /auth/register` → returns `MessageResponse`
-- [ ] 7.3.3 `auth.me(token: str | None = None) -> AuthMeResponse` → `GET /billing/auth/me`
-  - Uses provided `token` or falls back to `token_store.get_tokens()` if configured
-  - Injects `Authorization: Bearer {token}` header
-  - Backend resolves domain via `X-API-Key` → `ServiceDomain` (priority) or `X-Service-Domain` header (fallback)
-  - Returns domain-scoped user + subscription + access map
-- [ ] 7.3.4 `auth.refresh(refresh_token: str) -> TokenPair` → `POST /auth/token/refresh` body: `{ refresh: refresh_token }`
-- [ ] 7.3.5 `auth.verify(token: str) -> MessageResponse` → `POST /auth/token/verify` body: `{ token }`
-- [ ] 7.3.6 `auth.blacklist(refresh_token: str) -> MessageResponse` → `POST /auth/token/blacklist` body: `{ refresh: refresh_token }`
-- [ ] 7.3.7 `auth.logout(token: str, refresh_token: str) -> None` → calls `blacklist(refresh_token)`, clears `token_store` if configured
-- [ ] 7.3.8 `auth.request_password_reset(email: str) -> MessageResponse` → `POST /auth/password-reset/request`
-- [ ] 7.3.9 `auth.confirm_password_reset(email: str, otp: str, new_password: str, confirm_password: str) -> MessageResponse` → `POST /auth/password-reset/confirm`
-- [ ] 7.3.10 `auth.request_email_verification(email: str) -> MessageResponse` → `POST /auth/verify-email/request`
-- [ ] 7.3.11 `auth.confirm_email_verification(email: str, otp: str) -> MessageResponse` → `POST /auth/verify-email/confirm`
-
-#### 7.4 Access Module (`access.py`)
-
-Thin wrapper around `AuthMeResponse` helper methods with optional client-side caching.
-
-- [ ] 7.4.1 `access.has_access(key: str, token: str | None = None) -> bool`
-  - Calls `auth.me(token)` to get latest `AuthMeResponse`
-  - Returns `auth_me.has_access(key)`
-  - Optional: cache `AuthMeResponse` in memory with configurable TTL (default 60s) to avoid repeated calls
-- [ ] 7.4.2 `access.get_access(key: str, default: Any = None, token: str | None = None) -> Any`
-  - Same pattern, returns `auth_me.get_access(key, default)`
-- [ ] 7.4.3 `access.keys(token: str | None = None) -> list[str]`
-  - Returns `list(auth_me.access.keys())`
-- [ ] 7.4.4 `access.invalidate_cache()` — clears cached `AuthMeResponse`, forcing next call to re-fetch
-
-#### 7.5 Redirect Module (`redirect.py`)
-
-**Zero API calls.** These methods only construct URL strings. The actual `return_url` validation happens server-side in `validate_return_url()` (Phase 6.5).
-
-- [ ] 7.5.1 `billing.manage_subscription(product_slug: str, return_url: str | None = None) -> str`
-  - Constructs: `{app_base_url}/billing/{product_slug}?return_url={encoded_return_url}`
-  - `app_base_url` derived from `config.base_url` (strip `/api/v1`)
-  - `return_url` is URL-encoded. If `None`, Sattabase uses its own default redirect
-  - Example output: `https://sattabase.tld/billing/finance?return_url=https%3A%2F%2Ffinance.sattabase.tld%2Fsettings`
-- [ ] 7.5.2 `billing.upgrade(product_slug: str, return_url: str | None = None) -> str`
-  - Constructs: `{app_base_url}/billing/{product_slug}/upgrade?return_url={encoded_return_url}`
-- [ ] 7.5.3 `billing.portal(return_url: str | None = None) -> str`
-  - Constructs: `{app_base_url}/billing/portal?return_url={encoded_return_url}`
-- [ ] 7.5.4 `billing.detect_billing_update(url: str) -> tuple[bool, int | None]`
-  - Utility: parses a URL for `billing_updated` query param
-  - Returns `(True, 1)` for `?billing_updated=1`, `(True, 0)` for `?billing_updated=0`, `(False, None)` otherwise
-  - Sister domains call this on page load to detect return from billing redirect (Phase 6.5.11)
-
-#### 7.6 Token Store & Middleware
-
-- [ ] 7.6.1 Define `TokenStore` protocol in `client.py`:
-  ```python
-  class TokenStore(Protocol):
-      async def get_tokens(self, user_id: str) -> TokenPair | None: ...
-      async def set_tokens(self, user_id: str, tokens: TokenPair) -> None: ...
-      async def delete_tokens(self, user_id: str) -> None: ...
-  ```
-- [ ] 7.6.2 Implement `RedisTokenStore(redis_client, key_prefix: str = "sb:")`
-  - Stores `TokenPair` as JSON in Redis key `{key_prefix}tokens:{user_id}`
-  - Configurable TTL (default: 7 days, matching JWT refresh token expiry)
-  - `get_tokens` → `redis.get()` → deserialize JSON → `TokenPair`
-  - `set_tokens` → serialize to JSON → `redis.setex()`
-  - `delete_tokens` → `redis.delete()`
-- [ ] 7.6.3 Implement `DatabaseTokenStore(session_factory, model: type)`
-  - Stores tokens in a database table with columns: `user_id`, `access_token`, `refresh_token`, `expires_at`
-  - `model` is a SQLAlchemy/ Django model — the SDK provides a mixin class `TokenStoreMixin` with the required fields
-  - `set_tokens` → upsert (create or update), `get_tokens` → select, `delete_tokens` → delete
-- [ ] 7.6.4 Create `middleware.py` — Django middleware for Pattern A (backend proxy):
-  ```python
-  class SattabaseAuthMiddleware:
-      """Extracts user session, calls auth/me, sets request.sattabase_user + request.sattabase_access."""
-      async_capable = True
-      sync_capable = True  # Uses @sync_and_async_middleware pattern
-
-      def __call__(self, request):
-          # 1. Extract user_id from Django session
-          # 2. Get tokens from token_store
-          # 3. Call client.auth.me(token) with short cache (per-request)
-          # 4. Set request.sattabase_user = auth_me.user
-          # 5. Set request.sattabase_access = auth_me.access
-          # 6. Set request.sattabase_subscription = auth_me.subscription
-          # 7. On failure: set request.sattabase_user = None (graceful degradation)
-  ```
-  - Also provide a Flask decorator `@sattabase_auth` for non-Django backends
-- [ ] 7.6.5 Write integration tests:
-  - Mock `httpx` responses to simulate Sattabase API
-  - Test full login → auth.me → has_access flow
-  - Test auto-refresh on 401
-  - Test redirect URL construction
-  - Test middleware sets correct attributes on request
-
-#### 7.7 Documentation & Publishing
-
-- [ ] 7.7.1 Write README.md: quickstart, installation (`pip install sattabase-sdk`), configuration, auth flows, feature gates, billing redirect, token store setup, middleware setup
-- [ ] 7.7.2 Write integration guide: step-by-step for Django backend (Pattern A with `SattabaseAuthMiddleware`) and for SPA proxy backend (Pattern B)
-- [ ] 7.7.3 Add `py.typed` marker for PEP 561 compliance
-- [ ] 7.7.4 Publish to private PyPI (test first, then production)
-- [ ] 7.7.5 Add `CHANGELOG.md` file
+- [ ] HTML email templates — all emails are plain-text inline f-strings, no template directory
+- [ ] `sync_stripe_subscriptions` task — subscription state reconciliation (not just customer profile)
+- [ ] Reminder email infrastructure — trial ending, renewal, payment failure notifications
 
 ---
 
-### Phase 8: TypeScript SDK (`@sattabase/sdk`)
+## 10.1 Frontend & Operational Feature Gaps
 
-**Goal:** Build and publish the TypeScript SDK package for service domain frontends.
+> Audit performed on 2026-05-03. Cross-referencing all backend models, API endpoints, and webhook handlers against the current frontend pages and Vue components revealed the following gaps. These items have backend infrastructure in place but lack user-facing frontend visibility or operational tooling.
 
-> **Phase 6 context (same as Phase 7):**
-> - All backend infrastructure is ready: API key auth, CORS, return_url validation
-> - The TypeScript SDK mirrors the Python SDK's surface but targets browser environments
-> - Python SDK `models.py` → TypeScript `types.ts` must use the same field names as the actual backend schemas
+### Gap Matrix
 
-#### 8.1 Project Scaffolding
+| # | Gap | Backend Status | Frontend Status | Severity |
+|---|-----|---------------|-----------------|----------|
+| G1 | **InvoiceLineItem model missing** | Documented in `dev_docs.md` with 12 fields, migration `0016` referenced, but model does NOT exist in `billing/models.py` | N/A | Critical |
+| G2 | **Invoice detail page** | `Invoice` model exists (20 fields, populated by webhooks). `pdf_url`, `stripe_fee_cents`, `discount_cents` all stored locally | Billing history is a flat list pulled live from Stripe API — local `Invoice` model is never queried; no detail/line-item drill-down, no PDF download button | High |
+| G3 | **Plans sidebar link broken** | `/dashboard/billing/plans/[slug]` page exists with full `PlanComparison.vue` | `Sidebar.astro` marks Plans as disabled with "Coming Soon" badge — users cannot navigate there from sidebar | High |
+| G4 | **Refund management — no admin UI** | `Refund` model (14 fields), `POST /billing/admin/refunds` API, full PCI-DSS audit trail (IP, approval, reason, admin notes) | Zero frontend — no refund creation, no refund history, no approval workflow UI | High |
+| G5 | **Plan change history — never shown** | `PlanChangeLog` model auto-created on every plan change (from_plan, to_plan, proration amount, initiator) | Zero frontend — users/admins cannot see plan change history | Medium |
+| G6 | **Login history / security audit — invisible** | `UserLoginHistory` model records every login (IP, user agent, timestamp) | Zero frontend — no security log, no "recent logins" view, no device management | Medium |
+| G7 | **Admin API endpoints — no UI** | 5 admin endpoints exist: refund, transaction lookup, customer sync, GDPR export, GDPR delete | None are exposed in any frontend page | High |
+| G8 | **Webhook monitoring — no admin view** | `WebhookEventLog` model logs every event (id, type, processed status, error, payload). Failed events retried by Celery | No admin dashboard to monitor failed/successful webhooks or trigger manual retries | Medium |
+| G9 | **Revenue recognition — no visibility** | `RevenueRecognitionEntry` model + daily Celery task for ASC 606 compliance | No admin dashboard to view recognized revenue, MRR breakdown, or deferred revenue | Medium |
+| G10 | **Notification system — placeholder** | No backend notification model, no API endpoints | Navbar bell icon exists with empty dropdown ("No notifications yet") | Low |
+| G11 | **Finance features — all disabled** | No backend models for Transactions, Accounts, Budgets, Reports | 4 sidebar menu items disabled with "Soon" badges | Low (future scope) |
+| G12 | **PDF download for invoices** | `Invoice.pdf_url` stored in local model and returned by Stripe API | Not rendered in billing history list — only "View" (hosted_url) link shown | Low |
+| G13 | **Discount & Stripe fee display** | `Invoice.discount_cents` and `Invoice.stripe_fee_cents` stored locally | Not displayed anywhere in the billing UI | Low |
+| G14 | **Exchange rate display** | `ExchangeRate` model populated daily by Celery; used for `?currency=` price conversion | No UI to show exchange rates or allow user to pick display currency (auto-detected only) | Low |
 
-- [ ] 8.1.1 Create new repo `sattabase-sdk-typescript` (separate from ledger repo)
-- [ ] 8.1.2 Set up `package.json`: name `@sattabase/sdk`, build with `tsup`, dev dependencies: `vitest`, `typescript`, `vue`
-- [ ] 8.1.3 Create `tsconfig.json` — target ES2020, module ESNext, strict mode, declaration output
-- [ ] 8.1.4 Create package structure: `src/client.ts`, `src/auth.ts`, `src/access.ts`, `src/redirect.ts`, `src/exceptions.ts`, `src/types.ts`, `src/storage.ts`, `src/vue/index.ts`
-- [ ] 8.1.5 Create `tests/` with `vitest` setup
-- [ ] 8.1.6 Set up CI: `vitest`, `eslint`, `prettier`, `typecheck`
+### Detailed Gap Analysis
 
-#### 8.2 Types & Exceptions
+#### G1: InvoiceLineItem Model — Documented but Not Implemented
 
-- [ ] 8.2.1 Create `types.ts` — TypeScript interfaces that **exactly mirror** the actual backend schemas:
-  ```typescript
-  // Matches TokenOutputSchema
-  interface TokenPair { access: string; refresh: string; }
+**Current state:** `dev_docs.md` describes an `InvoiceLineItem` model with 12 fields (invoice FK, stripe_line_item_id, description, amount_cents, currency, quantity, period_start, period_end, proration, discount_amount_cents, tax_amount_cents, type) and references migration `0016_invoice_line_items.py`. However, the model does NOT exist in `billing/models.py` — zero references in any Python file across the entire codebase. This is a phantom model.
 
-  // Matches UserOutputSchema
-  interface User {
-    id: number; slug: string; email: string;
-    first_name: string; last_name: string;
-    is_active: boolean; is_verified: boolean; is_staff: boolean;
-    date_joined: string; avatar: string | null; currency: string | null;
-  }
+**Impact:** Webhook handlers (`invoice.created`, `invoice.payment_succeeded`) create `Invoice` records but cannot store individual line items. The Stripe API returns line item data (from `invoice.lines.data`), but it is discarded after extracting only the first description.
 
-  // Matches SubscriptionInfoSchema
-  interface SubscriptionInfo {
-    plan_name: string; plan_slug: string; status: string;
-    current_period_end: string | null;
-    trial_end: string | null;
-    is_active: boolean;
-  }
+**Required work:**
+1. Create `InvoiceLineItem` model in `billing/models.py` with the 12 documented fields
+2. Generate and run migration
+3. Update webhook handlers to populate line items when creating/updating `Invoice` records
+4. Add admin endpoint `GET /billing/invoices/{invoice_id}` with line items
+5. Build frontend invoice detail page (see G2)
 
-  // Matches AuthMeSchema
-  interface AuthMeResponse {
-    user: User;
-    subscription: SubscriptionInfo | null;
-    access: Record<string, any>;
-  }
+#### G2: Invoice Detail Page — Users Can't Drill Into Invoices
 
-  // Generic response
-  interface MessageResponse { message: string; success: boolean; }
+**Current state:** `BillingOverview.vue` fetches transaction history directly from Stripe's live API via `get_transaction_history()` and displays a flat list: status, invoice number, amount, tax, period, card brand, and a "View" link (hosted_url). There is no individual invoice detail page, no line item breakdown, and no PDF download button.
 
-  // Config
-  interface SattabaseConfig {
-    baseUrl: string;
-    serviceDomain: string;
-    apiKey?: string;  // Optional for browser-side (Pattern B may not need it)
-    storage?: TokenStore | "localStorage" | "cookie";
-    autoRefresh?: boolean;
-    timeout?: number;
-  }
+Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and stores locally: `pdf_url`, `stripe_fee_cents`, `discount_cents`, `attempt_count`, `next_payment_attempt`, `stripe_response` (full JSON). None of this local data is used by the frontend.
 
-  // Billing update detection
-  type BillingUpdateStatus = { updated: boolean; success: boolean | null };
-  ```
-- [ ] 8.2.2 Create `exceptions.ts` — `SattabaseError` (base, has `status` and `code`) + `AuthenticationError(401)`, `ForbiddenError(403)`, `NotFoundError(404)`, `ConflictError(409)`, `RateLimitError(429, retryAfter?)`
+**Required work:**
+1. Create `GET /billing/invoices/{stripe_invoice_id}` endpoint that queries the local `Invoice` model (with line items once G1 is done) — avoids repeated Stripe API calls
+2. Create `/dashboard/billing/invoices/[id].astro` page with `InvoiceDetail.vue` component
+3. Display: line items table (description, amount, quantity, period), subtotal, tax, discount, Stripe fee, total, payment method
+4. Add PDF download button (link to `invoice.pdf_url`)
+5. Add Stripe fee and discount to the billing history list items (G12, G13)
+6. Consider switching billing history from Stripe live API to local `Invoice` model for performance
 
-#### 8.3 Storage Layer
+#### G3: Plans Sidebar Link — Page Exists but Navigation Says "Coming Soon"
 
-- [ ] 8.3.1 Create `storage.ts` — `TokenStore` interface:
-  ```typescript
-  interface TokenStore {
-    getTokens(): TokenPair | null;
-    setTokens(pair: TokenPair): void;
-    clearTokens(): void;
-    getAccessToken(): string | null;
-    getRefreshToken(): string | null;
-  }
-  ```
-- [ ] 8.3.2 Implement `LocalStorageTokenStore` — stores `TokenPair` + `expires_at` in `localStorage` under configurable key prefix (default `sb_auth:`)
-  - `setTokens()`: stores `{ access, refresh, expires_at }` as JSON
-  - `getTokens()`: parses JSON, checks `expires_at` — returns `null` if expired
-  - `clearTokens()`: removes key from localStorage
-- [ ] 8.3.3 Implement `CookieTokenStore` — stores tokens in cookies
-  - Configurable: `httpOnly: boolean`, `secure: boolean`, `sameSite: "Lax" | "Strict" | "None"`, `path: string`
-  - `httpOnly=true` means tokens only sent to same-origin API calls (useful for Pattern B backend proxy)
-- [ ] 8.3.4 Built-in factory: `createDefaultStorage(config)` — returns `LocalStorageTokenStore` or `CookieTokenStore` based on config string `"localStorage"` / `"cookie"`
+**Current state:** `Sidebar.astro` has a "Plans" link under BILLING section marked as disabled with a "Coming Soon" tooltip. However, `/dashboard/billing/plans/[slug].astro` page fully exists with `PlanComparison.vue` component — side-by-side plan cards, pricing with currency conversion, proration preview, Stripe checkout, ToS agreement, reactivation flow. The page is fully functional and accessible via direct URL.
 
-#### 8.4 Client Core
+**Required work:**
+1. Remove `disabled` attribute from Plans sidebar link
+2. Set `href` to `/dashboard/billing` (main billing page where products are listed — users click a product to see plans)
+3. Remove "Coming Soon" badge
+4. Optionally: if multi-product, link to the user's first active product's plan page
 
-- [ ] 8.4.1 Create `client.ts` — `SattabaseClient` class:
-  - Constructor accepts `SattabaseConfig`
-  - Initializes storage via `createDefaultStorage(config)` if string, or uses provided `TokenStore` instance
-  - Derives `appBaseUrl` from `config.baseUrl` (strip `/api/v1`) for redirect URLs
-  - Exposes `this.auth`, `this.access`, `this.billing` as module instances
-- [ ] 8.4.2 Build internal `_fetch()` method:
-  - Builds URL: `${this.config.baseUrl}${path}`
-  - Injects headers: `X-Service-Domain: ${config.serviceDomain}`, `X-API-Key: ${config.apiKey}` (if provided)
-  - For authenticated requests: reads access token from storage, adds `Authorization: Bearer ${token}`
-  - Parses JSON response, maps HTTP status to typed exceptions (same mapping as Python SDK)
-  - On 401 + `autoRefresh=true`: attempt refresh, retry once
-- [ ] 8.4.3 Implement auto-refresh (browser-side):
-  - On 401: call `POST /auth/token/refresh` with stored refresh token
-  - If success: update storage with new `TokenPair`, retry original request
-  - If failure: clear storage, throw `AuthenticationError`
-  - Use a promise-based mutex to prevent concurrent refresh (multiple tabs/requests)
-- [ ] 8.4.4 Expose namespaces: `this.auth` (AuthModule), `this.access` (AccessModule), `this.billing` (RedirectModule)
+#### G4: Refund Management — Full Backend, No Frontend
 
-#### 8.5 Auth Module (`auth.ts`)
+**Current state:** The `Refund` model has 14 fields including PCI-DSS audit fields (`initiated_by_ip`, `approved_by`, `approved_at`, `admin_notes`, `reason_category`, `stripe_response`). The `POST /billing/admin/refunds` endpoint supports creating refunds with idempotency, caps at invoice `amount_paid`, and supports historical charge refunds. There is no UI for any of this.
 
-- [ ] 8.5.1 `auth.login({ email, password }) -> Promise<TokenPair>` — POST, auto-stores tokens in storage, returns `TokenPair`
-- [ ] 8.5.2 `auth.register({ email, password, first_name, last_name, ... }) -> Promise<MessageResponse>`
-- [ ] 8.5.3 `auth.me() -> Promise<AuthMeResponse>` — GET, uses stored access token, returns `AuthMeResponse`
-- [ ] 8.5.4 `auth.refresh() -> Promise<TokenPair>` — POST, updates stored tokens, returns new `TokenPair`
-- [ ] 8.5.5 `auth.verify() -> Promise<MessageResponse>` — POST, checks if current access token is valid
-- [ ] 8.5.6 `auth.logout() -> Promise<void>` — blacklist refresh token via API + `storage.clearTokens()`
-- [ ] 8.5.7 `auth.requestPasswordReset(email)` / `auth.confirmPasswordReset(email, otp, newPassword, confirmPassword)`
-- [ ] 8.5.8 `auth.requestEmailVerification(email)` / `auth.confirmEmailVerification(email, otp)`
-- [ ] 8.5.9 `auth.isAuthenticated() -> boolean` — checks if access token exists in storage and `expires_at` has not passed
+**Required work:**
+1. Create `/dashboard/admin/refunds.astro` page with `RefundManager.vue` component
+2. Refund creation form: select user (by email/user_id), select charge, enter amount and reason
+3. Refund history table: all refunds with status (pending/completed/failed), amounts, dates, initiator
+4. Approval workflow (if multi-step approval is desired)
+5. Refund detail view with full audit trail (who, when, IP, reason, Stripe response)
+6. Guard page with admin/superuser role check
 
-#### 8.6 Access Module (`access.ts`)
+#### G5: Plan Change History — Tracked but Never Displayed
 
-- [ ] 8.6.1 `client.hasAccess(key: string) -> Promise<boolean>` — calls `auth.me()` if not cached, checks `access[key]` with boolean coercion (`"true"` → `true`, `"false"` → `false`, truthy/falsy for other types)
-- [ ] 8.6.2 `client.getAccess<T>(key: string, defaultValue?: T) -> Promise<T>` — typed access to access map values
-- [ ] 8.6.3 Internal cache: store latest `AuthMeResponse` in memory (module-level variable), invalidate on token change, `logout()`, or explicit `access.invalidate()`
+**Current state:** `PlanChangeLog` records are auto-created by `confirm_plan_change` and `change_plan` endpoints. Each record has: subscription, from_plan, to_plan, proration_amount_cents, currency, stripe_proration_id, initiated_by, proration_behavior, timestamps. There is no frontend endpoint or page to view this history.
 
-#### 8.7 Redirect Module (`redirect.ts`)
+**Required work:**
+1. Create `GET /billing/subscriptions/{product_slug}/change-history` endpoint
+2. Add a "Plan History" tab/section in `BillingOverview.vue` or a dedicated section on the subscription card
+3. Display timeline: date, old plan → new plan, proration amount, who initiated
 
-- [ ] 8.7.1 `billing.manageSubscription({ productSlug, returnUrl? }) -> string` — builds URL: `{appBaseUrl}/billing/{productSlug}?return_url={encoded}` (no API call)
-- [ ] 8.7.2 `billing.upgrade({ productSlug, returnUrl? }) -> string` — builds URL: `{appBaseUrl}/billing/{productSlug}/upgrade?return_url={encoded}`
-- [ ] 8.7.3 `billing.portal({ returnUrl? }) -> string` — builds URL: `{appBaseUrl}/billing/portal?return_url={encoded}`
-- [ ] 8.7.4 `billing.detectBillingUpdate() -> BillingUpdateStatus` — reads current `window.location.search` for `billing_updated` param, returns `{ updated: true, success: 1 | 0 }` or `{ updated: false, success: null }`. Sister domains call this on mount to detect return from Sattabase billing redirect.
+#### G6: Login History / Security Audit — Tracked but Never Displayed
 
-#### 8.8 Vue Composables (`vue/index.ts`)
+**Current state:** `UserLoginHistory` records IP address, user agent, and timestamp for every login. There is no API endpoint to list login history and no frontend page to display it.
 
-- [ ] 8.8.1 `useAuth()` composable:
-  ```typescript
-  const { user, subscription, access, loading, error, refetch } = useAuth();
-  ```
-  - Auto-fetches `auth.me()` on mount (calls `client.auth.me()`)
-  - Returns reactive `ref()` for: `user`, `subscription`, `access`
-  - `loading: ComputedRef<boolean>`, `error: Ref<Error | null>`
-  - `refetch()` — re-calls `auth.me()`, updates all refs
-  - Auto-invalidates on `billing.detectBillingUpdate().updated` (listens to route change or `popstate`)
-- [ ] 8.8.2 `useAccess()` composable:
-  ```typescript
-  const { hasAccess, getAccess, accessKeys, loading, refetch } = useAccess();
-  ```
-  - `hasAccess(key)` — reactive boolean, auto-fetches `auth.me()` on first call
-  - `getAccess<T>(key, defaultValue?)` — typed access
-  - `accessKeys` — reactive list of all available access keys
-  - Internally uses `useAuth()` for the data source
-- [ ] 8.8.3 `useBillingRedirect()` composable:
-  ```typescript
-  const { isBillingReturn, billingSuccess, returnUrl } = useBillingRedirect();
-  ```
-  - On mount: calls `billing.detectBillingUpdate()`, sets reactive state
-  - `isBillingReturn: boolean` — `true` if `billing_updated` param is present
-  - `billingSuccess: boolean | null` — `true` for `billing_updated=1`, `false` for `billing_updated=0`
-  - Sister domains use this in their root layout to detect billing return and trigger `refetch()`
+**Required work:**
+1. Create `GET /users/me/login-history` endpoint (paginated, last 50 entries)
+2. Add a "Security" or "Login History" section in `SettingsPanel.vue` or create a dedicated page
+3. Display: timestamp, IP address, user agent (browser/OS parsed), location (optional, via IP geolocation)
+4. "Sign out all other sessions" button (requires token blacklisting logic)
 
-#### 8.9 Documentation & Publishing
+#### G7: Admin API Endpoints — 5 Endpoints With No UI
 
-- [ ] 8.9.1 Write README.md: quickstart (`npm install @sattabase/sdk`), configuration, browser setup (Pattern B), Vue integration, feature gates, billing redirect
-- [ ] 8.9.2 Write Vue integration guide: setup with `provide/inject`, route guards, auto-refresh
-- [ ] 8.9.3 Add TSDoc comments to all public methods and types
-- [ ] 8.9.4 Publish to private npm (test first, then production)
-- [ ] 8.9.5 Add `CHANGELOG.md`
+**Current state:** Five admin-only API endpoints exist but have no frontend exposure:
+
+| Endpoint | Purpose | UI Needed |
+|---|---|---|
+| `POST /billing/admin/refunds` | Create refund | Covered by G4 |
+| `GET /billing/admin/transactions` | View any user's transactions by email/user_id | User lookup + transaction list |
+| `POST /billing/admin/sync-customer` | Sync Stripe customer to local profile | Manual sync button per user |
+| `GET /billing/admin/gdpr-export/{slug}` | GDPR Article 20 data export | Export button + download |
+| `DELETE /billing/admin/gdpr-delete/{slug}` | GDPR data deletion | Delete confirmation with safeguards |
+
+**Required work:**
+1. Create `/dashboard/admin/` route group with admin layout
+2. Build admin user lookup component (search by email/user_id)
+3. Build GDPR tools page with export/delete actions (require double confirmation for delete)
+4. Build customer sync action accessible from user detail view
+5. Guard all admin routes with role-based access (superuser/staff only)
+
+#### G8: Webhook Monitoring — No Admin Dashboard
+
+**Current state:** `WebhookEventLog` stores every Stripe webhook with event_id, event_type, processed status, error_message, payload JSON. Failed events are retried by `reconcile_webhooks` Celery task (every 6 hours). There is no admin view to monitor this.
+
+**Required work:**
+1. Create `GET /billing/admin/webhooks` endpoint (list, filter by status/type)
+2. Create admin webhook monitoring page: table of events, success/fail indicators, error messages
+3. Manual retry button for failed events
+4. Filter by event type (e.g., only show failed `invoice.payment_failed`)
+5. Payload inspector (expandable JSON view)
+
+#### G9: Revenue Recognition — No Visibility
+
+**Current state:** `RevenueRecognitionEntry` model + daily Celery task (`recognize_revenue`) handles ASC 606-compliant revenue recognition for active subscriptions. No admin can view this data.
+
+**Required work:**
+1. Create `GET /billing/admin/revenue` endpoint (summary + detailed entries)
+2. Create admin revenue dashboard: MRR, recognized vs deferred, by-plan breakdown
+3. Date range filter and export to CSV
+
+#### G10: Notification System — Placeholder Only
+
+**Current state:** Navbar has a bell icon with a dropdown that permanently shows "No notifications yet." No backend notification model, no API, no real-time push.
+
+**Required work:**
+1. Design notification model (type, title, message, read status, user FK, related object FK)
+2. Create CRUD API endpoints
+3. Connect to existing events (payment failed, subscription canceled, plan changed, trial ending)
+4. Replace placeholder dropdown with real notification list + unread badge count
+5. Optional: WebSocket for real-time push
+
+#### G11–G14: Minor Gaps
+
+- **G11 (Finance features):** Future scope — no backend models. Sidebar items are aspirational placeholders for the Ledger product itself.
+- **G12 (PDF download):** Add a download icon button next to "View" link in billing history, linking to `tx.pdf_url`.
+- **G13 (Discount & fee display):** Add `tx.discount` and Stripe fee (not currently in `TransactionItemSchema`) to the billing history list and invoice detail.
+- **G14 (Exchange rate/currency picker):** Add a currency selector dropdown in the billing page header so users can switch display currency without relying on auto-detection only.
 
 ---
 
-### Phase 9: Admin Backend (API Layer)
+## 11. Implementation Phases
 
-**Goal:** Complete admin API with all CRUD endpoints, analytics, and audit logging.
-
-#### 9.1 Admin Schemas
-
-- [ ] 9.1.1 Create `billing/admin_schemas.py` (or add to existing `billing/schemas.py`)
-- [ ] 9.1.2 Product schemas: `AdminProductCreateSchema`, `AdminProductUpdateSchema`, `AdminProductListItemSchema` (includes `plan_count`, `subscriber_count`, `domain_count`), `AdminProductDetailSchema` (includes plans, domains)
-- [ ] 9.1.3 Plan schemas: `AdminPlanCreateSchema`, `AdminPlanUpdateSchema`, `AdminPlanListItemSchema`, `AdminPlanDetailSchema` (includes access entries), `AdminPlanDuplicateSchema`
-- [ ] 9.1.4 Access entry schemas: `AdminAccessEntryCreateSchema`, `AdminAccessEntryUpdateSchema`, `AdminAccessEntryBulkSchema` (list of entries), `AdminAccessMatrixRowSchema`, `AdminAccessMatrixSchema` (plans × keys grid)
-- [ ] 9.1.5 Subscription schemas: `AdminSubscriptionListItemSchema` (includes user email, product name), `AdminSubscriptionDetailSchema`, `AdminSubscriptionOverrideSchema` (plan_id, status, period_start, period_end), `AdminSubscriptionExtendSchema`
-- [ ] 9.1.6 User schemas: `AdminUserListItemSchema` (includes subscription_count, last_login_at), `AdminUserDetailSchema` (includes all subscriptions), `AdminUserStatusUpdateSchema`, `AdminUserRoleUpdateSchema`
-- [ ] 9.1.7 Refund schemas: `AdminRefundListItemSchema`, `AdminRefundDetailSchema`, `AdminRefundApprovalSchema` (approved, notes)
-- [ ] 9.1.8 Metrics schemas: `AdminMetricsOverviewSchema` (mrr, active_subs, trial_subs, churn_rate, conversion_rate), `AdminMetricsRevenueSchema` (by_product, by_plan, by_period), `AdminMetricsSubscriptionFunnelSchema`
-- [ ] 9.1.9 Audit log schema: `AdminAuditLogItemSchema` (admin_user, action, path, ip, timestamp, details_json), `AdminAuditLogListSchema` (paginated)
-
-#### 9.2 Admin Controller — Products & Domains
-
-- [ ] 9.2.1 Create `AdminController` in `billing/controllers.py` — prefix `/admin`, auth `JWTAuth + IsAuthenticated`, all methods check `request.user.is_staff`
-- [ ] 9.2.2 `POST /admin/products` — create product with slug auto-generation, validate unique name/slug
-- [ ] 9.2.3 `GET /admin/products` — list with annotated `plan_count`, `subscriber_count` (via Subscription), `domain_count`; support `?is_active=` filter, `?search=` (name/slug)
-- [ ] 9.2.4 `GET /admin/products/{id}` — detail with `prefetch_related("plans", "service_domains")`, annotated subscriber counts per plan
-- [ ] 9.2.5 `PUT /admin/products/{id}` — update name, description, home_url, icon; partial update via schema
-- [ ] 9.2.6 `PATCH /admin/products/{id}/toggle` — toggle `is_active`; reject if product has active subscriptions and trying to deactivate
-- [ ] 9.2.7 `DELETE /admin/products/{id}` — soft-delete via SoftDeleteModel pattern or set `is_active=False`; reject if any active subscriptions exist
-- [ ] 9.2.8 `POST /admin/products/{product_id}/domains` — create ServiceDomain with domain validation (unique), set `is_primary` if first domain for product
-- [ ] 9.2.9 `PUT /admin/domains/{id}` — update domain, toggle `is_primary` (only one primary per product), toggle `is_active`
-- [ ] 9.2.10 `DELETE /admin/domains/{id}` — remove domain; prevent deleting primary domain if other domains exist
-- [ ] 9.2.11 Apply `@log_admin_access` to all mutation endpoints
-
-#### 9.3 Admin Controller — Plans & Access Entries
-
-- [ ] 9.3.1 `POST /admin/products/{product_id}/plans` — create plan with auto slug, validate unique (product, slug), default sort_order
-- [ ] 9.3.2 `GET /admin/products/{product_id}/plans` — list plans ordered by sort_order with `prefetch_related("access_entries")`
-- [ ] 9.3.3 `GET /admin/plans/{id}` — detail with all access entries, annotated subscriber count
-- [ ] 9.3.4 `PUT /admin/plans/{id}` — update all plan fields; if price or billing_cycle changes, warn if active subscribers exist
-- [ ] 9.3.5 `PATCH /admin/plans/{id}/toggle` — toggle `is_active`
-- [ ] 9.3.6 `PATCH /admin/plans/{id}/feature` — toggle `is_featured`
-- [ ] 9.3.7 `POST /admin/plans/{id}/duplicate` — deep copy plan + all AccessEntry records; append "(Copy)" to name, increment sort_order
-- [ ] 9.3.8 `DELETE /admin/plans/{id}` — delete plan; reject if any Subscription references this plan (PROTECT FK already blocks this, return user-friendly error)
-- [ ] 9.3.9 `POST /admin/plans/{plan_id}/access-entries` — create single access entry; validate unique (plan, key)
-- [ ] 9.3.10 `PUT /admin/access-entries/{id}` — update key, value, value_type, description
-- [ ] 9.3.11 `DELETE /admin/access-entries/{id}` — remove access entry
-- [ ] 9.3.12 `POST /admin/plans/{plan_id}/access-entries/bulk` — replace all access entries for a plan in a single transaction (delete existing, create new)
-- [ ] 9.3.13 `GET /admin/products/{product_id}/access-matrix` — return 2D grid: rows = unique access keys across all plans, columns = plans, cells = typed values (or empty)
-- [ ] 9.3.14 Apply `@log_admin_access` to all mutation endpoints
-
-#### 9.4 Admin Controller — Subscriptions
-
-- [ ] 9.4.1 `GET /admin/subscriptions` — list with `select_related("user", "plan", "product")`; filters: `?product_id=`, `?plan_id=`, `?status=`, `?search=` (user email); paginated
-- [ ] 9.4.2 `GET /admin/subscriptions/{id}` — detail with plan info, user info, access entries from plan
-- [ ] 9.4.3 `PATCH /admin/subscriptions/{id}/override` — admin sets plan_id and/or status; log before/after state; handle Stripe sync if needed (warn if subscription has active Stripe subscription)
-- [ ] 9.4.4 `PATCH /admin/subscriptions/{id}/cancel` — force cancel: set status=canceled, canceled_at=now, keep active until period_end
-- [ ] 9.4.5 `PATCH /admin/subscriptions/{id}/expire` — force expire: set status=expired, effective immediately
-- [ ] 9.4.6 `PATCH /admin/subscriptions/{id}/extend` — extend period_end by given number of days
-- [ ] 9.4.7 `GET /admin/subscriptions/{id}/plan-changes` — list PlanChangeLog entries for this subscription, ordered by created_at desc
-- [ ] 9.4.8 `GET /admin/subscriptions/{id}/invoices` — list Invoice entries for this subscription, ordered by created_at desc
-- [ ] 9.4.9 `GET /admin/subscriptions/{id}/refunds` — list Refund entries for this subscription
-- [ ] 9.4.10 Apply `@log_admin_access` to all mutation endpoints
-
-#### 9.5 Admin Controller — Users
-
-- [ ] 9.5.1 `GET /admin/users` — list users with annotated `subscription_count`; filters: `?is_active=`, `?is_email_verified=`, `?role=`, `?search=` (email, name); paginated
-- [ ] 9.5.2 `GET /admin/users/{id}` — detail with `prefetch_related("subscriptions")` (all products), include login history (last 10)
-- [ ] 9.5.3 `PATCH /admin/users/{id}/status` — activate/deactivate; if deactivating, log warning if user has active subscriptions
-- [ ] 9.5.4 `PATCH /admin/users/{id}/role` — change role (owner/admin/member)
-- [ ] 9.5.5 `GET /admin/users/{id}/audit` — compile audit trail from: UserLoginHistory (logins), PlanChangeLog (plan changes), Refund (refund history), Subscription (status changes via updated_at) — return chronological list
-
-#### 9.6 Admin Controller — Refunds
-
-- [ ] 9.6.1 `GET /admin/refunds` — list refunds with `select_related("subscription__user", "subscription__plan", "initiated_by", "approved_by")`; filters: `?status=`, `?reason_category=`, `?subscription_id=`, `?date_from=`, `?date_to=`; paginated
-- [ ] 9.6.2 `PATCH /admin/refunds/{id}/approve` — set `approved_by=request.user`, `approved_at=now`, `status="completed"`; log audit; validate that `initiated_by != approved_by` (two-person rule)
-- [ ] 9.6.3 `PATCH /admin/refunds/{id}/reject` — set `status="failed"`, add rejection notes; log audit
-- [ ] 9.6.4 Apply `@log_admin_access` to approve/reject endpoints
-
-#### 9.7 Admin Controller — Metrics & Audit
-
-- [ ] 9.7.1 `GET /admin/metrics/overview` — aggregate queries: MRR (sum of active subscription plan prices), active subscription count, trial count, past_due count, churn rate (canceled last 30 days / total active 30 days ago), trial conversion rate
-- [ ] 9.7.2 `GET /admin/metrics/revenue` — revenue by product (sum of invoice amount_paid_cents, grouped by product), by plan, by month (last 12 months); use RevenueRecognitionEntry table
-- [ ] 9.7.3 `GET /admin/metrics/subscriptions` — subscription funnel: new registrations (last 30 days), trial starts, trial→paid conversions, active→canceled, active→past_due; breakdown by product
-- [ ] 9.7.4 `GET /admin/metrics/products` — per-product: total subscribers, active subscribers, MRR, plan distribution (count per plan)
-- [ ] 9.7.5 Create `AdminAuditLog` model or use existing logging mechanism — `GET /admin/audit-log` returns paginated list of admin actions (filterable by admin_user, action_type, date range)
-- [ ] 9.7.6 `GET /admin/webhooks` — list WebhookEventLog entries (filterable by event_type, processed status); paginated
-- [ ] 9.7.7 `POST /admin/webhooks/{id}/retry` — re-process a failed webhook event (call existing `process_webhook_event`)
-
-#### 9.8 Admin Infrastructure
-
-- [ ] 9.8.1 Add admin-specific rate limiting: stricter limits on mutation endpoints (e.g., 30/min for reads, 10/min for writes)
-- [ ] 9.8.2 Ensure all admin endpoints return consistent error format with `code` field for frontend handling
-- [ ] 9.8.3 Add pagination support to all list endpoints: `?page=`, `?page_size=` (default 20, max 100), return `{items, meta: {page, page_size, total, total_pages}}`
-- [ ] 9.8.4 Write integration tests for all admin endpoints using Django test client
-- [ ] 9.8.5 Update OpenAPI schema description with admin endpoints documented
+> **Legend:** ✅ = Implemented and verified in codebase · ❌ = Not yet implemented
+> **Verification date:** 2026-05-03
 
 ---
 
-### Phase 10: Admin Frontend
-
-**Goal:** Build the dedicated admin dashboard at `/admin/*` using the existing Astro + Vue + Tailwind stack.
-
-#### 10.1 Admin Layout & Infrastructure
-
-- [ ] 10.1.1 Create `AdminLayout.astro` — separate from `DashboardLayout.astro`; uses same frozen shell pattern (h-dvh, overflow-hidden) but with admin-specific sidebar and navbar
-- [ ] 10.1.2 Create `AdminNavbar.vue` — shows "Sattabase Admin" branding, staff user badge (name + role), link to user-facing dashboard, link to Django admin (`/admin/django/`)
-- [ ] 10.1.3 Create `AdminSidebar.vue` — navigation items: Dashboard, Products, Subscriptions, Users, Refunds, API Keys, Webhooks, Audit Log; collapsible on mobile
-- [ ] 10.1.4 Create admin route guard in `frontend/src/middleware/` or layout script: on `/admin/*` routes, check `user.is_staff` via stored auth state; redirect to `/dashboard` if not staff
-- [ ] 10.1.5 Create `frontend/src/lib/admin-api.ts` — typed API client for all admin endpoints (wraps fetch with JWT auth)
-- [ ] 10.1.6 Create admin page structure under `frontend/src/pages/admin/`
-
-#### 10.2 Reusable Admin Components
-
-- [ ] 10.2.1 `AdminDataTable.vue` — sortable columns, server-side pagination, per-column filters, bulk selection with checkboxes, loading skeleton, empty state
-- [ ] 10.2.2 `AdminStatsCard.vue` — label, value (formatted), change percentage (green/red), trend icon (up/down), optional sparkline
-- [ ] 10.2.3 `AdminPageHeader.vue` — page title, breadcrumb trail, primary + secondary action buttons (slots)
-- [ ] 10.2.4 `AdminConfirmDialog.vue` — modal with title, message, confirm/cancel buttons, destructive variant (red confirm button)
-- [ ] 10.2.5 `AdminFilterBar.vue` — search input, dropdown filters, date range picker, active filter count badge, clear all button
-- [ ] 10.2.6 `AdminStatusBadge.vue` — colored badge for subscription status (active=green, past_due=yellow, canceled=gray, trialing=blue, expired=red, paused=orange)
-- [ ] 10.2.7 `AdminEmptyState.vue` — icon, title, description, optional CTA button
-- [ ] 10.2.8 `AdminFeatureMatrix.vue` — table with plans as columns, access keys as rows, values in cells; checkmarks for boolean true, values for integers, empty for false/unset
-- [ ] 10.2.9 `AdminAuditTimeline.vue` — chronological list of events with icon, description, timestamp, admin user name
-
-#### 10.3 Admin Dashboard Page
-
-- [ ] 10.3.1 Create `frontend/src/pages/admin/index.astro` — dashboard overview page
-- [ ] 10.3.2 Stats row: Active Subscriptions (count), MRR (formatted currency), Trials (count), Past Due (count), Churn Rate (percentage)
-- [ ] 10.3.3 Subscription trend chart: line chart showing active subscriptions over last 12 months (using chart library)
-- [ ] 10.3.4 Revenue by product: horizontal bar chart or pie chart
-- [ ] 10.3.5 Recent activity feed: last 10 admin actions from audit log
-- [ ] 10.3.6 Quick links: "View All Subscriptions", "Manage Products", "API Keys"
-
-#### 10.4 Product Management Pages
-
-- [ ] 10.4.1 `GET /admin/products` — data table with columns: name, slug, plan count, subscriber count, status badge, actions (view, edit, toggle active)
-- [ ] 10.4.2 `GET /admin/products/new` — form: name, slug (auto-generated), description, home_url, icon upload
-- [ ] 10.4.3 `GET /admin/products/[id]` — product detail: info card (name, slug, description, status), tab navigation: Plans | Domains | Metrics
-- [ ] 10.4.4 Plans tab: data table with plan name, price, billing cycle, subscriber count, status badge, actions (view, edit, duplicate, delete)
-- [ ] 10.4.5 Domains tab: data table with domain URL, is_primary badge, is_active badge, actions (edit primary, toggle active, delete)
-- [ ] 10.4.6 `GET /admin/products/[id]/plans/new` — form: name, slug, price, currency, billing_cycle, trial_days, features (JSON editor or key-value list), is_featured, sort_order
-- [ ] 10.4.7 `GET /admin/products/[id]/plans/[planId]` — plan detail: info card + access entries table (key, value, type, description, actions: edit, delete) + "Add Access Entry" form + "Bulk Update" button
-- [ ] 10.4.8 Access matrix page: `GET /admin/products/[id]/access-matrix` — feature comparison table across all plans
-
-#### 10.5 Subscription Management Pages
-
-- [ ] 10.5.1 `GET /admin/subscriptions` — data table with columns: user email, product, plan, status badge, period end, actions (view, cancel, expire)
-- [ ] 10.5.2 Filters: product dropdown, plan dropdown, status dropdown, search by email
-- [ ] 10.5.3 `GET /admin/subscriptions/[id]` — subscription detail: info card (user, plan, product, status, period), tab navigation: Overview | Plan Changes | Invoices | Refunds
-- [ ] 10.5.4 Overview tab: subscription info, override form (change plan, change status, extend period), cancel/expire buttons with confirmation dialogs
-- [ ] 10.5.5 Plan Changes tab: chronological table of plan changes (from_plan, to_plan, proration amount, date, initiated_by)
-- [ ] 10.5.6 Invoices tab: table of invoices (number, amount, status, date, actions: view hosted URL, view PDF)
-- [ ] 10.5.7 Refunds tab: table of refunds (amount, status, reason, initiated_by, approved_by, date)
-
-#### 10.6 User Management Pages
-
-- [ ] 10.6.1 `GET /admin/users` — data table with columns: name, email, role badge, email verified badge, subscription count, last login, status badge, actions (view)
-- [ ] 10.6.2 Filters: role dropdown, status dropdown, email verified toggle, search by email/name
-- [ ] 10.6.3 `GET /admin/users/[id]` — user detail: profile card (avatar, name, email, role, joined date), subscriptions list (product, plan, status for each), action buttons (activate/deactivate, change role)
-- [ ] 10.6.4 `GET /admin/users/[id]/audit` — audit timeline: login events, plan changes, subscription status changes, refund events — all in chronological order
-
-#### 10.7 Refund Management Pages
-
-- [ ] 10.7.1 `GET /admin/refunds` — data table with columns: subscription (user + product), amount, status badge, reason category, initiated by, approved by, date, actions (approve, reject for pending refunds)
-- [ ] 10.7.2 Filters: status dropdown, reason category dropdown, date range
-- [ ] 10.7.3 Approve/reject modals: show refund details, notes textarea, confirm button; enforce two-person rule (approver cannot be same as initiator)
-
-#### 10.8 API Key Management Pages
-
-- [ ] 10.8.1 `GET /admin/api-keys` — card list or table with: name, service domain, prefix (masked), is_active badge, last used (relative time), created date, actions (revoke, rotate)
-- [ ] 10.8.2 `GET /admin/api-keys/new` — form: name, service domain dropdown; on submit: show raw key ONCE in a "copy this now" modal with countdown warning (key disappears after modal close)
-- [ ] 10.8.3 Revoke confirmation dialog: "This will immediately disable the key. Services using it will lose access."
-- [ ] 10.8.4 Rotate flow: confirmation dialog → call rotate → show new raw key in modal (old key is now invalid)
-
-#### 10.9 Webhook & Audit Log Pages
-
-- [ ] 10.9.1 `GET /admin/webhooks` — data table: event ID, event type, status badge (processed/pending/failed), created date, error message (if failed), action (retry for failed)
-- [ ] 10.9.2 Filters: event type dropdown, status dropdown, date range
-- [ ] 10.9.3 `GET /admin/audit-log` — data table: admin user, action (path), method, IP address, timestamp; expandable row for request details
-- [ ] 10.9.4 Filters: admin user dropdown, action type, date range
+### ✅ COMPLETED WORK (Phases 1–6) — 42 of 53 items done (79%)
 
 ---
 
-### Phase 11: Admin RBAC (Future)
+### Phase 1: Core Models & Admin (Foundation) — 8/9 ✅
 
-**Goal:** Granular admin roles beyond `is_staff` boolean.
+**Goal:** Get the data model in place with Django admin for manual management.
 
-- [ ] 11.1 Design admin role model: define roles (Super Admin, Product Manager, Support, Finance, Read-Only) with permission sets
-- [ ] 11.2 Add `AdminRole` model with `name`, `description`, `permissions` (JSONField — list of permission strings)
-- [ ] 11.3 Add `admin_role` FK to User model (nullable, default None — staff without role gets all permissions like current behavior)
-- [ ] 11.4 Create permission check decorator/utility: `require_permission("products:write")` — checks user's admin_role permissions
-- [ ] 11.5 Apply permission checks to all admin endpoints (read vs write separation)
-- [ ] 11.6 Add admin role management UI: list roles, create/edit roles (permission checkbox matrix), assign role to user
-- [ ] 11.7 Frontend: hide/disable UI sections based on current user's admin role permissions
+- [x] Create `billing` Django app
+- [x] Implement `Product` model with admin — `@admin.register(Product)` with fieldsets, inlines, list_display
+- [x] Implement `Plan` model with admin — `@admin.register(Plan)` with AccessEntryInline, duplicate action
+- [x] Implement `AccessEntry` model with admin — `@admin.register(AccessEntry)` with product/plan/type filters
+- [x] Implement `Subscription` model with admin — `@admin.register(Subscription)` with cancel/expire/activate actions
+- [x] Write database migrations — 13 migrations (0001–0013)
+- [x] Register all models in Django admin with custom list displays — 8 model admins total
+- [x] Seed initial Product + Plans + AccessEntries via fixtures/data migration — `billing_seed_data` management command (2 products, 6 plans)
+- [ ] Add plan comparison admin view — No custom admin URL/view for side-by-side plan comparison in Django admin
+
+**Deliverable:** ✅ Admin can create products, plans, and access entries via Django admin UI. (plan comparison view pending)
 
 ---
 
-## 6. Key Design Decisions
+### Phase 2: Enhanced auth/me Endpoint — 4/4 ✅
+
+**Goal:** Service domains can authenticate and receive domain-specific access maps.
+
+- [x] Create `AuthMeSchema` (user + subscription + access) — `billing/schemas.py` line 194
+- [x] Create `SubscriptionInfoSchema` — `billing/schemas.py` line 137
+- [x] Implement `BillingService.get_user_subscription_for_domain()` — `services.py` line 462
+- [x] Enhance `GET /billing/auth/me` to:
+  - [x] Read `X-Service-Domain` header
+  - [x] Look up product by domain
+  - [x] Get/create free subscription
+  - [x] Build access map from plan's AccessEntry records
+  - [x] Return full `AuthMeSchema`
+- [x] Add `BillingController` with auth/me endpoint — `BillingProtectedController` in `controllers.py` line 307
+
+**Deliverable:** ✅ `auth/me` returns subscription + access data when domain header is present.
+
+---
+
+### Phase 3: Stripe Integration — 10/10 ✅
+
+**Goal:** Users can subscribe to paid plans via Stripe checkout.
+
+- [x] Install `stripe` Python package — `stripe==15.1.0`
+- [x] Add Stripe env variables to settings — 10 variables in `settings.py` lines 396–417
+- [x] Implement `StripeService`:
+  - [x] `create_checkout_session()` — `stripe/checkout.py` line 55
+  - [x] `create_customer()` / `retrieve_customer()` — `stripe/customer.py`
+  - [x] `create_portal_session()` — `stripe/portal.py` line 13
+  - [x] `handle_webhook_event()` — `webhooks/router.py` with 11 event handlers
+- [x] Implement webhook endpoint `POST /billing/webhooks/stripe`
+  - [x] Signature verification — `stripe/client.py`
+  - [x] Event routing (checkout.completed, subscription.*, invoice.*, charge.refunded, customer.updated)
+  - [x] Idempotent processing — `WebhookEventLog` with unique `event_id`
+- [x] Implement checkout controller: `POST /billing/subscriptions/{product}/checkout` — `controllers.py` line 663
+- [x] Implement portal controller: `POST /billing/portal` — `controllers.py` line 867
+
+**Deliverable:** ✅ Users can subscribe via Stripe, webhooks update subscription status.
+
+---
+
+### Phase 4: Subscription Management Endpoints — 7/7 ✅
+
+**Goal:** Users can manage their subscriptions (cancel, reactivate, change plan).
+
+- [x] Implement `GET /billing/subscriptions` — list user's subscriptions — `controllers.py` line 328
+- [x] Implement `GET /billing/subscriptions/{product}` — subscription detail — `controllers.py` line 397
+- [x] Implement `POST /billing/subscriptions/{product}/cancel` — cancel at period end — `controllers.py` line 427
+- [x] Implement `POST /billing/subscriptions/{product}/reactivate` — uncancel — `controllers.py` line 476
+- [x] Implement `POST /billing/subscriptions/{product}/change-plan` — plan upgrade/downgrade — `controllers.py` line 519
+- [x] Safe plan change with preview + HMAC token — preview at line 898, confirm at line 968, 10-min TTL
+- [x] Public plan listing: `GET /billing/products/{slug}/plans` with `?currency=` param — `controllers.py` line 250
+
+**Deliverable:** ✅ Full subscription lifecycle management via API.
+
+---
+
+### Phase 5: Automation & Notifications — 6/10 ⚠️
+
+**Goal:** Background tasks handle expiry, reminders, and reconciliation.
+
+- [x] Register all tasks with django-celery-beat schedules — 6 tasks in `celery.py` beat_schedule
+- [x] Implement `cleanup_stale_webhook_events` task — `tasks.py` line 410 (weekly, 90-day retention)
+- [x] Implement `recognize_revenue` task — `tasks.py` line 447 (daily ASC 606 compliance)
+- [x] Implement `update_exchange_rates` task — `tasks.py` line 383 (daily, with fallback API)
+- [x] Implement `reconcile_webhooks` task — `tasks.py` line 213 (every 6h, retries failed events)
+- [x] Implement `sync_customer_data` task — `tasks.py` line 238 (daily, syncs Stripe customer profiles)
+- [ ] Implement `check_expired_subscriptions` Celery task — no standalone task; dunning handles expiry only at day 14
+- [ ] Implement `send_trial_ending_reminder` Celery task — webhook handler only logs, no email sent
+- [ ] Implement `send_subscription_renewal_reminder` Celery task — no task or email mechanism
+- [ ] Implement `sync_stripe_subscriptions` task — only customer profile sync exists, not subscription state sync
+- [ ] Implement email templates for subscription notifications — all emails are plain-text inline f-strings, no HTML templates
+
+**Deliverable:** ⚠️ Partial — webhook retry, revenue recognition, and cleanup are automated. Missing: standalone expiry checker, reminder emails, HTML templates.
+
+---
+
+### Phase 6: Frontend (Sattabase Billing UI) — 5/6 ✅
+
+**Goal:** Sattabase has its own UI for billing management.
+
+- [x] Billing page: show current subscriptions across all products — `BillingOverview.vue` with stats, cards, actions
+- [x] Plan selection page per product (comparison table) — `PlanComparison.vue` with pricing, features, ToS
+- [x] Upgrade/downgrade flow — proration preview modal → HMAC-confirmed plan change or Stripe checkout
+- [x] Invoice/payment history — Stripe-sourced transaction list with pagination, status, card brand
+- [x] Billing portal redirect (Stripe-hosted) — `createPortalSession()` → redirect + success toast
+- [ ] Admin dashboard: subscription metrics, MRR, churn — no admin dashboard page exists
+
+**Deliverable:** ✅ Full user-facing billing UI. (admin metrics dashboard pending → moved to Phase 9)
+
+---
+
+### ❌ PENDING WORK (Phases 7–10) — From Gap Audit (Section 10.1)
+
+> The following phases address gaps identified in the 2026-05-03 audit. None are started.
+
+---
+
+### Phase 7: Invoice Detail & Line Items (G1 + G2 + G12 + G13)
+
+**Goal:** Users can view detailed invoice breakdowns with line items, download PDFs, and see fees/discounts.
+
+**Prerequisites:** G1 (InvoiceLineItem model) must be implemented first.
+
+- [ ] Create `InvoiceLineItem` model in `billing/models.py` (12 fields as documented in dev_docs.md)
+- [ ] Generate and run migration for `InvoiceLineItem`
+- [ ] Update `handle_invoice_created` and `handle_invoice_payment_succeeded` webhook handlers to populate line items from `invoice.lines.data`
+- [ ] Create `GET /billing/invoices/{stripe_invoice_id}` endpoint (queries local model with line items, not live Stripe)
+- [ ] Create `/dashboard/billing/invoices/[id].astro` page with `InvoiceDetail.vue` component
+- [ ] Invoice detail displays: line items table (description, amount, quantity, period), subtotal, tax, discount, Stripe fee, total, payment method, attempt count
+- [ ] Add PDF download button linking to `invoice.pdf_url`
+- [ ] Update billing history list in `BillingOverview.vue`: add PDF download icon, discount amount, Stripe fee
+- [ ] Update `TransactionItemSchema` in `billing.ts` to include `discount` and `stripe_fee` fields
+- [ ] Consider switching billing history from Stripe live API to local `Invoice` model for better performance
+
+**Deliverable:** Clickable invoice list → full invoice detail page with line items and PDF download.
+
+### Phase 8: History & Security Visibility (G5 + G6)
+
+**Goal:** Users and admins can view plan change history and login security audit trails.
+
+- [ ] Create `GET /billing/subscriptions/{product_slug}/change-history` endpoint (paginated)
+- [ ] Add "Plan History" timeline section to `BillingOverview.vue` subscription card (date, old plan → new plan, proration, initiator)
+- [ ] Create `GET /users/me/login-history` endpoint (paginated, last 50 entries)
+- [ ] Add "Login History" section to `SettingsPanel.vue` (timestamp, IP, user agent/browser)
+- [ ] Optional: "Sign out all other sessions" button (extend token blacklisting)
+- [ ] Optional: IP geolocation for login history entries
+
+**Deliverable:** Users can see their plan change timeline and login security history.
+
+### Phase 9: Admin Panel & Operational Tools (G4 + G7 + G8 + G9)
+
+**Goal:** Admins have a full UI for refunds, user management, webhook monitoring, GDPR compliance, and revenue reporting.
+
+**Prerequisites:** Phase 7 (invoice detail) should be completed first for full transaction context.
+
+- [ ] Create `/dashboard/admin/` route group with admin-only layout (role guard: superuser/staff)
+- [ ] Build admin user lookup component (search by email or user_id)
+- [ ] Build refund management page (`RefundManager.vue`): creation form, history table, detail view with audit trail, approval workflow
+- [ ] Build admin transaction viewer: search any user's billing history
+- [ ] Build GDPR tools page: data export (download JSON/CSV) and data deletion (double confirmation)
+- [ ] Build webhook monitoring page: event list with filters (status, type), error messages, manual retry, payload inspector (expandable JSON)
+- [ ] Create `GET /billing/admin/webhooks` endpoint (list, filter by processed/event_type)
+- [ ] Create `GET /billing/admin/revenue` endpoint (summary + detail with date range filter)
+- [ ] Build revenue recognition dashboard: MRR chart, recognized vs deferred, by-plan breakdown, CSV export
+- [ ] Add customer sync action to user detail view (`POST /billing/admin/sync-customer`)
+- [ ] Add admin navigation items to sidebar (only visible for admin/staff roles)
+
+**Deliverable:** Full admin panel for billing operations, compliance, and monitoring.
+
+### Phase 10: UX Polish & Quick Wins (G3 + G10 + G11 + G14)
+
+**Goal:** Fix broken navigation, replace placeholder UI, and improve user experience.
+
+- [ ] **G3:** Fix Plans sidebar link — remove `disabled` attribute, remove "Coming Soon" badge, set `href` to `/dashboard/billing`
+- [ ] **G10:** Implement notification system:
+  - [ ] Create `Notification` model (type, title, message, read, user FK, related object FK)
+  - [ ] Create CRUD API endpoints (`GET /notifications`, `POST /notifications/{id}/read`, `POST /notifications/read-all`)
+  - [ ] Connect to billing events (payment failed, subscription canceled, plan changed, trial ending)
+  - [ ] Replace Navbar placeholder dropdown with real notification list + unread count badge
+  - [ ] Optional: WebSocket for real-time push notifications
+- [ ] **G14:** Add currency selector dropdown in billing page header (query `ExchangeRate` model, apply `?currency=` to plan API calls)
+- [ ] **G11:** Leave Finance sidebar items as disabled "Soon" badges (future scope — no backend models yet)
+
+**Deliverable:** Plans accessible from sidebar, real notifications, currency picker, all placeholders replaced.
+
+---
+
+## 12. File Structure (New Files)
+
+```
+backend/
+├── billing/                         # NEW app
+│   ├── __init__.py
+│   ├── models.py                    # Product, Plan, AccessEntry, Subscription, Invoice,
+│   │                                 #   InvoiceLineItem, Refund, PlanChangeLog, etc.
+│   ├── schemas.py                   # Pydantic schemas for billing
+│   ├── services.py                  # BillingService, StripeService
+│   ├── controllers.py               # BillingController (public + protected + admin)
+│   ├── admin.py                     # Django admin registration
+│   ├── tasks.py                     # Celery tasks
+│   ├── stripe/                      # Stripe integration module
+│   │   ├── __init__.py              # Core Stripe functions
+│   │   ├── checkout.py              # Checkout session creation
+│   │   └── webhooks/                # Webhook handlers
+│   │       ├── router.py
+│   │       └── handlers/
+│   ├── migrations/
+│   └── tests/
+│
+├── users/
+│   ├── controllers.py               # Auth + user management endpoints
+│   ├── models.py                    # User, UserLoginHistory
+│   └── ...
+│
+└── common/
+    └── permissions.py               # IsSubscribed, HasAccess("reports")
+
+frontend/src/
+├── pages/
+│   ├── auth/                        # Login, Register, ForgotPassword, VerifyEmail, EmailChange
+│   └── dashboard/
+│       ├── index.astro              # DashboardHome
+│       ├── profile.astro            # ProfileCard
+│       ├── settings.astro           # SettingsPanel
+│       ├── billing/
+│       │   ├── index.astro          # BillingOverview
+│       │   ├── plans/[slug].astro   # PlanComparison
+│       │   └── invoices/[id].astro  # InvoiceDetail (Phase 7 — NEW)
+│       └── admin/                   # Phase 9 — NEW
+│           ├── index.astro          # Admin dashboard
+│           ├── refunds.astro        # RefundManager
+│           ├── users.astro          # User lookup + transaction viewer
+│           ├── webhooks.astro       # Webhook monitoring
+│           ├── revenue.astro        # Revenue recognition dashboard
+│           └── gdpr.astro           # GDPR export/delete tools
+│
+├── components/
+│   ├── vue/
+│   │   ├── LoginForm.vue
+│   │   ├── RegisterForm.vue
+│   │   ├── ForgotPasswordForm.vue
+│   │   ├── VerifyEmailForm.vue
+│   │   ├── EmailChangeConfirm.vue
+│   │   ├── DashboardHome.vue
+│   │   ├── ProfileCard.vue
+│   │   ├── SettingsPanel.vue
+│   │   ├── BillingOverview.vue
+│   │   ├── PlanComparison.vue
+│   │   ├── InvoiceDetail.vue        # Phase 7 — NEW
+│   │   ├── RefundManager.vue        # Phase 9 — NEW
+│   │   ├── AdminUserLookup.vue      # Phase 9 — NEW
+│   │   ├── WebhookMonitor.vue       # Phase 9 — NEW
+│   │   ├── RevenueDashboard.vue     # Phase 9 — NEW
+│   │   ├── GdprTools.vue            # Phase 9 — NEW
+│   │   └── NotificationDropdown.vue # Phase 10 — NEW
+│   ├── astro/
+│   │   ├── Navbar.astro
+│   │   ├── Sidebar.astro
+│   │   ├── EmptyState.astro
+│   │   └── LoadingSpinner.astro
+│   └── AdminLayout.astro            # Phase 9 — NEW
+│
+├── lib/
+│   ├── api.ts                       # Core HTTP client + JWT token management
+│   ├── auth.ts                      # Auth API functions
+│   ├── billing.ts                   # Billing API functions
+│   ├── admin.ts                     # Admin API functions (Phase 9 — NEW)
+│   └── toast.ts                     # Toast notification system
+│
+└── styles/
+    └── global.css                   # Tailwind + custom CSS variables
+```
+
+---
+
+## 13. Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| SDK = Auth + Permissions only | Stripe is single source of truth for payments; billing UX centralized on Sattabase |
-| Hand-written SDK (not generated) | Small surface area (auth only); full control over token lifecycle, auto-refresh, middleware |
-| Billing via redirect, not API | Service domains never touch payment state; user goes to Sattabase, manages billing, returns |
-| Separate `ServiceCredential` model | Service domains need their own identity beyond user JWT; enables audit and revocation |
-| API key hash storage | Never store raw keys; SHA-256 hash + prefix for identification |
-| Two auth patterns (proxy vs direct) | Some sister services have backends (Pattern A), some are SPA-only (Pattern B); support both |
-| Dedicated admin layout | Admin UX is fundamentally different from user dashboard; separate routes prevent accidental cross-access |
-| `is_staff` first, RBAC later | Start simple, add granularity when team grows; the audit logging infrastructure is already in place |
-| Admin endpoints under `/admin/` | Clear URL separation; existing `/billing/admin/` endpoints migrate to `/admin/billing/` |
-| Feature matrix endpoint | Critical for admin UX — comparing plans side-by-side is the #1 admin task |
-| Bulk access entry update | Admins need to update all access entries for a plan at once (e.g., new feature added to all tiers) |
-| Soft-delete on plans/products | Prevents accidental data loss; can be restored if subscriptions still reference them |
+| Separate `billing` app | Keeps subscription logic isolated from user auth; can be extended independently |
+| `X-Service-Domain` header | Simpler than OAuth client_id for first-party subdomains; no secret rotation needed |
+| Access entries as key-value | Maximum flexibility — each product defines its own access keys without schema changes |
+| `value_type` on AccessEntry | Enables proper type casting (boolean, integer) so frontend doesn't have to parse strings |
+| Denormalized `product` on Subscription | Avoids extra JOIN on every `auth/me` call |
+| PROTECT on Plan FK in Subscription | Prevents accidental deletion of plans that have active subscribers |
+| One subscription per user per product | Simplifies logic — no need to handle "which subscription is current?" |
+| Free plan auto-creation | Every user always has access to something — no null subscription states |
+| Celery for lifecycle tasks | Stripe webhooks are the primary trigger, but Celery provides safety net for missed webhooks |
+| Django admin for plan management | No need to build a custom admin UI immediately — Django admin is sufficient |
+| Stripe Checkout (not Elements) | Hosted checkout page is simpler, more secure, handles SCA/3DS automatically |
 
 ---
 
-## 7. Security Considerations
+## 14. Security Considerations
 
 | Concern | Mitigation |
 |---------|------------|
-| API key leakage | Keys shown only ONCE at creation; stored as hashes; revocable instantly |
-| Domain spoofing | `X-Service-Domain` validated against `ServiceCredential` + `ServiceDomain` table |
-| Admin endpoint abuse | `is_staff` + `@log_admin_access` on every mutation; rate limiting |
-| Admin privilege escalation | Future RBAC limits what each staff role can access |
-| Subscription override abuse | All overrides are audit-logged with admin user, IP, and before/after state |
-| Refund fraud | Two-person approval (initiated_by + approved_by); reason category required |
-| SDK token exposure | Pattern A (proxy) recommended for backends; Pattern B (SPA) uses httpOnly cookies where possible |
-| OpenAPI schema exposure | Schema is public (for SDK generation); sensitive operations require auth regardless |
-| Admin frontend access | Route guard checks `is_staff` on every navigation; API rejects non-staff at auth layer |
+| Domain spoofing (fake X-Service-Domain) | Validate domain against registered products table; return empty access for unknown domains |
+| Webhook forgery | Stripe signature verification on every webhook call |
+| Access escalation | Backend always computes access from plan entries; frontend access checks are UI-only |
+| Subscription tampering | Plan FK is PROTECT; only Stripe webhooks and admin can change subscription status |
+| CORS abuse | `CORS_ALLOWED_ORIGINS` restricted to registered domains |
+| Rate limiting on billing endpoints | Apply existing Redis-based rate limiting to checkout/portal/cancel endpoints |
+| Webhook replay | Stripe `evt_id` is stored in `WebhookEventLog` — duplicate events are skipped |

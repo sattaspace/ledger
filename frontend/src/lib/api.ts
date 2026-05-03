@@ -33,26 +33,86 @@ export interface ApiError {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Token persistence strategy:
+//   - Default: sessionStorage  — survives full page reloads within the tab,
+//     cleared when tab/window closes. Good balance of convenience + security.
+//   - "Remember me": localStorage — persists across tabs and browser restarts.
+//   - Tokens are kept in-memory for fast access, with storage as the
+//     persistence layer that survives page reloads.
+
+const TOKEN_KEY_ACCESS = "auth_access_token";
+const TOKEN_KEY_REFRESH = "auth_refresh_token";
+const REMEMBER_KEY = "auth_remember_me";
+
+let _accessToken: string | null = null;
+let _refreshToken: string | null = null;
+
+/** Pick the correct storage backend based on "remember me" preference. */
+function tokenStorage(): Storage {
+ if (typeof window === "undefined") return sessionStorage;
+ try {
+   return localStorage.getItem(REMEMBER_KEY) === "true"
+     ? localStorage
+     : sessionStorage;
+ } catch {
+   return sessionStorage;
+ }
+}
+
+/** Recover tokens from storage into memory (called on module init). */
+function initTokens(): void {
+ if (typeof window === "undefined") return;
+ try {
+   const access = sessionStorage.getItem(TOKEN_KEY_ACCESS)
+     || localStorage.getItem(TOKEN_KEY_ACCESS);
+   const refresh = sessionStorage.getItem(TOKEN_KEY_REFRESH)
+     || localStorage.getItem(TOKEN_KEY_REFRESH);
+   if (access) _accessToken = access;
+   if (refresh) _refreshToken = refresh;
+ } catch { /* storage unavailable */ }
+}
+
+// Recover tokens immediately so they're available before requireAuth() runs
+initTokens();
+
 function getAccessToken(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem("access_token");
+ return _accessToken;
 }
 
 function getRefreshToken(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem("refresh_token");
+ return _refreshToken;
 }
 
-function setTokens(access: string, refresh: string): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem("access_token", access);
-  localStorage.setItem("refresh_token", refresh);
+/**
+ * Store tokens in memory AND the active storage backend.
+ * @param remember - true → localStorage (30-day persistence), false → sessionStorage
+ */
+function setTokens(access: string, refresh: string, remember = false): void {
+ _accessToken = access;
+ _refreshToken = refresh;
+
+ if (typeof window === "undefined") return;
+ try {
+   const storage = remember ? localStorage : sessionStorage;
+   storage.setItem(TOKEN_KEY_ACCESS, access);
+   storage.setItem(TOKEN_KEY_REFRESH, refresh);
+   localStorage.setItem(REMEMBER_KEY, String(remember));
+ } catch { /* storage unavailable */ }
 }
 
+/** Clear tokens from memory AND both storage backends. */
 function clearTokens(): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.removeItem("access_token");
-  localStorage.removeItem("refresh_token");
+ _accessToken = null;
+ _refreshToken = null;
+
+ if (typeof window === "undefined") return;
+ try {
+   sessionStorage.removeItem(TOKEN_KEY_ACCESS);
+   sessionStorage.removeItem(TOKEN_KEY_REFRESH);
+   localStorage.removeItem(TOKEN_KEY_ACCESS);
+   localStorage.removeItem(TOKEN_KEY_REFRESH);
+   localStorage.removeItem(REMEMBER_KEY);
+ } catch { /* storage unavailable */ }
 }
 
 function buildHeaders(custom?: Record<string, string>): Record<string, string> {
@@ -102,9 +162,17 @@ async function refreshAccessToken(): Promise<string | null> {
 
       const data = await response.json();
       if (data.access) {
-        localStorage.setItem("access_token", data.access);
+        _accessToken = data.access;
         if (data.refresh) {
-          localStorage.setItem("refresh_token", data.refresh);
+          _refreshToken = data.refresh;
+        }
+        // Persist refreshed tokens to storage so they survive page reloads
+        if (typeof window !== "undefined") {
+          try {
+            const storage = tokenStorage();
+            storage.setItem(TOKEN_KEY_ACCESS, _accessToken!);
+            if (data.refresh) storage.setItem(TOKEN_KEY_REFRESH, _refreshToken!);
+          } catch { /* storage unavailable */ }
         }
         return data.access;
       }

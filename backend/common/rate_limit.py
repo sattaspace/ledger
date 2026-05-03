@@ -135,12 +135,50 @@ def check_rate_limit_or_raise(
 def get_client_ip(request) -> str:
     """Extract the client's IP address from the request.
 
-    Checks ``X-Forwarded-For`` first (for reverse proxy setups),
-    then falls back to ``REMOTE_ADDR``.
+    MED-02 Fix: Only trusts ``X-Forwarded-For`` when the immediate
+    connecting IP (``REMOTE_ADDR``) is a known trusted proxy.  This
+    prevents clients from spoofing the header to bypass rate limiting.
+
+    Configuration:
+    Set ``TRUSTED_PROXIES`` in Django settings as a list of IP addresses
+    or CIDR ranges (e.g. ``["127.0.0.1", "10.0.0.0/8"]``).  Defaults to
+    loopback only for local development safety.
+
+    Falls back to ``REMOTE_ADDR`` when no trusted proxy is configured or
+    when the direct connection is not from a trusted proxy.
     """
-    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-    if x_forwarded_for:
-        ip = x_forwarded_for.split(",")[0].strip()
-    else:
-        ip = request.META.get("REMOTE_ADDR", "0.0.0.0")
-    return ip
+    from ipaddress import ip_address, ip_network
+
+    remote_addr = request.META.get("REMOTE_ADDR", "0.0.0.0")
+
+    # Load trusted proxies from settings (cached on first call)
+    trusted_proxies = getattr(settings, "TRUSTED_PROXIES", None)
+    if trusted_proxies is None:
+        # Default: trust loopback only
+        trusted_proxies = ["127.0.0.1", "::1"]
+
+    # Check if REMOTE_ADDR is a trusted proxy
+    is_trusted = False
+    try:
+        remote_ip = ip_address(remote_addr)
+        for proxy in trusted_proxies:
+            try:
+                if "/" in proxy:
+                    if remote_ip in ip_network(proxy, strict=False):
+                        is_trusted = True
+                        break
+                elif remote_ip == ip_address(proxy):
+                    is_trusted = True
+                    break
+            except ValueError:
+                continue
+    except ValueError:
+        pass
+
+    if is_trusted:
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0].strip()
+            return ip
+
+    return remote_addr

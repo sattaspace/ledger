@@ -52,14 +52,21 @@ def get_webhook_secret() -> str:
 def to_dict(obj) -> dict:
     """Convert a Stripe SDK object to a plain dict (idempotent for dicts).
 
-    CC-04: Stripe's ``to_dict()`` may omit keys whose values are ``None``.
+    CC-04 Fix: Stripe's ``to_dict()`` omits keys whose values are ``None``.
     This causes subtle bugs when downstream code does ``.get("key")``
-    expecting ``None`` but the key is absent entirely.  This helper is
-    already safe because all callers use ``dict.get()`` with defaults,
-    but we log a warning if the conversion drops keys so that debugging
-    is easier when issues surface.
+    expecting ``None`` but the key is absent entirely.
+
+    This helper ensures that all known keys from the original object are
+    preserved in the output dict, even when their values are ``None``.
+    For plain ``StripeObject`` instances, we call ``_values`` (internal dict)
+    to get ALL keys including those with ``None`` values, then fall back
+    to ``to_dict()`` for nested objects.
     """
     if hasattr(obj, "to_dict"):
+        # Stripe SDK object — try to get the full _values dict first
+        # which includes keys with None values (CC-04)
+        if hasattr(obj, "_values") and isinstance(obj._values, dict):
+            return dict(obj._values)
         d = obj.to_dict()
         if isinstance(d, dict):
             return d
@@ -132,18 +139,43 @@ def list_prices(
     currency: Optional[str] = None,
     active: bool = True,
     limit: int = 100,
+    max_results: int = 500,
 ) -> list[dict]:
+    """List Stripe prices for a product.
+
+    Args:
+        product_id: Stripe Product ID.
+        currency: Optional currency filter (ISO 4217 lowercase).
+        active: Whether to filter for active prices only.
+        limit: Page size for Stripe API calls (max 100).
+        max_results: Maximum total results to return. CL-01: Prevents
+            unbounded pagination that could exhaust memory for products
+            with thousands of prices. Defaults to 500 which is far more
+            than any realistic use case.
+
+    Returns:
+        List of price dicts.
+    """
     params: dict = {
         "api_key": get_api_key(),
         "product": product_id,
         "active": active,
-        "limit": limit,
+        "limit": min(limit, 100),
     }
     if currency:
         params["currency"] = currency.lower()
     try:
         prices = stripe.Price.list(**params)
-        return [to_dict(p) for p in prices.auto_paging_iter()]
+        results = []
+        for p in prices.auto_paging_iter():
+            results.append(to_dict(p))
+            if len(results) >= max_results:
+                logger.warning(
+                    f"list_prices hit max_results={max_results} for "
+                    f"product={product_id} — truncating"
+                )
+                break
+        return results
     except stripe.error.StripeError as e:
         logger.error(f"list_prices failed: {e}")
         raise
@@ -353,6 +385,26 @@ def create_refund(
         return to_dict(refund)
     except stripe.error.StripeError as e:
         logger.error(f"create_refund failed: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Charges
+# ---------------------------------------------------------------------------
+
+
+def retrieve_charge(charge_id: str) -> dict:
+    """Retrieve a Stripe Charge by ID.
+
+    STP-02: Centralised charge retrieval — this is the ONLY place that
+    calls ``stripe.Charge.retrieve``.  All other modules must use this
+    wrapper so that error handling and dict conversion are consistent.
+    """
+    try:
+        charge = stripe.Charge.retrieve(charge_id, api_key=get_api_key())
+        return to_dict(charge)
+    except stripe.error.StripeError as e:
+        logger.error(f"retrieve_charge failed: {e}")
         raise
 
 

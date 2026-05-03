@@ -6,6 +6,7 @@ from django.conf import settings
 
 from .customer import find_customer_id
 from .client import create_portal_session as _create_portal
+from .checkout import validate_return_url
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +23,31 @@ def create_portal(user, return_url: str = None) -> str:
 
     _return_url = return_url or getattr(settings, "STRIPE_PORTAL_RETURN_URL", "")
 
+    # PT-01: Validate return_url to prevent open redirect attacks.
+    # Both the default STRIPE_PORTAL_RETURN_URL and any caller-provided
+    # return_url must pass validation against registered ServiceDomain
+    # entries or the app's own domain.
+    if not validate_return_url(_return_url):
+        logger.warning(
+            f"Portal return_url failed validation: {_return_url}. "
+            f"Falling back to STRIPE_PORTAL_RETURN_URL."
+        )
+        _return_url = getattr(settings, "STRIPE_PORTAL_RETURN_URL", "")
+        if not validate_return_url(_return_url):
+            raise ValueError(
+                "No valid return URL configured for Stripe Portal. "
+                "Set STRIPE_PORTAL_RETURN_URL in settings."
+            )
+
     # UX-04: Append portal=success query param so the frontend can show
     # feedback toast when the user returns from Stripe Portal.
     portal_base = _return_url.rstrip("/")
     separator = "&" if "?" in portal_base else "?"
     _return_url = f"{portal_base}{separator}portal=success"
 
-    # If a sister-domain return_url was provided, pass it through so the
-    # frontend can redirect back after portal interaction.
-    if return_url and return_url != _return_url:
+    # If a sister-domain return_url was provided and validated, pass it
+    # through so the frontend can redirect back after portal interaction.
+    if return_url and validate_return_url(return_url) and return_url != _return_url:
         sep2 = "&" if "?" in _return_url else "?"
         _return_url = f"{_return_url}{sep2}return_url={return_url}"
 

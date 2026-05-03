@@ -532,7 +532,12 @@ def recognize_revenue(self, target_date: str = None):
                 # remaining cents lost to ceiling rounding on prior days
                 is_last_day = (period_end.date() - recognized).days == 0
                 if is_last_day:
-                    daily_cents = plan.price_cents - (daily_cents * (total_days - 1))
+                    # CRIT-02 Fix: Guard against negative daily_cents.
+                    # Edge case: if price_cents < total_days (e.g. a $0.01
+                    # plan with a 30-day period), ceiling rounding on prior
+                    # days may accumulate more than price_cents total.
+                    # max(0, ...) ensures we never recognize negative revenue.
+                    daily_cents = max(0, plan.price_cents - (daily_cents * (total_days - 1)))
 
                 currency = sub.currency or plan.currency
 

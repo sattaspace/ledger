@@ -18,7 +18,9 @@ from typing import Optional
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import prefetch_related_objects, Prefetch
+from django.db.models import Q
 
 from .models import (
     ServiceDomain,
@@ -237,64 +239,55 @@ class BillingService:
         If the user has no subscription for this product, automatically
         creates one with the free plan (price_cents=0). This ensures
         every user always has access to at least the free tier.
-        """
-        try:
-            sub = Subscription.objects.select_related("plan").get(
-                user=user, product=product
-            )
-            return sub
-        except Subscription.DoesNotExist:
-            free_plan = product.get_free_plan()
-            if not free_plan:
-                # No free plan configured — cannot auto-create
-                logger.warning(
-                    f"No free plan found for product '{product.slug}'. "
-                    f"Cannot auto-create subscription for user {user.email}."
-                )
-                return None
 
-            sub = Subscription.objects.create(
-                user=user,
-                plan=free_plan,
-                product=product,
-                status=SubscriptionStatus.ACTIVE,
-            )
-            logger.info(
-                f"Free subscription created: user={user.email}, "
-                f"product={product.slug}, plan={free_plan.slug}"
-            )
-            return sub
+        SVC-01 Fix: Uses select_for_update() + transaction.atomic() to
+        prevent the TOCTOU race condition where concurrent requests both
+        see DoesNotExist and both create duplicate subscriptions.
+        """
+        with transaction.atomic():
+            try:
+                sub = (
+                    Subscription.objects
+                    .select_related("plan")
+                    .select_for_update()
+                    .get(user=user, product=product)
+                )
+                return sub
+            except Subscription.DoesNotExist:
+                free_plan = product.get_free_plan()
+                if not free_plan:
+                    # No free plan configured — cannot auto-create
+                    logger.warning(
+                        f"No free plan found for product '{product.slug}'. "
+                        f"Cannot auto-create subscription for user {user.email}."
+                    )
+                    return None
+
+                sub = Subscription.objects.create(
+                    user=user,
+                    plan=free_plan,
+                    product=product,
+                    status=SubscriptionStatus.ACTIVE,
+                )
+                logger.info(
+                    f"Free subscription created: user={user.email}, "
+                    f"product={product.slug}, plan={free_plan.slug}"
+                )
+                return sub
 
     @staticmethod
     async def aget_or_create_free_subscription(
         user, product: Product
     ) -> Optional[Subscription]:
-        """Async version of get_or_create_free_subscription()."""
-        try:
-            sub = await Subscription.objects.select_related("plan").aget(
-                user=user, product=product
-            )
-            return sub
-        except Subscription.DoesNotExist:
-            free_plan = product.get_free_plan()
-            if not free_plan:
-                logger.warning(
-                    f"No free plan found for product '{product.slug}'. "
-                    f"Cannot auto-create subscription for user {user.email}."
-                )
-                return None
+        """Async version of get_or_create_free_subscription().
 
-            sub = await Subscription.objects.acreate(
-                user=user,
-                plan=free_plan,
-                product=product,
-                status=SubscriptionStatus.ACTIVE,
-            )
-            logger.info(
-                f"Free subscription created (async): user={user.email}, "
-                f"product={product.slug}, plan={free_plan.slug}"
-            )
-            return sub
+        SVC-01 Fix: Wraps the sync implementation in sync_to_async() with
+        transaction.atomic() and select_for_update() to prevent duplicate
+        subscription creation under concurrent requests.
+        """
+        return await sync_to_async(BillingService.get_or_create_free_subscription)(
+            user, product
+        )
 
     @staticmethod
     def cancel_subscription(subscription: Subscription) -> None:
@@ -407,10 +400,15 @@ class BillingService:
 
     @staticmethod
     def _do_change_plan(subscription: Subscription, new_plan: Plan) -> None:
+        # SVC-03 Fix: Capture old_plan BEFORE change_plan() modifies
+        # subscription.plan. Previously, the log line read subscription.plan.slug
+        # AFTER the mutation, so both old_plan and new_plan appeared as the
+        # same slug — useless for debugging.
+        old_plan_slug = subscription.plan.slug
         subscription.change_plan(new_plan)
         logger.info(
             f"Plan changed: user={subscription.user.email}, "
-            f"old_plan={subscription.plan.slug} → new_plan={new_plan.slug}"
+            f"old_plan={old_plan_slug} → new_plan={new_plan.slug}"
         )
 
     # =========================================================================
@@ -571,8 +569,19 @@ class BillingService:
                 "access": {},
             }
 
-        # Get or create subscription
-        subscription = BillingService.get_or_create_free_subscription(user, product)
+        # SVC-02 Fix: Attempt to find existing subscription first without
+        # creating.  Only call get_or_create_free_subscription if no
+        # subscription exists.  This makes the GET endpoint read-only in
+        # the common case (users who already have a subscription).
+        subscription = (
+            Subscription.objects
+            .filter(user=user, product=product)
+            .select_related("plan")
+            .first()
+        )
+        if not subscription:
+            # Only create when genuinely missing
+            subscription = BillingService.get_or_create_free_subscription(user, product)
         if not subscription:
             return {
                 "user": user,
@@ -642,10 +651,20 @@ class BillingService:
                 "access": {},
             }
 
-        # Get or create subscription
-        subscription = await BillingService.aget_or_create_free_subscription(
-            user, product
+        # SVC-02 Fix: Attempt to find existing subscription first without
+        # creating.  Only call aget_or_create_free_subscription if no
+        # subscription exists.  This makes the GET endpoint read-only in
+        # the common case (users who already have a subscription).
+        subscription = (
+            await Subscription.objects
+            .filter(user=user, product=product)
+            .select_related("plan")
+            .afirst()
         )
+        if not subscription:
+            subscription = await BillingService.aget_or_create_free_subscription(
+                user, product
+            )
         if not subscription:
             return {
                 "user": user,

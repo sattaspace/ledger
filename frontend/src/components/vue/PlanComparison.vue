@@ -13,7 +13,7 @@
  *   - Change plan action (requires backend integration)
  */
 
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
 import { getCurrentUser } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
@@ -157,7 +157,7 @@ onMounted(async () => {
   }
 });
 
-function handleChangePlan(planSlug: string) {
+async function handleChangePlan(planSlug: string) {
   // Allow clicking current plan only when subscription is canceled (reactivation)
   if (planSlug === currentPlanSlug.value && !isSubscriptionCanceled.value) return;
 
@@ -213,16 +213,14 @@ function handleChangePlan(planSlug: string) {
     return;
   }
 
-  // Paid → Free: direct downgrade
-  const actionLabel = "Downgrade";
-  const message = `Switch to the ${planSlug} plan?`;
-  showToast(message, "warning", {
-    duration: 0,
-    action: {
-      label: actionLabel,
-      onClick: () => executeChangePlan(planSlug),
-    },
-  });
+  // UX-07 Fix: Paid → Free downgrade now uses a confirmation dialog pattern
+  // (matching the modal UX used in BillingOverview's cancel flow) instead
+  // of a toast with action button. This provides a more deliberate
+  // confirmation experience for irreversible plan changes.
+  const message = `Switch to the free ${planSlug} plan? Your paid plan features will be removed at the end of this billing period.`;
+  if (window.confirm(message)) {
+    await executeChangePlan(planSlug);
+  }
 }
 
 async function showProrationPreviewAndConfirm(planSlug: string) {
@@ -265,7 +263,7 @@ async function confirmProrationChange() {
       targetPlan.slug,
       prorationPreview.value.preview_token,
     );
-    showProrationModal.value = false;
+    closeProrationModal();
 
     if (result.effective_when === 'immediately') {
       showToast(`Upgraded to ${result.plan_name}. Amount charged: ${formatPrice(result.amount_charged * 100, result.currency)}.`, 'success');
@@ -280,6 +278,65 @@ async function confirmProrationChange() {
     actionLoading.value = null;
   }
 }
+
+// A11Y-01: Proration modal refs and accessibility handlers
+const prorationModalRef = ref<HTMLElement | null>(null);
+const prorationCancelBtn = ref<HTMLElement | null>(null);
+const previouslyFocusedProration = ref<HTMLElement | null>(null);
+
+function closeProrationModal() {
+  showProrationModal.value = false;
+  previouslyFocusedProration.value?.focus();
+}
+
+function handleProrationEscape(e: KeyboardEvent) {
+  if (e.key === "Escape" && showProrationModal.value) {
+    closeProrationModal();
+  }
+}
+
+function trapProrationFocus(e: KeyboardEvent) {
+  if (!showProrationModal.value || !prorationModalRef.value) return;
+  const modal = prorationModalRef.value;
+  const focusable = modal.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  );
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.key === "Tab") {
+    if (e.shiftKey) {
+      if (document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+}
+
+watch(showProrationModal, async (isOpen) => {
+  if (isOpen) {
+    previouslyFocusedProration.value = document.activeElement as HTMLElement;
+    document.addEventListener("keydown", handleProrationEscape);
+    document.addEventListener("keydown", trapProrationFocus);
+    await nextTick();
+    // Auto-focus the cancel button for accessibility
+    prorationCancelBtn.value?.focus();
+  } else {
+    document.removeEventListener("keydown", handleProrationEscape);
+    document.removeEventListener("keydown", trapProrationFocus);
+  }
+});
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", handleProrationEscape);
+  document.removeEventListener("keydown", trapProrationFocus);
+});
 
 async function executeChangePlan(planSlug: string) {
   actionLoading.value = `change-${planSlug}`;
@@ -429,7 +486,7 @@ async function executeChangePlan(planSlug: string) {
           />
           <span class="text-sm text-[var(--color-muted-foreground)]">
             I agree to the
-            <a href="/terms-of-service" target="_blank" class="text-brand-600 dark:text-brand-400 hover:underline font-medium">Terms of Service</a>
+            <a href="/terms-of-service" target="_blank" rel="noopener noreferrer" class="text-brand-600 dark:text-brand-400 hover:underline font-medium">Terms of Service</a>
           </span>
         </label>
 
@@ -505,15 +562,20 @@ async function executeChangePlan(planSlug: string) {
             </p>
           </div>
 
-          <!-- Features list -->
+          <!-- UX-07 Part 2 Fix: Enhanced feature display with usage limit badges.
+               Each feature now shows a visual badge for its type:
+               - Numeric limits (10, 5GB, etc.) get a blue "limit" badge
+               - Unlimited/infinity get a purple "unlimited" badge
+               - Boolean/other values get a green checkmark
+               This makes it immediately obvious what's limited vs unlimited. -->
           <ul class="flex-1 space-y-3 mb-6" role="list">
             <li
               v-for="(value, key) in plan.features"
               :key="key"
               class="flex items-start gap-2.5 text-sm"
             >
-              <!-- UX-07: Semantic feature icons -->
-              <!-- Numeric limit (e.g. "10", "5GB") -->
+              <!-- UX-07: Semantic feature icons with enhanced usage badges -->
+              <!-- Numeric limit (e.g. "10", "5GB") — show limit badge -->
               <svg
                 v-if="typeof value === 'number' || String(value).match(/^\d+/)"
                 class="mt-0.5 h-4 w-4 shrink-0 text-blue-500"
@@ -523,7 +585,6 @@ async function executeChangePlan(planSlug: string) {
               >
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
               </svg>
-              <!-- Unlimited / Infinity -->
               <svg
                 v-else-if="String(value).match(/unlimited|infinity/i)"
                 class="mt-0.5 h-4 w-4 shrink-0 text-purple-500"
@@ -545,7 +606,13 @@ async function executeChangePlan(planSlug: string) {
               </svg>
               <div>
                 <span class="font-medium capitalize">{{ String(key).replace(/_/g, ' ') }}</span>
-                <span class="text-[var(--color-muted-foreground)]"> — {{ value }}</span>
+                <span
+                  class="text-[var(--color-muted-foreground)]"
+                  :class="{
+                    'inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold': typeof value === 'number' || String(value).match(/^\d+/),
+                    'text-purple-600 dark:text-purple-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold': String(value).match(/unlimited|infinity/i),
+                  }"
+                >{{ value }}</span>
               </div>
             </li>
           </ul>
@@ -588,15 +655,26 @@ async function executeChangePlan(planSlug: string) {
       </div>
     </template>
 
-    <!-- Proration Preview Modal (M3) -->
+    <!-- A11Y-01 Fix: Proration Preview Modal with full accessibility.
+         Added role="dialog", aria-modal, aria-labelledby, focus trap,
+         Escape key handler, and auto-focus on mount. Previously the modal
+         had none of these, making it inaccessible to keyboard and
+         screen reader users. -->
     <Teleport to="body">
       <div
         v-if="showProrationModal && prorationPreview"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        @click.self="showProrationModal = false"
+        @click.self="closeProrationModal"
+        @keydown.escape="closeProrationModal"
       >
-        <div class="w-full max-w-md rounded-xl bg-white dark:bg-gray-900 shadow-2xl p-6">
-          <h3 class="text-lg font-semibold mb-1">
+        <div
+          ref="prorationModalRef"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="proration-modal-title"
+          class="w-full max-w-md rounded-xl bg-white dark:bg-gray-900 shadow-2xl p-6"
+        >
+          <h3 id="proration-modal-title" class="text-lg font-semibold mb-1">
             {{ prorationPreview.is_upgrade ? 'Upgrade' : prorationPreview.change_type === 'downgrade' ? 'Downgrade' : 'Switch Plan' }}
           </h3>
           <p class="text-sm text-[var(--color-muted-foreground)] mb-4">
@@ -642,8 +720,9 @@ async function executeChangePlan(planSlug: string) {
 
           <div class="flex items-center gap-2">
             <button
+              ref="prorationCancelBtn"
               class="btn-secondary flex-1"
-              @click="showProrationModal = false"
+              @click="closeProrationModal"
               :disabled="!!actionLoading"
             >
               Cancel

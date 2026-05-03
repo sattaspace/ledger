@@ -14,6 +14,10 @@ from .client import (
     modify_customer,
     delete_customer,
     retrieve_customer,
+    modify_subscription,
+    retrieve_subscription,
+    get_subscription_items,
+    get_first_item_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,7 +26,15 @@ logger = logging.getLogger(__name__)
 def delete_or_anonymize_customer(user) -> bool:
     """Delete or anonymize the user's Stripe Customer.
 
-    If any subscription is active/trialing, anonymizes instead of deleting.
+    If any subscription is active/trialing/past_due, cancels all active
+    Stripe subscriptions first, then anonymizes the customer.
+    Otherwise deletes the customer entirely.
+
+    GD-01 Fix: Active Stripe subscriptions are now properly cancelled
+    before anonymization to prevent billing leaks — previously, active
+    subs were left running on Stripe while local references were cleared,
+    causing users to continue being charged with no way to stop it.
+
     Returns True if action was taken, False if no customer found.
     """
     subs = (
@@ -34,12 +46,38 @@ def delete_or_anonymize_customer(user) -> bool:
         return False
 
     customer_id = subs.first().stripe_customer_id
-    has_active = subs.filter(
-        status__in=(SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING)
-    ).exists()
+    active_statuses = [
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.TRIALING,
+        SubscriptionStatus.PAST_DUE,
+    ]
+    active_subs = subs.filter(status__in=active_statuses)
+    has_active = active_subs.exists()
 
     try:
         if has_active:
+            # GD-01 Fix: Cancel all active/trialing/past_due subscriptions
+            # on Stripe BEFORE anonymizing the customer.  This prevents
+            # the billing leak where users continued being charged after
+            # account deletion.
+            for sub in active_subs:
+                if sub.stripe_subscription_id:
+                    try:
+                        modify_subscription(
+                            sub.stripe_subscription_id,
+                            cancel_at_period_end=False,
+                        )
+                        logger.info(
+                            f"GD-01: Cancelled active Stripe sub {sub.stripe_subscription_id} "
+                            f"(status={sub.status}) before GDPR cleanup"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"GD-01: Failed to cancel Stripe sub {sub.stripe_subscription_id}: {e}. "
+                            f"Proceeding with anonymization."
+                        )
+
+            # Now anonymize the customer
             modify_customer(
                 customer_id,
                 email=f"deleted_{user.id}@redacted.com",

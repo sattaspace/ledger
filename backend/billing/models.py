@@ -1048,6 +1048,107 @@ class Invoice(TimeStampedModel):
         return f"Invoice {self.number or self.stripe_invoice_id} ({self.status})"
 
 
+# FIN-01: Invoice Line Items
+# =============================================================================
+
+
+class InvoiceLineItem(models.Model):
+    """Individual line items from a Stripe invoice.
+
+    FIN-01 Fix: Provides structured access to invoice line items without
+    parsing the full ``stripe_response`` JSON blob.  Populated by the
+    ``invoice.*`` webhook handlers alongside the parent Invoice record.
+
+    Each line item represents a subscription period charge, discount,
+    tax, or proration adjustment.  The ``stripe_line_item_id`` provides
+    a stable reference back to the Stripe LineItem object for reconciliation.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.CASCADE,
+        related_name="line_items",
+        db_index=True,
+        verbose_name=_("Invoice"),
+        help_text=_("The parent invoice this line item belongs to"),
+    )
+    stripe_line_item_id = models.CharField(
+        _("Stripe Line Item ID"),
+        max_length=100,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_("Stripe LineItem ID (e.g. li_1Pxxx...)"),
+    )
+    description = models.CharField(
+        _("Description"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("Line item description (e.g. plan name, proration)"),
+    )
+    amount_cents = models.IntegerField(
+        _("Amount (cents)"),
+        default=0,
+        help_text=_("Line item amount in cents (can be negative for credits)"),
+    )
+    currency = models.CharField(
+        _("Currency"),
+        max_length=3,
+        default="USD",
+        help_text=_("ISO 4217 currency code"),
+    )
+    quantity = models.PositiveIntegerField(
+        _("Quantity"),
+        default=1,
+        help_text=_("Number of units (usually 1 for subscriptions)"),
+    )
+    period_start = models.DateTimeField(
+        _("Period Start"),
+        null=True,
+        blank=True,
+        help_text=_("Start of the service period for this line item"),
+    )
+    period_end = models.DateTimeField(
+        _("Period End"),
+        null=True,
+        blank=True,
+        help_text=_("End of the service period for this line item"),
+    )
+    proration = models.BooleanField(
+        _("Proration"),
+        default=False,
+        help_text=_("Whether this line item is a proration adjustment"),
+    )
+    discount_amount_cents = models.IntegerField(
+        _("Discount Amount (cents)"),
+        default=0,
+        help_text=_("Discount applied to this line item in cents"),
+    )
+    tax_amount_cents = models.IntegerField(
+        _("Tax Amount (cents)"),
+        default=0,
+        help_text=_("Tax applied to this line item in cents"),
+    )
+    type = models.CharField(
+        _("Type"),
+        max_length=30,
+        blank=True,
+        default="",
+        help_text=_("Line item type: subscription, invoiceitem, etc."),
+    )
+
+    class Meta:
+        db_table = "billing_invoice_line_item"
+        verbose_name = _("Invoice Line Item")
+        verbose_name_plural = _("Invoice Line Items")
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        sign = "-" if self.amount_cents < 0 else ""
+        return f"{self.description or 'Line Item'} ({sign}{self.amount_cents / 100:.2f} {self.currency})"
+
+
 # FIN-04: Plan Change Audit Log
 # =============================================================================
 

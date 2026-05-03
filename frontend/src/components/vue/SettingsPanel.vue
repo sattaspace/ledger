@@ -168,8 +168,11 @@ async function handleEmailOtpConfirm() {
         await logout();
       } catch {
         // Fallback: clear tokens and redirect
-        localStorage.removeItem("access_token");
-        localStorage.removeItem("refresh_token");
+        sessionStorage.removeItem("auth_access_token");
+        sessionStorage.removeItem("auth_refresh_token");
+        localStorage.removeItem("auth_access_token");
+        localStorage.removeItem("auth_refresh_token");
+        localStorage.removeItem("auth_remember_me");
         window.location.href = "/auth/login";
       }
     }, 2000);

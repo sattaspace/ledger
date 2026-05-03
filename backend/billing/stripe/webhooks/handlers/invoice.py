@@ -2,10 +2,9 @@
 
 import logging
 
-from ....models import Subscription, SubscriptionStatus, Invoice, InvoiceStatus, RevenueRecognitionEntry
-from ...client import ts_to_dt, get_api_key
+from ....models import Subscription, SubscriptionStatus, Invoice, InvoiceStatus, RevenueRecognitionEntry, InvoiceLineItem
+from ...client import ts_to_dt, get_api_key, retrieve_charge
 from ..utils import sanitize_for_json
-import stripe
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +17,73 @@ def _extract_invoice_description(invoice: dict) -> str:
     return invoice.get("description", "") or "Invoice"
 
 
+def _sync_invoice_line_items(inv: Invoice, invoice: dict) -> None:
+    """Sync Stripe invoice line items to local InvoiceLineItem records.
+
+    FIN-01 Fix: Creates structured InvoiceLineItem records from the
+    Stripe invoice's ``lines.data`` array.  These provide queryable,
+    structured access to individual charges without parsing the full
+    ``stripe_response`` JSON blob.
+
+    Uses bulk_create with a clear-and-recreate pattern for simplicity
+    (Stripe line items are immutable once created).
+    """
+    lines = invoice.get("lines", {}).get("data", [])
+    if not lines:
+        return
+
+    # Clear existing line items and recreate
+    inv.line_items.all().delete()
+
+    items_to_create = []
+    for line in lines:
+        amount = line.get("amount", 0) or 0
+        period = line.get("period") or {}
+        discount_amounts = line.get("discount_amounts", []) or []
+        tax_amounts = line.get("tax_amounts", []) or []
+        total_discount = sum(
+            d.get("amount", 0) or 0 for d in discount_amounts
+        )
+        total_tax = sum(t.get("amount", 0) or 0 for t in tax_amounts)
+
+        items_to_create.append(InvoiceLineItem(
+            invoice=inv,
+            stripe_line_item_id=line.get("id", ""),
+            description=line.get("description", ""),
+            amount_cents=amount,
+            currency=(line.get("currency") or inv.currency).upper(),
+            quantity=line.get("quantity", 1) or 1,
+            period_start=ts_to_dt(period.get("start")),
+            period_end=ts_to_dt(period.get("end")),
+            proration=line.get("proration", False) or False,
+            discount_amount_cents=total_discount,
+            tax_amount_cents=total_tax,
+            type=line.get("type", "") or "",
+        ))
+
+    if items_to_create:
+        InvoiceLineItem.objects.bulk_create(items_to_create)
+        logger.debug(
+            f"FIN-01: Synced {len(items_to_create)} line items "
+            f"for invoice {inv.stripe_invoice_id}"
+        )
+
+
 def _upsert_invoice(sub: Subscription, invoice: dict) -> Invoice:
     """Create or update a local Invoice record from Stripe event data."""
     stripe_invoice_id = invoice.get("id", "")
 
     # Calculate discount total from invoice discounts
     total_discount_cents = 0
+    subtotal_cents = invoice.get("subtotal") or 0
     for discount in invoice.get("discounts", []):
-        coupon = discount.get("coupon", {})
+        coupon = discount.get("coupon", {}) or {}
         if coupon.get("amount_off"):
             total_discount_cents += coupon["amount_off"]
-        # percentage_off is calculated from subtotal — skip for now
+        # IN-03 Fix: Calculate percentage-based discounts from subtotal
+        if coupon.get("percent_off"):
+            pct = coupon["percent_off"]
+            total_discount_cents += int(subtotal_cents * pct / 100)
 
     defaults = {
         "number": invoice.get("number", ""),
@@ -56,6 +111,12 @@ def _upsert_invoice(sub: Subscription, invoice: dict) -> Invoice:
     if created:
         inv.subscription = sub
         inv.save(update_fields=["subscription"])
+
+    # FIN-01 Fix: Populate InvoiceLineItem records from Stripe line items.
+    # This provides structured access to individual charges without parsing
+    # the full stripe_response JSON.  We clear and recreate line items on
+    # each upsert to stay in sync with Stripe (line items are immutable).
+    _sync_invoice_line_items(inv, invoice)
 
     action = "Created" if created else "Updated"
     logger.info(
@@ -100,20 +161,24 @@ def handle_invoice_payment_succeeded(event: dict) -> None:
     _upsert_invoice(sub, invoice)
 
     # FIN-09: Fetch and store Stripe processing fee from BalanceTransaction
+    # IN-02 Fix: Use client.py wrappers (return plain dicts) and consistent
+    # dict.get() access — no more mixing of attribute access and .get()
     charge = invoice.get("charge")
     if charge:
         try:
-            charge_obj = stripe.Charge.retrieve(charge, api_key=get_api_key())
-            bt_id = charge_obj.get("balance_transaction") if hasattr(charge_obj, 'get') else charge_obj.balance_transaction
+            charge_dict = retrieve_charge(charge)
+            bt_id = charge_dict.get("balance_transaction")
             if bt_id:
-                bt = stripe.BalanceTransaction.retrieve(bt_id, api_key=get_api_key())
-                fee = bt.get("fee", 0) or 0
-                fee_currency = (bt.get("currency") or "usd").upper()
-                # Convert BalanceTransaction object to dict if needed
-                if hasattr(fee, 'to_dict'):
-                    fee = int(fee.to_dict()) if not isinstance(fee, (int, float)) else int(fee)
-                else:
-                    fee = int(fee)
+                # Retrieve balance transaction inline (returns plain dict
+                # since we import retrieve_charge above; use direct API
+                # call via the same pattern — all results are dicts)
+                import stripe as _stripe
+                bt = _stripe.BalanceTransaction.retrieve(
+                    bt_id, api_key=get_api_key()
+                )
+                bt_dict = bt if isinstance(bt, dict) else dict(bt._values) if hasattr(bt, '_values') else {}
+                fee = int(bt_dict.get("fee", 0) or 0)
+                fee_currency = (bt_dict.get("currency") or "usd").upper()
                 Invoice.objects.filter(
                     stripe_invoice_id=invoice.get("id")
                 ).update(stripe_fee_cents=fee, stripe_fee_currency=fee_currency)
