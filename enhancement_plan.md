@@ -649,7 +649,7 @@ CORS_ALLOWED_ORIGINS = [
 | AccessEntry | plan, key, value, value_type, description | Edit, Delete | ✅ Registered |
 | Subscription | user, plan, product, status, current_period_end | Cancel, Override Plan, Extend Period | ✅ Registered |
 
-> **Also registered:** ServiceDomain, WebhookEventLog, Refund, ExchangeRate — 8 model admins total with custom list displays, filters, and inline editors.
+> **Also registered:** ServiceDomain, WebhookEventLog, Refund, ExchangeRate, ServiceCredential — **9** model admins total with custom list displays, filters, and inline editors.
 
 ### Plan Comparison View (custom admin page) ❌
 
@@ -691,55 +691,44 @@ A custom Django admin view at `/admin/billing/product/{id}/plan-comparison/` tha
 
 ## 10.1 Frontend & Operational Feature Gaps
 
-> Audit performed on 2026-05-03. Cross-referencing all backend models, API endpoints, and webhook handlers against the current frontend pages and Vue components revealed the following gaps. These items have backend infrastructure in place but lack user-facing frontend visibility or operational tooling.
+> Audit performed on 2026-05-03. Re-verified against fresh git pull (development branch). Cross-referencing all backend models, API endpoints, and webhook handlers against the current frontend pages and Vue components.
 
 ### Gap Matrix
 
 | # | Gap | Backend Status | Frontend Status | Severity |
 |---|-----|---------------|-----------------|----------|
-| G1 | **InvoiceLineItem model missing** | Documented in `dev_docs.md` with 12 fields, migration `0016` referenced, but model does NOT exist in `billing/models.py` | N/A | Critical |
-| G2 | **Invoice detail page** | `Invoice` model exists (20 fields, populated by webhooks). `pdf_url`, `stripe_fee_cents`, `discount_cents` all stored locally | Billing history is a flat list pulled live from Stripe API — local `Invoice` model is never queried; no detail/line-item drill-down, no PDF download button | High |
-| G3 | **Plans sidebar link broken** | `/dashboard/billing/plans/[slug]` page exists with full `PlanComparison.vue` | `Sidebar.astro` marks Plans as disabled with "Coming Soon" badge — users cannot navigate there from sidebar | High |
-| G4 | **Refund management — no admin UI** | `Refund` model (14 fields), `POST /billing/admin/refunds` API, full PCI-DSS audit trail (IP, approval, reason, admin notes) | Zero frontend — no refund creation, no refund history, no approval workflow UI | High |
-| G5 | **Plan change history — never shown** | `PlanChangeLog` model auto-created on every plan change (from_plan, to_plan, proration amount, initiator) | Zero frontend — users/admins cannot see plan change history | Medium |
-| G6 | **Login history / security audit — invisible** | `UserLoginHistory` model records every login (IP, user agent, timestamp) | Zero frontend — no security log, no "recent logins" view, no device management | Medium |
-| G7 | **Admin API endpoints — no UI** | 5 admin endpoints exist: refund, transaction lookup, customer sync, GDPR export, GDPR delete | None are exposed in any frontend page | High |
-| G8 | **Webhook monitoring — no admin view** | `WebhookEventLog` model logs every event (id, type, processed status, error, payload). Failed events retried by Celery | No admin dashboard to monitor failed/successful webhooks or trigger manual retries | Medium |
-| G9 | **Revenue recognition — no visibility** | `RevenueRecognitionEntry` model + daily Celery task for ASC 606 compliance | No admin dashboard to view recognized revenue, MRR breakdown, or deferred revenue | Medium |
-| G10 | **Notification system — placeholder** | No backend notification model, no API endpoints | Navbar bell icon exists with empty dropdown ("No notifications yet") | Low |
-| G11 | **Finance features — all disabled** | No backend models for Transactions, Accounts, Budgets, Reports | 4 sidebar menu items disabled with "Soon" badges | Low (future scope) |
-| G12 | **PDF download for invoices** | `Invoice.pdf_url` stored in local model and returned by Stripe API | Not rendered in billing history list — only "View" (hosted_url) link shown | Low |
-| G13 | **Discount & Stripe fee display** | `Invoice.discount_cents` and `Invoice.stripe_fee_cents` stored locally | Not displayed anywhere in the billing UI | Low |
-| G14 | **Exchange rate display** | `ExchangeRate` model populated daily by Celery; used for `?currency=` price conversion | No UI to show exchange rates or allow user to pick display currency (auto-detected only) | Low |
+| G1 | ~~InvoiceLineItem model~~ | ✅ **DONE** — Model in `billing/models.py` line 1055 (12 fields), migration `0016_invoicelineitem.py`, webhook handlers populate via `_sync_invoice_line_items()` | N/A | ~~Critical~~ ✅ |
+| G2 | **Invoice detail page** | ✅ `Invoice` model (20 fields) + `InvoiceLineItem` populated by webhooks. `pdf_url`, `stripe_fee_cents`, `discount_cents` all stored | PDF download button exists in billing history. **No local invoice detail page** — no `/invoices/` route, no `InvoiceDetail.vue`. Users can only view via Stripe hosted_url | High |
+| G3 | **Plans sidebar link broken** | `/dashboard/billing/plans/[slug]` page exists with full `PlanComparison.vue` | `Sidebar.astro` line 29: Plans still `disabled: true` with "Coming Soon" badge — users cannot navigate there from sidebar | High |
+| G4 | **Refund management — no custom admin UI** | ✅ `Refund` model + Django admin (`RefundAdmin`) + API endpoint. `AdminApiKeyController` in `common/controllers.py` | No custom frontend admin page (Django admin is available) | Medium |
+| G5 | **Plan change history — never shown** | ✅ `PlanChangeLog` model + auto-created on plan changes | No `GET` read endpoint, no frontend display | Medium |
+| G6 | **Login history / security audit — invisible** | ✅ `UserLoginHistory` model + auto-created on login | No `GET` read endpoint, no frontend display | Medium |
+| G7 | **Admin API endpoints — no custom frontend UI** | ✅ 3 admin endpoints (refund, transactions, sync-customer) + Django admin (9 models) + `AdminApiKeyController`. Note: GDPR export/delete endpoints listed in v1 did not exist. | No custom frontend admin pages (Django admin available) | Medium |
+| G8 | **Webhook monitoring — no API/frontend** | ✅ `WebhookEventLog` model + Django admin (`WebhookEventLogAdmin`) + Celery retry | No API read endpoint, no custom frontend page | Low |
+| G9 | **Revenue recognition — no API/frontend** | ✅ `RevenueRecognitionEntry` model + daily Celery task | No API read endpoint, no frontend dashboard | Low |
+| G10 | **Notification system — placeholder** | ❌ No backend notification model, no API | Navbar bell icon with hardcoded "No notifications yet" | Low |
+| G11 | **Finance features — all disabled** | ❌ No backend models | 4 sidebar menu items disabled with "Soon" badges | Low (future) |
+| G12 | ~~PDF download for invoices~~ | ✅ **DONE** — `pdf_url` in Stripe response | ✅ PDF download button exists in `BillingOverview.vue` lines 969–985 | ~~Low~~ ✅ |
+| G13 | **Discount & Stripe fee display** | ✅ `Invoice.discount_cents` + `Invoice.stripe_fee_cents` stored locally. `InvoiceLineItem.discount_amount_cents` + `tax_amount_cents` | Not in `TransactionItemSchema`, not displayed in billing history | Low |
+| G14 | **Currency picker** | ✅ `ExchangeRate` model + `?currency=` param on product API | No currency selector UI in billing page (auto-detected from profile only) | Low |
 
 ### Detailed Gap Analysis
 
-#### G1: InvoiceLineItem Model — Documented but Not Implemented
+#### G1: ~~InvoiceLineItem Model~~ ✅ RESOLVED
 
-**Current state:** `dev_docs.md` describes an `InvoiceLineItem` model with 12 fields (invoice FK, stripe_line_item_id, description, amount_cents, currency, quantity, period_start, period_end, proration, discount_amount_cents, tax_amount_cents, type) and references migration `0016_invoice_line_items.py`. However, the model does NOT exist in `billing/models.py` — zero references in any Python file across the entire codebase. This is a phantom model.
+**Status:** Model exists at `billing/models.py` line 1055 with 12 fields (invoice FK, stripe_line_item_id, description, amount_cents, currency, quantity, period_start, period_end, proration, discount_amount_cents, tax_amount_cents, type). Migration `0016_invoicelineitem.py` is present. Webhook handlers (`handle_invoice_created`, `handle_invoice_payment_succeeded`) populate line items via `_sync_invoice_line_items()` in `stripe/webhooks/handlers/invoice.py`.
 
-**Impact:** Webhook handlers (`invoice.created`, `invoice.payment_succeeded`) create `Invoice` records but cannot store individual line items. The Stripe API returns line item data (from `invoice.lines.data`), but it is discarded after extracting only the first description.
+**No further work needed for this item.**
 
-**Required work:**
-1. Create `InvoiceLineItem` model in `billing/models.py` with the 12 documented fields
-2. Generate and run migration
-3. Update webhook handlers to populate line items when creating/updating `Invoice` records
-4. Add admin endpoint `GET /billing/invoices/{invoice_id}` with line items
-5. Build frontend invoice detail page (see G2)
+#### G2: Invoice Detail Page — No Local Detail View
 
-#### G2: Invoice Detail Page — Users Can't Drill Into Invoices
-
-**Current state:** `BillingOverview.vue` fetches transaction history directly from Stripe's live API via `get_transaction_history()` and displays a flat list: status, invoice number, amount, tax, period, card brand, and a "View" link (hosted_url). There is no individual invoice detail page, no line item breakdown, and no PDF download button.
-
-Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and stores locally: `pdf_url`, `stripe_fee_cents`, `discount_cents`, `attempt_count`, `next_payment_attempt`, `stripe_response` (full JSON). None of this local data is used by the frontend.
+**Current state:** `BillingOverview.vue` fetches transaction history directly from Stripe's live API and displays a flat list with: status, invoice number, amount, tax, period, card brand, "View" link (hosted_url), and **PDF download button** (lines 969–985). The backend `Invoice` model (20 fields) + `InvoiceLineItem` are populated by webhooks with rich data: `pdf_url`, `stripe_fee_cents`, `discount_cents`, `attempt_count`, `stripe_response` (full JSON), and individual line items. However, this local data is **never queried for display** — the frontend always calls Stripe live API.
 
 **Required work:**
-1. Create `GET /billing/invoices/{stripe_invoice_id}` endpoint that queries the local `Invoice` model (with line items once G1 is done) — avoids repeated Stripe API calls
+1. Create `GET /billing/invoices/{stripe_invoice_id}` endpoint that queries the local `Invoice` model with line items — avoids repeated Stripe API calls
 2. Create `/dashboard/billing/invoices/[id].astro` page with `InvoiceDetail.vue` component
 3. Display: line items table (description, amount, quantity, period), subtotal, tax, discount, Stripe fee, total, payment method
-4. Add PDF download button (link to `invoice.pdf_url`)
-5. Add Stripe fee and discount to the billing history list items (G12, G13)
-6. Consider switching billing history from Stripe live API to local `Invoice` model for performance
+4. Consider switching billing history from Stripe live API to local `Invoice` model for performance
 
 #### G3: Plans Sidebar Link — Page Exists but Navigation Says "Coming Soon"
 
@@ -782,17 +771,17 @@ Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and 
 3. Display: timestamp, IP address, user agent (browser/OS parsed), location (optional, via IP geolocation)
 4. "Sign out all other sessions" button (requires token blacklisting logic)
 
-#### G7: Admin API Endpoints — 5 Endpoints With No UI
+#### G7: Admin API Endpoints — 3 Endpoints With No UI (v2 corrected)
 
-**Current state:** Five admin-only API endpoints exist but have no frontend exposure:
+**Current state (v2 corrected):** Three admin-only API endpoints exist in `BillingAdminController` but have no frontend exposure. **Note:** The v1 plan incorrectly listed `GET /billing/admin/gdpr-export/{slug}` and `DELETE /billing/admin/gdpr-delete/{slug}` — these do NOT exist in the codebase.
 
-| Endpoint | Purpose | UI Needed |
-|---|---|---|
-| `POST /billing/admin/refunds` | Create refund | Covered by G4 |
-| `GET /billing/admin/transactions` | View any user's transactions by email/user_id | User lookup + transaction list |
-| `POST /billing/admin/sync-customer` | Sync Stripe customer to local profile | Manual sync button per user |
-| `GET /billing/admin/gdpr-export/{slug}` | GDPR Article 20 data export | Export button + download |
-| `DELETE /billing/admin/gdpr-delete/{slug}` | GDPR data deletion | Delete confirmation with safeguards |
+| Endpoint | Path | Purpose | UI Needed |
+|---|---|---|---|
+| Refund | `POST /billing/admin/subscriptions/{product_slug}/refund` | Issue refund for a subscription | Covered by G4 |
+| Transactions | `POST /billing/admin/transactions` | Pull user transaction history from Stripe | User lookup + transaction list |
+| Sync Customer | `POST /billing/admin/sync-customer` | Sync Stripe customer data to local profile | Manual sync button per user |
+
+Additionally, user-level endpoints exist: `GET /billing/export-billing-data` (GDPR Art. 20 export, user's own data) and `POST /users/me/delete-account` (user self-delete). There is no admin-level GDPR delete endpoint.
 
 **Required work:**
 1. Create `/dashboard/admin/` route group with admin layout
@@ -835,8 +824,8 @@ Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and 
 #### G11–G14: Minor Gaps
 
 - **G11 (Finance features):** Future scope — no backend models. Sidebar items are aspirational placeholders for the Ledger product itself.
-- **G12 (PDF download):** Add a download icon button next to "View" link in billing history, linking to `tx.pdf_url`.
-- **G13 (Discount & fee display):** Add `tx.discount` and Stripe fee (not currently in `TransactionItemSchema`) to the billing history list and invoice detail.
+- **~~G12 (PDF download):~~** ✅ **RESOLVED** — PDF download button already exists in `BillingOverview.vue` lines 969–985.
+- **G13 (Discount & fee display):** Add `discount` and `stripe_fee` to `TransactionItemSchema` in `billing.ts`, and display in billing history list and invoice detail.
 - **G14 (Exchange rate/currency picker):** Add a currency selector dropdown in the billing page header so users can switch display currency without relying on auto-detection only.
 
 ---
@@ -962,67 +951,74 @@ Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and 
 
 ---
 
-### ❌ PENDING WORK (Phases 7–10) — From Gap Audit (Section 10.1)
+### ❌ PENDING WORK (Phases 7-10 + Tech Debt) — From Full Codebase Audit v2
 
-> The following phases address gaps identified in the 2026-05-03 audit. None are started.
+> **Audit date:** 2026-05-03 (v2 — comprehensive backend + frontend verification)
+> **Methodology:** Every pending item cross-checked against actual source code. Backend models, API endpoints, Celery tasks, webhook handlers, Django admin registrations all verified. Frontend pages, Vue components, Astro layouts, sidebar navigation, API client calls all verified. New gaps discovered and added (G15-G19).
+> **New in v2:** G7 admin endpoint correction (GDPR endpoints did not exist as described), G15-G19 (broken links, dead code, tech debt, test infrastructure)
 
 ---
 
-### Phase 7: Invoice Detail & Line Items (G1 + G2 + G12 + G13)
+### Phase 7: Invoice Detail & Line Items (G2 + G13)
 
-**Goal:** Users can view detailed invoice breakdowns with line items, download PDFs, and see fees/discounts.
+**Goal:** Users can view detailed invoice breakdowns with line items, and see fees/discounts in billing history.
 
-**Prerequisites:** G1 (InvoiceLineItem model) must be implemented first.
+**Already done:** G1 (InvoiceLineItem model + migration + webhook population), G12 (PDF download button)
 
-- [ ] Create `InvoiceLineItem` model in `billing/models.py` (12 fields as documented in dev_docs.md)
-- [ ] Generate and run migration for `InvoiceLineItem`
-- [ ] Update `handle_invoice_created` and `handle_invoice_payment_succeeded` webhook handlers to populate line items from `invoice.lines.data`
-- [ ] Create `GET /billing/invoices/{stripe_invoice_id}` endpoint (queries local model with line items, not live Stripe)
+- [ ] Create `GET /billing/invoices/{stripe_invoice_id}` endpoint that queries the local `Invoice` model with line items — avoids repeated Stripe API calls
 - [ ] Create `/dashboard/billing/invoices/[id].astro` page with `InvoiceDetail.vue` component
 - [ ] Invoice detail displays: line items table (description, amount, quantity, period), subtotal, tax, discount, Stripe fee, total, payment method, attempt count
-- [ ] Add PDF download button linking to `invoice.pdf_url`
-- [ ] Update billing history list in `BillingOverview.vue`: add PDF download icon, discount amount, Stripe fee
-- [ ] Update `TransactionItemSchema` in `billing.ts` to include `discount` and `stripe_fee` fields
-- [ ] Consider switching billing history from Stripe live API to local `Invoice` model for better performance
+- [ ] Add `discount` and `stripe_fee` fields to `TransactionItemSchema` in `billing.ts`
+- [ ] Update billing history list in `BillingOverview.vue` to display discount amount and Stripe fee (G13)
+- [ ] Consider switching billing history from Stripe live API to local `Invoice` model for performance
 
-**Deliverable:** Clickable invoice list → full invoice detail page with line items and PDF download.
+---
 
 ### Phase 8: History & Security Visibility (G5 + G6)
 
 **Goal:** Users and admins can view plan change history and login security audit trails.
 
 - [ ] Create `GET /billing/subscriptions/{product_slug}/change-history` endpoint (paginated)
-- [ ] Add "Plan History" timeline section to `BillingOverview.vue` subscription card (date, old plan → new plan, proration, initiator)
+- [ ] Add "Plan History" timeline section to `BillingOverview.vue` subscription card (date, old plan -> new plan, proration, initiator)
 - [ ] Create `GET /users/me/login-history` endpoint (paginated, last 50 entries)
 - [ ] Add "Login History" section to `SettingsPanel.vue` (timestamp, IP, user agent/browser)
 - [ ] Optional: "Sign out all other sessions" button (extend token blacklisting)
 - [ ] Optional: IP geolocation for login history entries
 
-**Deliverable:** Users can see their plan change timeline and login security history.
+---
 
-### Phase 9: Admin Panel & Operational Tools (G4 + G7 + G8 + G9)
+### Phase 9: Admin Panel & Operational Tools (G4 + G7-corrected + G8 + G9)
 
-**Goal:** Admins have a full UI for refunds, user management, webhook monitoring, GDPR compliance, and revenue reporting.
+**Goal:** Admins have a custom frontend UI for refunds, user management, webhook monitoring, and revenue reporting.
 
-**Prerequisites:** Phase 7 (invoice detail) should be completed first for full transaction context.
+**Already available:** Django admin for all 9 models (Product, Plan, AccessEntry, Subscription, Invoice, Refund, WebhookEventLog, ExchangeRate, ServiceCredential), admin API endpoints, `AdminApiKeyController` in `common/controllers.py`.
+
+**CORRECTION (v2):** Previous plan listed `GET /billing/admin/gdpr-export/{slug}` and `DELETE /billing/admin/gdpr-delete/{slug}` — these do NOT exist. Actual admin endpoints are:
+
+| Endpoint | Path | Status |
+|----------|------|--------|
+| Refund | `POST /billing/admin/subscriptions/{product_slug}/refund` | Exists |
+| Transactions | `POST /billing/admin/transactions` | Exists |
+| Sync Customer | `POST /billing/admin/sync-customer` | Exists |
+| GDPR Export | `GET /billing/export-billing-data` (user-level, not admin-slug) | Exists |
+| GDPR Delete | `POST /users/me/delete-account` (user self-delete only) | No admin delete |
 
 - [ ] Create `/dashboard/admin/` route group with admin-only layout (role guard: superuser/staff)
 - [ ] Build admin user lookup component (search by email or user_id)
-- [ ] Build refund management page (`RefundManager.vue`): creation form, history table, detail view with audit trail, approval workflow
-- [ ] Build admin transaction viewer: search any user's billing history
-- [ ] Build GDPR tools page: data export (download JSON/CSV) and data deletion (double confirmation)
-- [ ] Build webhook monitoring page: event list with filters (status, type), error messages, manual retry, payload inspector (expandable JSON)
+- [ ] Build refund management page (`RefundManager.vue`): creation form, history table, detail view with audit trail
+- [ ] Build admin transaction viewer: search any user billing history
+- [ ] Build customer sync action: manual sync button per user
 - [ ] Create `GET /billing/admin/webhooks` endpoint (list, filter by processed/event_type)
+- [ ] Build webhook monitoring page: event list with filters (status, type), error messages, payload inspector
 - [ ] Create `GET /billing/admin/revenue` endpoint (summary + detail with date range filter)
 - [ ] Build revenue recognition dashboard: MRR chart, recognized vs deferred, by-plan breakdown, CSV export
-- [ ] Add customer sync action to user detail view (`POST /billing/admin/sync-customer`)
 - [ ] Add admin navigation items to sidebar (only visible for admin/staff roles)
 
-**Deliverable:** Full admin panel for billing operations, compliance, and monitoring.
+---
 
-### Phase 10: UX Polish & Quick Wins (G3 + G10 + G11 + G14)
+### Phase 10: UX Polish & Quick Wins + Infrastructure (G3 + G10 + G11 + G14 + G15-G19)
 
-**Goal:** Fix broken navigation, replace placeholder UI, and improve user experience.
+**Goal:** Fix broken navigation, replace placeholder UI, clean up tech debt, and prepare for future features.
 
 - [ ] **G3:** Fix Plans sidebar link — remove `disabled` attribute, remove "Coming Soon" badge, set `href` to `/dashboard/billing`
 - [ ] **G10:** Implement notification system:
@@ -1033,11 +1029,11 @@ Meanwhile, the backend `Invoice` model (20 fields) is populated by webhooks and 
   - [ ] Optional: WebSocket for real-time push notifications
 - [ ] **G14:** Add currency selector dropdown in billing page header (query `ExchangeRate` model, apply `?currency=` to plan API calls)
 - [ ] **G11:** Leave Finance sidebar items as disabled "Soon" badges (future scope — no backend models yet)
-
-**Deliverable:** Plans accessible from sidebar, real notifications, currency picker, all placeholders replaced.
-
----
-
+- [ ] **G15: Fix broken Terms of Service / Privacy Policy links** — `PlanComparison.vue:489` links to `/terms-of-service` (page does not exist). `RegisterForm.vue:478` links to `#` for Privacy Policy. Either create a ToS page or link to external legal page.
+- [ ] **G16: Remove dead code** — `ResetPasswordForm.vue` (322 lines, never imported), `EmptyState.astro` (never used), `LoadingSpinner.astro` (never used), ~140 lines of commented-out hardcoded data in `ProfileCard.vue:57-198`
+- [ ] **G17: Fix duplicate API calls** — Navbar, Sidebar, and DashboardHome each independently call `getCurrentUser()` and `getSubscriptions()` on every page load. Introduce shared state store (Pinia) or module-level cache.
+- [ ] **G18: Backend HTML email templates** — all emails are plain-text inline f-strings (dunning, password reset, email change, email verification). Create `templates/email/` directory with branded HTML templates.
+- [ ] **G19: Test infrastructure** — frontend has zero test files. Backend has some tests in `billing/tests/` (checkout, refund, revenue, currency, safe plan change, stripe errors). Add frontend unit tests (Vitest) for critical components (PlanComparison, BillingOverview, LoginForm).
 ## 12. File Structure (New Files)
 
 ```
