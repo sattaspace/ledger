@@ -1,0 +1,39 @@
+# https://www.robotstxt.org/robotstxt.html
+
+# Allow all crawlers
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://docs.sattaspace.com/sitemap-index.xml
+
+# Crawl-delay for respectful crawling (optional, some bots honor this)
+Crawl-delay: 1
+
+# Block common non-content paths
+Disallow: /api/
+Disallow: /_astro/
+Disallow: /pagefind/
+
+# Explicitly allow important content
+Allow: /getting-started/
+Allow: /introduction/
+Allow: /sattabase/
+
+# Google-specific (Google doesn't support Crawl-delay, but respects the rest)
+User-agent: Googlebot
+Allow: /
+
+# Bing-specific
+User-agent: Bingbot
+Allow: /
+
+# Block AI training crawlers (optional - uncomment if desired)
+# User-agent: GPTBot
+# Disallow: /
+# User-agent: ChatGPT-User
+# Disallow: /
+# User-agent: CCBot
+# Disallow: /
+# User-agent: anthropic-ai
+# Disallow: /

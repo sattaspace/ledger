@@ -1,0 +1,17 @@
+/* TEAM */
+    Developer: SattaSpace Team
+    Site: https://sattaspace.com
+    Contact: support@sattaspace.com
+    GitHub: https://github.com/sattaspace
+
+/* THANKS */
+    Astro Team - https://astro.build
+    Starlight Team - https://starlight.astro.build
+    Tailwind CSS - https://tailwindcss.com
+
+/* SITE */
+    Last update: 2024
+    Language: English
+    Standards: HTML5, CSS3, JavaScript
+    Components: Astro, Starlight, Tailwind CSS 4
+    Software: Visual Studio Code

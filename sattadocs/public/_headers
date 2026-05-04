@@ -1,0 +1,52 @@
+# Cloudflare Pages Headers Configuration
+# https://developers.cloudflare.com/pages/platform/headers/
+
+# Security headers for all pages
+/*
+    X-Frame-Options: DENY
+    X-Content-Type-Options: nosniff
+    X-XSS-Protection: 1; mode=block
+    Referrer-Policy: strict-origin-when-cross-origin
+    Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+
+# Long-term caching for static assets (1 year)
+/_astro/*
+    Cache-Control: public, max-age=31536000, immutable
+
+# Images caching (30 days)
+/*.png
+    Cache-Control: public, max-age=2592000, immutable
+/*.webp
+    Cache-Control: public, max-age=2592000, immutable
+/*.svg
+    Cache-Control: public, max-age=2592000, immutable
+/*.ico
+    Cache-Control: public, max-age=2592000, immutable
+
+# Fonts caching (1 year)
+/*.woff
+    Cache-Control: public, max-age=31536000, immutable
+/*.woff2
+    Cache-Control: public, max-age=31536000, immutable
+
+# HTML pages - revalidate on each visit
+/*.html
+    Cache-Control: public, max-age=0, must-revalidate
+/
+    Cache-Control: public, max-age=0, must-revalidate
+/*/
+    Cache-Control: public, max-age=0, must-revalidate
+
+# Sitemap and robots.txt - short cache
+/sitemap-index.xml
+    Cache-Control: public, max-age=3600
+/sitemap-0.xml
+    Cache-Control: public, max-age=3600
+/robots.txt
+    Cache-Control: public, max-age=86400
+
+# Pagefind search index (1 hour)
+/pagefind/*
+    Cache-Control: public, max-age=3600
+    Access-Control-Allow-Origin: *

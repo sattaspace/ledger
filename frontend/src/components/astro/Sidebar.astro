@@ -26,18 +26,8 @@ const billingNav: NavSection = {
   title: "Billing",
   items: [
     { label: "Overview", href: "/dashboard/billing", icon: "billing" },
-    { label: "Plans", href: "/dashboard/billing", icon: "plans", disabled: true, badge: "Coming Soon", badgeColor: "brand", tooltip: "Plan comparison and switching will be available soon" },
-  ],
-};
-
-const financeNav: NavSection = {
-  title: "Finance",
-  collapsible: true,
-  items: [
-    { label: "Transactions", href: "#", icon: "transactions", disabled: true, badge: "Soon", badgeColor: "muted", tooltip: "Transaction history is under development" },
-    { label: "Accounts", href: "#", icon: "accounts", disabled: true, badge: "Soon", badgeColor: "muted", tooltip: "Account management will be available in a future update" },
-    { label: "Budgets", href: "#", icon: "budgets", disabled: true, badge: "Soon", badgeColor: "muted", tooltip: "Budget planning tools are coming soon" },
-    { label: "Reports", href: "#", icon: "reports", disabled: true, badge: "Soon", badgeColor: "muted", tooltip: "Financial reports and analytics are in development" },
+    { label: "Plans", href: "/dashboard/billing/plans", icon: "plans", tooltip: "Compare plans and switch your subscription" },
+    { label: "Transactions", href: "/dashboard/billing/transactions", icon: "transactions", tooltip: "View billing history and download invoices" },
   ],
 };
 
@@ -52,7 +42,7 @@ const currentPath = Astro.url.pathname;
     <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white font-bold text-sm shadow-md shadow-brand-600/20">
       S
     </div>
-    <span class="text-lg font-bold tracking-tight">Satta Ledger</span>
+    <span class="text-lg font-bold tracking-tight">SattaBase</span>
   </div>
 
   <!-- Main Navigation -->
@@ -161,6 +151,11 @@ const currentPath = Astro.url.pathname;
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                 </svg>
               )}
+              {item.icon === "transactions" && (
+                <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v8a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3" />
+                </svg>
+              )}
               <span class="nav-label truncate">{item.label}</span>
 
               {/* Badge */}
@@ -189,84 +184,6 @@ const currentPath = Astro.url.pathname;
       </div>
     </div>
 
-    <!-- Divider -->
-    <div class="my-3 border-t border-border"></div>
-
-    <!-- Section: Finance (collapsible, starts collapsed since all disabled) -->
-    <div class="nav-section" data-section="finance">
-      <button
-        type="button"
-        class="section-header flex w-full items-center justify-between px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-muted-foreground transition-colors"
-        aria-expanded="false"
-        data-section-toggle="finance"
-      >
-        <div class="flex items-center gap-2">
-          <span>{financeNav.title}</span>
-          <span class="inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/60">
-            Soon
-          </span>
-        </div>
-        <svg class="section-chevron h-3.5 w-3.5 transition-transform duration-200 rotate-[-90deg]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      <div class="section-items space-y-0.5 mt-0 overflow-hidden max-h-0 opacity-0 transition-all duration-300 ease-in-out" data-section-items="finance">
-        {financeNav.items.map((item) => (
-          <a
-            href={item.disabled ? undefined : item.href}
-            class:list={[
-              "nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
-              item.disabled
-                ? "cursor-not-allowed text-muted-foreground/40 hover:text-muted-foreground/60 hover:bg-muted/50"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            ]}
-            {...(item.disabled ? { "aria-disabled": "true", tabindex: "-1" } : {})}
-            {...(item.tooltip ? { "data-tooltip": item.tooltip } : {})}
-          >
-            {item.icon === "transactions" && (
-              <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
-              </svg>
-            )}
-            {item.icon === "accounts" && (
-              <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-              </svg>
-            )}
-            {item.icon === "budgets" && (
-              <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-            )}
-            {item.icon === "reports" && (
-              <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            )}
-            <span class="nav-label truncate">{item.label}</span>
-
-            {item.badge && (
-              <span class:list={[
-                "nav-badge ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide shrink-0",
-                item.badgeColor === "brand" && "bg-brand-100 text-brand-700 dark:bg-brand-950 dark:text-brand-400",
-                item.badgeColor === "muted" && "bg-muted text-muted-foreground",
-                item.badgeColor === "warning" && "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
-                item.badgeColor === "destructive" && "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
-                !item.badgeColor && "bg-muted text-muted-foreground",
-              ]}>
-                {item.badge}
-              </span>
-            )}
-
-            {item.disabled && (
-              <svg class="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-            )}
-          </a>
-        ))}
-      </div>
-    </div>
   </nav>
 
   <!-- Bottom section -->
@@ -492,10 +409,9 @@ const currentPath = Astro.url.pathname;
 
       try {
         const { apiClient } = await import("@/lib/api");
-        const data = await apiClient.get<any[]>("/billing/subscriptions");
-        const activeSub = Array.isArray(data)
-          ? data.find((s: any) => s.status === "active" || s.status === "trialing")
-          : null;
+        const data = await apiClient.get<{ items: any[] }>("/billing/subscriptions");
+        const subs = data?.items || [];
+        const activeSub = subs.find((s: any) => s.status === "active" || s.status === "trialing") || null;
         if (activeSub) {
           planLabel.textContent = activeSub.plan_name;
           if (planDot) {
@@ -522,6 +438,65 @@ const currentPath = Astro.url.pathname;
       }
     }
 
-    loadPlanInfo();
-  });
+  // ── Active nav highlight (client-side, works with transition:persist) ──
+  // transition:persist freezes the sidebar, so Astro.url.pathname only runs once.
+  // This script re-evaluates active state on every Astro View Transition navigation.
+  function updateActiveNav() {
+    const currentPath = window.location.pathname;
+    document.querySelectorAll('.nav-item').forEach((item) => {
+      const href = (item as HTMLAnchorElement).getAttribute('href');
+      if (!href) return;
+
+      // Dashboard root: exact match only
+      if (href === '/dashboard') {
+        item.classList.toggle('bg-brand-50', currentPath === '/dashboard' || currentPath === '/dashboard/');
+        item.classList.toggle('text-brand-700', currentPath === '/dashboard' || currentPath === '/dashboard/');
+        item.classList.toggle('dark:bg-brand-950/60', currentPath === '/dashboard' || currentPath === '/dashboard/');
+        item.classList.toggle('dark:text-brand-400', currentPath === '/dashboard' || currentPath === '/dashboard/');
+        item.classList.toggle('text-muted-foreground', currentPath !== '/dashboard' && currentPath !== '/dashboard/');
+        item.setAttribute('aria-current', (currentPath === '/dashboard' || currentPath === '/dashboard/') ? 'page' : undefined);
+        return;
+      }
+
+      // Billing overview: exact match only (children should not activate it)
+      if (href === '/dashboard/billing') {
+        const isOverview = currentPath === '/dashboard/billing' || currentPath === '/dashboard/billing/';
+        item.classList.toggle('bg-brand-50', isOverview);
+        item.classList.toggle('text-brand-700', isOverview);
+        item.classList.toggle('dark:bg-brand-950/60', isOverview);
+        item.classList.toggle('dark:text-brand-400', isOverview);
+        item.classList.toggle('text-muted-foreground', !isOverview);
+        item.setAttribute('aria-current', isOverview ? 'page' : undefined);
+        return;
+      }
+
+      // All other nav items: exact or prefix match
+      const isActive = currentPath === href || currentPath.startsWith(href + '/');
+      item.classList.toggle('bg-brand-50', isActive);
+      item.classList.toggle('text-brand-700', isActive);
+      item.classList.toggle('dark:bg-brand-950/60', isActive);
+      item.classList.toggle('dark:text-brand-400', isActive);
+      item.classList.toggle('text-muted-foreground', !isActive);
+      item.setAttribute('aria-current', isActive ? 'page' : undefined);
+    });
+
+    // Update active indicator bars
+    document.querySelectorAll('.nav-item').forEach((item) => {
+      const isActive = item.getAttribute('aria-current') === 'page';
+      let indicator = item.querySelector('.active-indicator-bar') as HTMLElement | null;
+      if (isActive && !indicator) {
+        indicator = document.createElement('span');
+        indicator.className = 'active-indicator-bar absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-r-full bg-brand-600 dark:bg-brand-500';
+        item.appendChild(indicator);
+      } else if (!isActive && indicator) {
+        indicator.remove();
+      }
+    });
+  }
+
+  // Run on initial load and on every Astro View Transition
+  updateActiveNav();
+  document.addEventListener('astro:page-load', updateActiveNav);
+  document.addEventListener('astro:after-swap', updateActiveNav);
+});
 </script>

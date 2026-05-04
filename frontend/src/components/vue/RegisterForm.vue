@@ -2,13 +2,10 @@
 // Register form — Vue interactive island
 // Handles POST /auth/register via auth.ts
 
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, toRef, onMounted } from "vue";
 import {
   register,
   getErrorMessage,
-  // TIMEZONE_OPTIONS,
-  // CURRENCY_OPTIONS,
-  // LANGUAGE_OPTIONS,
   fetchChoices,
   detectUserTimezone,
   detectUserLanguage,
@@ -16,6 +13,7 @@ import {
 import type { Choices } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import type { ApiError } from "@/lib/api";
+import { usePasswordStrength, useFormErrors } from "@/composables";
 
 const form = reactive({
   first_name: "",
@@ -33,16 +31,9 @@ const loading = ref(false);
 const choicesLoading = ref(true);
 const choices = ref<Choices>({ timezones: [], currencies: [], languages: [] });
 
-const generalError = ref("");
-const fieldErrors = reactive<Record<string, string>>({
-  first_name: "",
-  last_name: "",
-  email: "",
-  password: "",
-  confirm_password: "",
-  agree_terms: "",
-});
-
+const { fieldErrors, generalError, clearErrors, setApiFieldErrors, setGeneralError } = useFormErrors([
+  "first_name", "last_name", "email", "password", "confirm_password", "agree_terms",
+]);
 
 // Auto-detect preferences on mount
 onMounted(async () => {
@@ -60,36 +51,8 @@ onMounted(async () => {
 // Collapsible preferences section
 const showPreferences = ref(false);
 
-// Password strength computation
-const passwordChecks = computed(() => {
-  const pw = form.password;
-  return {
-    length: pw.length >= 8,
-    uppercase: /[A-Z]/.test(pw),
-    lowercase: /[a-z]/.test(pw),
-    number: /[0-9]/.test(pw),
-    special: /[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\\/~`;\']/.test(pw),
-  };
-});
-
-const passwordStrength = computed(() => {
-  const checks = Object.values(passwordChecks.value);
-  const passed = checks.filter(Boolean).length;
-  if (form.password.length === 0) return { level: 0, label: "", color: "" };
-  if (passed <= 2) return { level: 1, label: "Weak", color: "bg-red-500" };
-  if (passed <= 3) return { level: 2, label: "Fair", color: "bg-yellow-500" };
-  if (passed <= 4) return { level: 3, label: "Good", color: "bg-brand-400" };
-  return { level: 4, label: "Strong", color: "bg-brand-600" };
-});
-
-const strengthSegments = [0, 1, 2, 3];
-
-function clearErrors() {
-  generalError.value = "";
-  Object.keys(fieldErrors).forEach((key) => {
-    fieldErrors[key] = "";
-  });
-}
+// Password strength — uses composable
+const { passwordChecks, passwordStrength, strengthSegments, isValid: passwordValid } = usePasswordStrength(toRef(form, "password"));
 
 function validateForm(): boolean {
   clearErrors();
@@ -111,8 +74,10 @@ function validateForm(): boolean {
     }
   }
 
-  const checks = Object.values(passwordChecks.value);
-  if (checks.some((c) => !c)) {
+  if (!form.password) {
+    fieldErrors.password = "Password is required.";
+    valid = false;
+  } else if (!passwordValid.value) {
     fieldErrors.password = "Password does not meet all requirements.";
     valid = false;
   }
@@ -155,17 +120,11 @@ async function handleSubmit() {
   } catch (err: unknown) {
     const apiErr = err as ApiError;
 
-    // Map field-level errors from API
-    if (apiErr.errors) {
-      for (const [field, messages] of Object.entries(apiErr.errors)) {
-        if (field in fieldErrors) {
-          fieldErrors[field] = messages.join(" ");
-        }
-      }
-    }
+    // Map API-level field errors to local fieldErrors via composable
+    setApiFieldErrors(apiErr.errors as Record<string, string[]>);
 
     const message = getErrorMessage(err);
-    generalError.value = message;
+    setGeneralError(message);
     showToast(message, "error");
   } finally {
     loading.value = false;
@@ -175,8 +134,13 @@ async function handleSubmit() {
 
 <template>
   <div>
-    <!-- Header -->
+    <!-- Header with icon -->
     <div class="mb-6 text-center">
+      <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-950">
+        <svg class="h-8 w-8 text-brand-600 dark:text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" />
+        </svg>
+      </div>
       <h2 class="text-2xl font-bold tracking-tight">Create an account</h2>
       <p class="mt-2 text-sm text-[var(--color-muted-foreground)]">
         Start managing your finances with Satta Ledger
@@ -198,19 +162,26 @@ async function handleSubmit() {
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-2">
           <label for="reg-first" class="label-text">First name</label>
-          <input
-            id="reg-first"
-            v-model="form.first_name"
-            type="text"
-            required
-            autocomplete="given-name"
-            placeholder="John"
-            class="input-field"
-            :class="{ 'border-red-500 ring-red-500': fieldErrors.first_name }"
-            :aria-invalid="!!fieldErrors.first_name"
-            :aria-describedby="fieldErrors.first_name ? 'reg-first-error' : undefined"
-            :disabled="loading"
-          />
+          <div class="relative">
+            <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+              <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+              </svg>
+            </div>
+            <input
+              id="reg-first"
+              v-model="form.first_name"
+              type="text"
+              required
+              autocomplete="given-name"
+              placeholder="John"
+              class="input-field pl-10"
+              :class="{ 'border-red-500 ring-red-500': fieldErrors.first_name }"
+              :aria-invalid="!!fieldErrors.first_name"
+              :aria-describedby="fieldErrors.first_name ? 'reg-first-error' : undefined"
+              :disabled="loading"
+            />
+          </div>
           <p
             v-if="fieldErrors.first_name"
             id="reg-first-error"
@@ -222,34 +193,48 @@ async function handleSubmit() {
         </div>
         <div class="space-y-2">
           <label for="reg-last" class="label-text">Last name</label>
-          <input
-            id="reg-last"
-            v-model="form.last_name"
-            type="text"
-            autocomplete="family-name"
-            placeholder="Doe"
-            class="input-field"
-            :disabled="loading"
-          />
+          <div class="relative">
+            <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+              <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+              </svg>
+            </div>
+            <input
+              id="reg-last"
+              v-model="form.last_name"
+              type="text"
+              autocomplete="family-name"
+              placeholder="Doe"
+              class="input-field pl-10"
+              :disabled="loading"
+            />
+          </div>
         </div>
       </div>
 
       <!-- Email -->
       <div class="space-y-2">
         <label for="reg-email" class="label-text">Email address</label>
-        <input
-          id="reg-email"
-          v-model="form.email"
-          type="email"
-          required
-          autocomplete="email"
-          placeholder="you@example.com"
-          class="input-field"
-          :class="{ 'border-red-500 ring-red-500': fieldErrors.email }"
-          :aria-invalid="!!fieldErrors.email"
-          :aria-describedby="fieldErrors.email ? 'reg-email-error' : undefined"
-          :disabled="loading"
-        />
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <input
+            id="reg-email"
+            v-model="form.email"
+            type="email"
+            required
+            autocomplete="email"
+            placeholder="you@example.com"
+            class="input-field pl-10"
+            :class="{ 'border-red-500 ring-red-500': fieldErrors.email }"
+            :aria-invalid="!!fieldErrors.email"
+            :aria-describedby="fieldErrors.email ? 'reg-email-error' : undefined"
+            :disabled="loading"
+          />
+        </div>
         <p
           v-if="fieldErrors.email"
           id="reg-email-error"
@@ -263,19 +248,26 @@ async function handleSubmit() {
       <!-- Password -->
       <div class="space-y-2">
         <label for="reg-password" class="label-text">Password</label>
-        <input
-          id="reg-password"
-          v-model="form.password"
-          type="password"
-          required
-          autocomplete="new-password"
-          placeholder="Create a strong password"
-          class="input-field"
-          :class="{ 'border-red-500 ring-red-500': fieldErrors.password }"
-          :aria-invalid="!!fieldErrors.password"
-          :aria-describedby="fieldErrors.password ? 'reg-password-error' : 'reg-password-strength'"
-          :disabled="loading"
-        />
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <input
+            id="reg-password"
+            v-model="form.password"
+            type="password"
+            required
+            autocomplete="new-password"
+            placeholder="Create a strong password"
+            class="input-field pl-10"
+            :class="{ 'border-red-500 ring-red-500': fieldErrors.password }"
+            :aria-invalid="!!fieldErrors.password"
+            :aria-describedby="fieldErrors.password ? 'reg-password-error' : 'reg-password-strength'"
+            :disabled="loading"
+          />
+        </div>
         <p
           v-if="fieldErrors.password"
           id="reg-password-error"
@@ -298,12 +290,7 @@ async function handleSubmit() {
             </div>
             <span
               class="text-xs font-medium transition-colors duration-300"
-              :class="{
-                'text-red-500': passwordStrength.level === 1,
-                'text-yellow-500': passwordStrength.level === 2,
-                'text-brand-400': passwordStrength.level === 3,
-                'text-brand-600': passwordStrength.level === 4,
-              }"
+              :class="passwordStrength.textClass"
             >
               {{ passwordStrength.label }}
             </span>
@@ -315,31 +302,31 @@ async function handleSubmit() {
               :class="passwordChecks.length ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
               class="transition-colors duration-200"
             >
-              {{ passwordChecks.length ? '✓' : '○' }} 8+ characters
+              {{ passwordChecks.length ? '\u2713' : '\u25cb' }} 8+ characters
             </li>
             <li
               :class="passwordChecks.uppercase ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
               class="transition-colors duration-200"
             >
-              {{ passwordChecks.uppercase ? '✓' : '○' }} Uppercase letter
+              {{ passwordChecks.uppercase ? '\u2713' : '\u25cb' }} Uppercase letter
             </li>
             <li
               :class="passwordChecks.lowercase ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
               class="transition-colors duration-200"
             >
-              {{ passwordChecks.lowercase ? '✓' : '○' }} Lowercase letter
+              {{ passwordChecks.lowercase ? '\u2713' : '\u25cb' }} Lowercase letter
             </li>
             <li
               :class="passwordChecks.number ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
               class="transition-colors duration-200"
             >
-              {{ passwordChecks.number ? '✓' : '○' }} Number
+              {{ passwordChecks.number ? '\u2713' : '\u25cb' }} Number
             </li>
             <li
               :class="passwordChecks.special ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
               class="transition-colors duration-200"
             >
-              {{ passwordChecks.special ? '✓' : '○' }} Special character
+              {{ passwordChecks.special ? '\u2713' : '\u25cb' }} Special character
             </li>
           </ul>
         </div>
@@ -348,24 +335,31 @@ async function handleSubmit() {
       <!-- Confirm Password -->
       <div class="space-y-2">
         <label for="reg-confirm" class="label-text">Confirm password</label>
-        <input
-          id="reg-confirm"
-          v-model="form.confirm_password"
-          type="password"
-          required
-          autocomplete="new-password"
-          placeholder="Re-enter your password"
-          class="input-field"
-          :class="{
-            'border-red-500 ring-red-500': fieldErrors.confirm_password || (form.confirm_password && form.password !== form.confirm_password)
-          }"
-          :aria-invalid="!!(fieldErrors.confirm_password || (form.confirm_password && form.password !== form.confirm_password))"
-          :aria-describedby="
-            fieldErrors.confirm_password ? 'reg-confirm-error' :
-            (form.confirm_password && form.password !== form.confirm_password) ? 'reg-confirm-mismatch' : undefined
-          "
-          :disabled="loading"
-        />
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <input
+            id="reg-confirm"
+            v-model="form.confirm_password"
+            type="password"
+            required
+            autocomplete="new-password"
+            placeholder="Re-enter your password"
+            class="input-field pl-10"
+            :class="{
+              'border-red-500 ring-red-500': fieldErrors.confirm_password || (form.confirm_password && form.password !== form.confirm_password)
+            }"
+            :aria-invalid="!!(fieldErrors.confirm_password || (form.confirm_password && form.password !== form.confirm_password))"
+            :aria-describedby="
+              fieldErrors.confirm_password ? 'reg-confirm-error' :
+              (form.confirm_password && form.password !== form.confirm_password) ? 'reg-confirm-mismatch' : undefined
+            "
+            :disabled="loading"
+          />
+        </div>
         <p
           v-if="fieldErrors.confirm_password"
           id="reg-confirm-error"
@@ -411,7 +405,6 @@ async function handleSubmit() {
 
         <div v-show="showPreferences" class="border-t border-[var(--color-border)] px-4 py-3 space-y-3">
           <!-- Timezone -->
-          
           <div class="space-y-1">
             <label for="reg-timezone" class="label-text text-xs">Timezone</label>
             <select
@@ -426,7 +419,6 @@ async function handleSubmit() {
             </select>
           </div>
           <!-- Currency & Language Row -->
-         
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1">
               <label for="reg-currency" class="label-text text-xs">Currency</label>
@@ -455,7 +447,6 @@ async function handleSubmit() {
               </select>
             </div>
           </div>
-
         </div>
       </div>
 

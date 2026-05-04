@@ -309,13 +309,21 @@ class AuthService:
             raise ValueError("No account found with this email address.")
 
         user.set_password(new_password)
-        await user.asave(update_fields=["password"])
+
+        # OTP verified → email ownership proven → mark verified if not already
+        if not user.is_email_verified:
+            user.is_email_verified = True
+            update_fields = ["password", "is_email_verified"]
+        else:
+            update_fields = ["password"]
+
+        await user.asave(update_fields=update_fields)
 
         # Clean up cache
         await sync_to_async(cache.delete)(cache_key)
         await sync_to_async(cache.delete)(attempts_key)
 
-        logger.info(f"Password reset confirmed (async): user={user.email}")
+        logger.info(f"Password reset confirmed (async): user={user.email}, email_verified={user.is_email_verified}")
 
     # =========================================================================
     # Sensitive Actions — Identity Confirmation

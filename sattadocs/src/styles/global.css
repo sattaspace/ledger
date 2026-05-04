@@ -1,0 +1,273 @@
+@layer base, starlight, theme, components, utilities;
+
+@import '@astrojs/starlight-tailwind';
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+/* SattaSpace Brand Theme */
+@theme {
+    /* Typography */
+    --font-sans: 'Inter', 'Atkinson Hyperlegible', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+
+    /* SattaSpace Primary Colors - Deep Purple to Indigo */
+    --color-accent-50: oklch(0.97 0.02 270);
+    --color-accent-100: oklch(0.93 0.04 270);
+    --color-accent-200: oklch(0.87 0.08 270);
+    --color-accent-300: oklch(0.78 0.12 270);
+    --color-accent-400: oklch(0.68 0.16 270);
+    --color-accent-500: oklch(0.58 0.18 270);
+    --color-accent-600: oklch(0.50 0.18 270);
+    --color-accent-700: oklch(0.42 0.16 270);
+    --color-accent-800: oklch(0.35 0.14 270);
+    --color-accent-900: oklch(0.28 0.10 270);
+    --color-accent-950: oklch(0.20 0.08 270);
+
+    /* Neutral Gray Scale */
+    --color-gray-50: oklch(0.98 0.005 270);
+    --color-gray-100: oklch(0.95 0.01 270);
+    --color-gray-200: oklch(0.90 0.015 270);
+    --color-gray-300: oklch(0.82 0.02 270);
+    --color-gray-400: oklch(0.70 0.025 270);
+    --color-gray-500: oklch(0.55 0.03 270);
+    --color-gray-600: oklch(0.45 0.03 270);
+    --color-gray-700: oklch(0.37 0.025 270);
+    --color-gray-800: oklch(0.28 0.02 270);
+    --color-gray-900: oklch(0.20 0.015 270);
+    --color-gray-950: oklch(0.12 0.01 270);
+}
+
+/* Custom Component Styles */
+@layer components {
+    /* Hero section improvements */
+    .hero {
+        padding: 3rem 2rem;
+        gap: 3rem;
+    }
+
+    .hero .tagline {
+        font-size: 1.25rem;
+        line-height: 1.6;
+        opacity: 0.9;
+        max-width: 40ch;
+    }
+
+    .hero h1 {
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    /* Hero image styling - for logo/icon */
+    .hero img {
+        max-width: 180px;
+        height: auto;
+        width: 180px;
+    }
+
+    /* Card Grid - prevent overflow issues */
+    .card-grid {
+        gap: 1rem;
+    }
+
+    /* Card improvements - NO transform, just style changes */
+    .card {
+        padding: 1.25rem;
+        border-radius: 0.75rem;
+        border: 1px solid var(--color-gray-200);
+        background: var(--color-gray-50);
+        /* Only transition specific properties, not transform */
+        transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+        /* Prevent content overflow */
+        overflow: hidden;
+    }
+
+    /* Hover without transform - prevents overlapping */
+    .card:hover {
+        border-color: var(--color-accent-400);
+        box-shadow: 0 0 0 1px var(--color-accent-400);
+    }
+
+    .card .title {
+        font-weight: 600;
+        font-size: 1.05rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .card .body {
+        color: var(--color-gray-600);
+        line-height: 1.6;
+    }
+
+    .card .body strong {
+        color: var(--color-gray-900);
+    }
+
+    /* Code block improvements */
+    pre {
+        border-radius: 0.75rem;
+        border: 1px solid var(--color-gray-200);
+    }
+
+    /* Link styling */
+    .sl-markdown-content a {
+        color: var(--color-accent-500);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        transition: color 0.2s ease;
+    }
+
+    .sl-markdown-content a:hover {
+        color: var(--color-accent-700);
+    }
+
+    /* Table improvements for better readability */
+    .sl-markdown-content table {
+        border-collapse: collapse;
+        width: 100%;
+        border-radius: 0.5rem;
+        overflow: hidden;
+    }
+
+    .sl-markdown-content th {
+        background: var(--color-gray-100);
+        font-weight: 600;
+        text-align: left;
+    }
+
+    .sl-markdown-content th,
+    .sl-markdown-content td {
+        padding: 0.75rem 1rem;
+        border: 1px solid var(--color-gray-200);
+    }
+
+    .sl-markdown-content tr:hover td {
+        background: var(--color-gray-50);
+    }
+
+    /* Better paragraph spacing */
+    .sl-markdown-content p {
+        line-height: 1.7;
+        margin-bottom: 1.25rem;
+    }
+
+    /* Section heading improvements */
+    .sl-markdown-content h2 {
+        margin-top: 2.5rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--color-gray-200);
+    }
+}
+
+/* Dark mode enhancements */
+[data-theme="dark"] {
+    --color-accent-400: oklch(0.72 0.16 270);
+    --color-accent-500: oklch(0.65 0.18 270);
+}
+
+[data-theme="dark"] .card {
+    background: var(--color-gray-900);
+    border-color: var(--color-gray-700);
+}
+
+[data-theme="dark"] .card .body {
+    color: var(--color-gray-400);
+}
+
+[data-theme="dark"] .card .body strong {
+    color: var(--color-gray-200);
+}
+
+[data-theme="dark"] .card:hover {
+    border-color: var(--color-accent-500);
+    box-shadow: 0 0 0 1px var(--color-accent-500);
+}
+
+[data-theme="dark"] pre {
+    border-color: var(--color-gray-700);
+}
+
+[data-theme="dark"] .sl-markdown-content th {
+    background: var(--color-gray-800);
+}
+
+[data-theme="dark"] .sl-markdown-content th,
+[data-theme="dark"] .sl-markdown-content td {
+    border-color: var(--color-gray-700);
+}
+
+[data-theme="dark"] .sl-markdown-content tr:hover td {
+    background: var(--color-gray-800);
+}
+
+[data-theme="dark"] .sl-markdown-content h2 {
+    border-bottom-color: var(--color-gray-700);
+}
+
+/* Smooth transitions - only for colors, not layout properties */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--color-gray-100);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--color-gray-400);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-500);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-track {
+    background: var(--color-gray-800);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: var(--color-gray-600);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-500);
+}
+
+/* Focus styles for accessibility */
+:focus-visible {
+    outline: 2px solid var(--color-accent-500);
+    outline-offset: 2px;
+}
+
+/* Print styles */
+@media print {
+    .sl-sidebar,
+    .sl-nav {
+        display: none;
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .hero {
+        padding: 2rem 1.5rem;
+        gap: 2rem;
+    }
+
+    .hero .tagline {
+        font-size: 1.1rem;
+    }
+
+    .hero img {
+        max-width: 120px;
+        width: 120px;
+    }
+}

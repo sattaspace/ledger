@@ -10,7 +10,9 @@
       "@layouts/*": ["src/layouts/*"],
       "@vue/*": ["src/components/vue/*"],
       "@astro/*": ["src/components/astro/*"],
-      "@styles/*": ["src/styles/*"]
+      "@styles/*": ["src/styles/*"],
+      "@utils/*": ["src/utils/*"],
+      "@composables/*": ["src/composables/*"]
     }
   }
 }

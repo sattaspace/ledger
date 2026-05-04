@@ -225,7 +225,7 @@ class BillingService:
             return None
 
         try:
-            sub = await Subscription.objects.select_related("plan").aget(
+            sub = await Subscription.objects.select_related("plan", "product").aget(
                 user=user, product=product
             )
             return sub
@@ -447,7 +447,7 @@ class BillingService:
         Returns a dict matching ``SubscriptionDetailSchema``.
         """
         await sync_to_async(prefetch_related_objects)(
-            subscription.plan,
+            [subscription.plan],
             Prefetch("access_entries", queryset=AccessEntry.objects.all()),
         )
 

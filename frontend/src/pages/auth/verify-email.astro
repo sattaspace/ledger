@@ -6,6 +6,6 @@ import VerifyEmailForm from "@/components/vue/VerifyEmailForm.vue";
 const email = Astro.url.searchParams.get("email") || undefined;
 ---
 
-<AuthLayout title="Verify Email — Satta Ledger" description="Verify your email address to activate your account.">
+<AuthLayout title="Verify Email — SattaBase" description="Verify your email address to activate your account.">
   <VerifyEmailForm client:only="vue" email={email} />
 </AuthLayout>

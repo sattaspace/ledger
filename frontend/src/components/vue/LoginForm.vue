@@ -3,10 +3,10 @@
 // Handles POST /auth/login → stores JWT tokens via auth.ts
 
 import { ref, reactive } from "vue";
-import { login } from "@/lib/auth";
-import { getErrorMessage } from "@/lib/auth";
+import { login, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import type { ApiError } from "@/lib/api";
+import { useFormErrors } from "@/composables";
 
 const form = reactive({
   email: "",
@@ -15,17 +15,8 @@ const form = reactive({
 });
 
 const loading = ref(false);
-const generalError = ref("");
-const fieldErrors = reactive<Record<string, string>>({
-  email: "",
-  password: "",
-});
 
-function clearErrors() {
-  generalError.value = "";
-  fieldErrors.email = "";
-  fieldErrors.password = "";
-}
+const { fieldErrors, generalError, clearErrors, setApiFieldErrors } = useFormErrors(["email", "password"]);
 
 function validateForm(): boolean {
   clearErrors();
@@ -64,16 +55,8 @@ async function handleSubmit() {
   } catch (err: unknown) {
     const apiErr = err as ApiError;
 
-    // Map field-level errors from API
-    if (apiErr.errors) {
-      for (const [field, messages] of Object.entries(apiErr.errors)) {
-        if (field === "email") {
-          fieldErrors.email = messages.join(" ");
-        } else if (field === "password" || field === "non_field_errors") {
-          fieldErrors.password = messages.join(" ");
-        }
-      }
-    }
+    // Map API-level field errors to local fieldErrors via composable
+    setApiFieldErrors(apiErr.errors as Record<string, string[]>);
 
     // Show general error as toast and inline
     const message = getErrorMessage(err);
@@ -87,8 +70,13 @@ async function handleSubmit() {
 
 <template>
   <div>
-    <!-- Header -->
+    <!-- Header with icon -->
     <div class="mb-6 text-center">
+      <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-950">
+        <svg class="h-8 w-8 text-brand-600 dark:text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+        </svg>
+      </div>
       <h2 class="text-2xl font-bold tracking-tight">Welcome back</h2>
       <p class="mt-2 text-sm text-[var(--color-muted-foreground)]">
         Sign in to your account to continue
@@ -109,19 +97,26 @@ async function handleSubmit() {
       <!-- Email -->
       <div class="space-y-2">
         <label for="login-email" class="label-text">Email address</label>
-        <input
-          id="login-email"
-          v-model="form.email"
-          type="email"
-          required
-          autocomplete="email"
-          placeholder="you@example.com"
-          class="input-field"
-          :class="{ 'border-red-500 ring-red-500': fieldErrors.email }"
-          :aria-invalid="!!fieldErrors.email"
-          :aria-describedby="fieldErrors.email ? 'login-email-error' : undefined"
-          :disabled="loading"
-        />
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <input
+            id="login-email"
+            v-model="form.email"
+            type="email"
+            required
+            autocomplete="email"
+            placeholder="you@example.com"
+            class="input-field pl-10"
+            :class="{ 'border-red-500 ring-red-500': fieldErrors.email }"
+            :aria-invalid="!!fieldErrors.email"
+            :aria-describedby="fieldErrors.email ? 'login-email-error' : undefined"
+            :disabled="loading"
+          />
+        </div>
         <p
           v-if="fieldErrors.email"
           id="login-email-error"
@@ -143,20 +138,27 @@ async function handleSubmit() {
             Forgot password?
           </a>
         </div>
-        <input
-          id="login-password"
-          v-model="form.password"
-          type="password"
-          required
-          autocomplete="current-password"
-          placeholder="Enter your password"
-          class="input-field"
-          :class="{ 'border-red-500 ring-red-500': fieldErrors.password }"
-          :aria-invalid="!!fieldErrors.password"
-          :aria-describedby="fieldErrors.password ? 'login-password-error' : undefined"
-          :disabled="loading"
-          @keyup.enter="handleSubmit"
-        />
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg class="h-4 w-4 text-[var(--color-muted-foreground)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <input
+            id="login-password"
+            v-model="form.password"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="Enter your password"
+            class="input-field pl-10"
+            :class="{ 'border-red-500 ring-red-500': fieldErrors.password }"
+            :aria-invalid="!!fieldErrors.password"
+            :aria-describedby="fieldErrors.password ? 'login-password-error' : undefined"
+            :disabled="loading"
+            @keyup.enter="handleSubmit"
+          />
+        </div>
         <p
           v-if="fieldErrors.password"
           id="login-password-error"
@@ -177,7 +179,7 @@ async function handleSubmit() {
           :disabled="loading"
         />
         <label for="login-remember" class="text-sm text-[var(--color-muted-foreground)]">
-          Remember me for 30 days
+          Remember me
         </label>
       </div>
 

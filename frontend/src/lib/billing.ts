@@ -116,21 +116,6 @@ export interface CheckoutInputSchema {
   return_url?: string;
 }
 
-// ─── Refund Schemas ───────────────────────────────────────────────────────
-
-export interface RefundInputSchema {
-  amount_cents?: number;
-  reason: string;
-}
-
-export interface RefundOutputSchema {
-  refund_id: number;
-  stripe_refund_id: string;
-  amount_cents: number;
-  currency: string;
-  status: string;
-}
-
 // ─── Proration Preview ───────────────────────────────────────────────────
 
 export interface ProrationPreviewOutputSchema {
@@ -196,12 +181,6 @@ export const billingApi = {
     const params: Record<string, string> = {};
     if (userCurrency) params.currency = userCurrency;
     return apiClient.get<ProductDetailSchema>(`/billing/products/${slug}`, { params });
-  },
-
-  async getPlansForProduct(slug: string, userCurrency?: string): Promise<PlanSchema[]> {
-    const params: Record<string, string> = {};
-    if (userCurrency) params.currency = userCurrency;
-    return apiClient.get<PlanSchema[]>(`/billing/products/${slug}/plans`, { params });
   },
 
   // ── Protected endpoints ──
@@ -271,15 +250,6 @@ export const billingApi = {
     return apiClient.post<{ portal_url: string }>(`/billing/portal${params}`);
   },
 
-  // ── Refund (F1: admin-only endpoint) ──
-
-  async refundSubscription(productSlug: string, payload: RefundInputSchema): Promise<RefundOutputSchema> {
-    return apiClient.post<RefundOutputSchema>(
-      `/billing/admin/subscriptions/${productSlug}/refund`,
-      payload,
-    );
-  },
-
   // ── Proration Preview ──
 
   async previewPlanChange(productSlug: string, planSlug: string, prorationBehavior: string = "create_prorations"): Promise<ProrationPreviewOutputSchema> {
@@ -314,21 +284,19 @@ export const billingApi = {
     }>("/billing/subscriptions/transactions", { params });
   },
 
-  // ── Customer Sync (F8) ──
+  // ── GDPR Data Export (Art. 20) ──
 
-  async syncCustomerData(): Promise<{
-    synced: boolean;
-    email?: string;
-    name?: string;
-    currency?: string;
+  async exportBillingData(): Promise<{
+    user: { email: string; name: string; user_id: number };
+    stripe_customer: Record<string, unknown>;
+    subscriptions: Record<string, unknown>[];
+    refunds: Record<string, unknown>[];
+    invoices: Record<string, unknown>[];
+    exported_at: string;
   }> {
-    return apiClient.post<{
-      synced: boolean;
-      email?: string;
-      name?: string;
-      currency?: string;
-    }>("/billing/admin/sync-customer");
+    return apiClient.get("/billing/export-data");
   },
+
 };
 
 // ─── User Currency Store (F13) ──────────────────────────────────────────────

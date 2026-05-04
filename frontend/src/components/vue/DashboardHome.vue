@@ -11,22 +11,20 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { getCurrentUser, requireAuth, getErrorMessage } from "@/lib/auth";
+import { useAuth } from "@/composables";
+import { useSubscription } from "@/composables";
+import { getErrorMessage } from "@/lib/auth";
 import {
   billingApi,
   getStatusStyle,
   formatPrice,
   formatDate,
-  getUserCurrency,
-  setUserCurrency,
 } from "@/lib/billing";
 import { showToast } from "@/lib/toast";
-import type { UserProfile } from "@/lib/auth";
 import type { SubscriptionOutputSchema, TransactionItemSchema } from "@/lib/billing";
 
-const user = ref<UserProfile | null>(null);
-const loading = ref(true);
-const subs = ref<SubscriptionOutputSchema[]>([]);
+const { user, loading, initAuth } = useAuth();
+const { subscriptions: subs, fetchSubscriptions, refetchSubscriptions } = useSubscription();
 const transactions = ref<TransactionItemSchema[]>([]);
 const portalLoading = ref(false);
 
@@ -109,36 +107,24 @@ const checklistProgress = computed(() => {
 // ── Lifecycle ──
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  const authenticated = await initAuth();
+  if (!authenticated) return;
 
+  // Fetch subscriptions via shared composable
   try {
-    user.value = await getCurrentUser();
+    await fetchSubscriptions();
 
-    // Set user currency globally
-    if (user.value.currency) {
-      setUserCurrency(user.value.currency);
-    }
-
-    // Fetch subscriptions
-    try {
-      subs.value = await billingApi.getSubscriptions();
-
-      // Fetch recent transactions for paid users
-      if (hasPaidSub.value) {
-        try {
-          const txResult = await billingApi.getTransactionHistory(5);
-          transactions.value = txResult.transactions;
-        } catch {
-          // Non-critical
-        }
+    // Fetch recent transactions for paid users
+    if (hasPaidSub.value) {
+      try {
+        const txResult = await billingApi.getTransactionHistory(5);
+        transactions.value = txResult.transactions;
+      } catch {
+        // Non-critical
       }
-    } catch {
-      // Billing may not be configured yet
     }
-  } catch (err) {
-    showToast(getErrorMessage(err), "error");
-  } finally {
-    loading.value = false;
+  } catch {
+    // Billing may not be configured yet
   }
 });
 
@@ -157,6 +143,26 @@ function getMemberSince(dateStr: string | null | undefined): string {
     month: "long",
     year: "numeric",
   });
+}
+
+function formatPeriodRange(start: string | null, end: string | null): string {
+  if (!start || !end) return "";
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en-US";
+  const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  const s = new Date(start).toLocaleDateString(locale, opts);
+  const e = new Date(end).toLocaleDateString(locale, opts);
+  return `${s} \u2013 ${e}`;
+}
+
+function formatStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    paid: "Paid",
+    draft: "Pending",
+    open: "Pending",
+    void: "Void",
+    uncollectible: "Uncollectible",
+  };
+  return map[status] || status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 async function openPortal() {
@@ -459,7 +465,7 @@ async function openPortal() {
             <h2 class="text-lg font-semibold">Recent Billing</h2>
             <a
               v-if="hasPaidSub"
-              href="/dashboard/billing"
+              href="/dashboard/billing/transactions"
               class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 font-medium flex items-center gap-1 transition-colors"
             >
               View all
@@ -494,28 +500,65 @@ async function openPortal() {
                 <div class="min-w-0">
                   <p class="text-sm font-medium truncate">{{ tx.description || 'Invoice' }}</p>
                   <p class="text-xs text-muted-foreground">
-                    {{ tx.number ? '#' + tx.number + ' · ' : '' }}
-                    {{ formatDate(tx.created) }}
-                    <span v-if="tx.card_brand" class="ml-1">
-                      · {{ tx.card_brand }} ****{{ tx.payment_method }}
+                    <span v-if="tx.number" class="mr-1">#{{ tx.number }}</span>
+                    <span v-if="tx.card_brand">
+                      {{ tx.card_brand }} ****{{ tx.payment_method }}
+                    </span>
+                    <span v-if="tx.period_start && tx.period_end" class="ml-1">
+                      · {{ formatPeriodRange(tx.period_start, tx.period_end) }}
                     </span>
                   </p>
                 </div>
               </div>
-              <div class="text-right shrink-0">
-                <p
-                  class="text-sm font-semibold"
-                  :class="tx.status === 'paid' ? 'text-foreground' : 'text-amber-600 dark:text-amber-400'"
-                >
-                  {{ formatPrice(Math.round(tx.amount_paid * 100), tx.currency) }}
-                </p>
-                <p class="text-[10px] font-semibold uppercase tracking-wide"
-                  :class="tx.status === 'paid'
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-amber-600 dark:text-amber-400'"
-                >
-                  {{ tx.status === 'paid' ? 'Paid' : tx.status }}
-                </p>
+              <div class="flex items-center gap-2 shrink-0">
+                <!-- PDF / View buttons -->
+                <div class="flex items-center gap-1">
+                  <a
+                    v-if="tx.pdf_url"
+                    :href="tx.pdf_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    title="Download PDF"
+                  >
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3" />
+                    </svg>
+                  </a>
+                  <a
+                    v-if="tx.hosted_url"
+                    :href="tx.hosted_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    title="View invoice"
+                  >
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                </div>
+                <div class="text-right">
+                  <p
+                    class="text-sm font-semibold"
+                    :class="tx.status === 'paid' ? 'text-foreground' : 'text-amber-600 dark:text-amber-400'"
+                  >
+                    {{ formatPrice(Math.round(tx.amount_paid * 100), tx.currency) }}
+                    <span v-if="tx.tax > 0" class="text-[10px] font-normal text-muted-foreground">
+                      + {{ formatPrice(Math.round(tx.tax * 100), tx.currency) }} tax
+                    </span>
+                  </p>
+                  <p class="text-[10px] font-semibold uppercase tracking-wide"
+                    :class="tx.status === 'paid'
+                      ? 'text-green-600 dark:text-green-400'
+                      : 'text-amber-600 dark:text-amber-400'"
+                  >
+                    {{ formatStatusLabel(tx.status) }}
+                    <span class="font-normal normal-case tracking-normal">
+                      · {{ formatDate(tx.created) }}
+                    </span>
+                  </p>
+                </div>
               </div>
             </div>
           </div>

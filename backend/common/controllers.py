@@ -34,6 +34,30 @@ from users.controllers import JWTAuth
 
 from billing.models import ServiceCredential, ServiceDomain
 from common.utils import generate_api_key
+from common.rate_limit import check_rate_limit_or_raise
+
+# Re-export from billing.admin_utils for consistency
+# (admin_utils is in the billing app which may not always be available,
+#  so common controllers use the rate_limit helper directly)
+from functools import wraps
+
+
+def _admin_write_rate_limit(func):
+    """Admin write rate limit for common controllers."""
+    @wraps(func)
+    async def wrapper(self, request, *args, **kwargs):
+        check_rate_limit_or_raise(request, "admin_write", max_attempts=30, window_seconds=60)
+        return await func(self, request, *args, **kwargs)
+    return wrapper
+
+
+def _admin_read_rate_limit(func):
+    """Admin read rate limit for common controllers."""
+    @wraps(func)
+    async def wrapper(self, request, *args, **kwargs):
+        check_rate_limit_or_raise(request, "admin_read", max_attempts=120, window_seconds=60)
+        return await func(self, request, *args, **kwargs)
+    return wrapper
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +88,7 @@ class AdminApiKeyController:
             "Filterable by service_domain_id and is_active."
         ),
     )
+    @_admin_read_rate_limit
     async def list_api_keys(
         self,
         request: HttpRequest,
@@ -105,6 +130,7 @@ class AdminApiKeyController:
         ]
         return {"meta": meta, "results": items}
 
+    @_admin_write_rate_limit
     @http_post(
         "/",
         response={201: ApiKeyCreateOutputSchema, 400: dict, 409: dict},
@@ -187,6 +213,7 @@ class AdminApiKeyController:
             ),
         }
 
+    @_admin_write_rate_limit
     @http_patch(
         "/{key_id}/revoke",
         response={200: MessageResponse, 404: dict},
@@ -224,6 +251,7 @@ class AdminApiKeyController:
             message=f"API key '{credential.api_key_prefix}...' has been revoked."
         )
 
+    @_admin_write_rate_limit
     @http_post(
         "/{key_id}/rotate",
         response={200: ApiKeyRotateOutputSchema, 404: dict},

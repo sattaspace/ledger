@@ -1493,3 +1493,95 @@ class ServiceCredential(TimeStampedModel):
         status = "active" if self.is_active else "revoked"
         return f"{self.name} ({self.api_key_prefix}...) [{status}]"
 
+
+
+# =============================================================================
+# AdminAuditLog (9.7 — Admin Action Audit Trail)
+# =============================================================================
+
+
+class AdminAuditLog(models.Model):
+    """Persists admin action audit trail for the billing admin endpoints.
+
+    Every admin mutation (product/plan/user/subscription changes) is recorded
+    here via the ``record_admin_action`` utility function or by the
+    ``log_admin_access`` decorator enhanced with DB persistence.  This provides
+    a queryable, paginated audit log that the admin dashboard can surface via
+    ``GET /admin/audit-log``.
+
+    The model intentionally uses ``auto_now_add`` for ``created_at`` (not
+    ``TimeStampedModel``) because audit entries must be immutable — the
+    ``updated_at`` field from ``TimeStampedModel`` would be misleading since
+    audit records are never edited after creation.
+    """
+
+    admin_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="admin_audit_logs",
+        db_index=True,
+        verbose_name=_("Admin User"),
+        help_text=_("The admin who performed this action"),
+    )
+    action = models.CharField(
+        _("Action"),
+        max_length=100,
+        db_index=True,
+        help_text=_(
+            "Action identifier, e.g. 'product.create', 'plan.update', "
+            "'subscription.override', 'refund.approve'"
+        ),
+    )
+    method = models.CharField(
+        _("HTTP Method"),
+        max_length=10,
+        blank=True,
+        default="",
+        help_text=_("HTTP method of the API call: GET, POST, PUT, PATCH, DELETE"),
+    )
+    path = models.CharField(
+        _("API Path"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("API path that was called, e.g. '/api/v1/admin/products/5'"),
+    )
+    ip_address = models.GenericIPAddressField(
+        _("IP Address"),
+        null=True,
+        blank=True,
+        help_text=_("IP address of the admin"),
+    )
+    status_code = models.PositiveIntegerField(
+        _("Status Code"),
+        null=True,
+        blank=True,
+        help_text=_("HTTP response status code"),
+    )
+    details = models.JSONField(
+        _("Details"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Additional details about the action: request body fields, "
+            "changed fields, before/after state, reason strings, etc."
+        ),
+    )
+    created_at = models.DateTimeField(
+        _("Created At"),
+        auto_now_add=True,
+        db_index=True,
+    )
+
+    class Meta:
+        db_table = "billing_admin_audit_log"
+        verbose_name = _("Admin Audit Log")
+        verbose_name_plural = _("Admin Audit Logs")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        admin = getattr(self.admin_user, "email", "unknown")
+        return f"[{self.created_at:%Y-%m-%d %H:%M}] {admin} → {self.action}"
+

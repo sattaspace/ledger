@@ -130,6 +130,16 @@ export async function register(payload: RegisterPayload): Promise<void> {
  * Logout — clear tokens and redirect
  */
 export async function logout(): Promise<void> {
+  // Blacklist the refresh token server-side before clearing local state.
+  // If blacklisting fails (network error, etc.) we still clear locally.
+  try {
+    const refreshToken = authHelpers.getRefreshToken();
+    if (refreshToken) {
+      await apiClient.post("/auth/token/blacklist", { refresh: refreshToken });
+    }
+  } catch {
+    // Continue with local cleanup even if blacklist fails
+  }
   try {
     await apiClient.post("/users/me/logout");
   } catch {
@@ -179,6 +189,24 @@ export async function changePassword(
     confirm_password,
   });
 }
+
+/**
+ * Confirm user identity via current password — POST /users/me/confirm-identity
+ *
+ * Reusable identity gate for sensitive operations (email change, account deletion).
+ * Rate-limited: 10 attempts per hour window.
+ * Returns success if password is correct.
+ */
+export async function confirmIdentity(current_password: string): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }>('/users/me/confirm-identity', {
+    current_password,
+  });
+}
+
+// NOTE (L1): POST /auth/token/verify is intentionally unused on the frontend.
+// Tokens are implicitly verified on each API request via JWT decode in api.ts.
+// The standalone verify endpoint is available as a utility but adds no UX value
+// since failed tokens already trigger automatic refresh or redirect to login.
 
 /**
  * Request email change — POST /users/me/change-email

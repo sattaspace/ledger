@@ -166,3 +166,6 @@ server.log
 local-*
 test
 prompt
+
+SattaAddressBackend/
+SattaAddressFrontend/

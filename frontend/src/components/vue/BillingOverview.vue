@@ -11,6 +11,7 @@
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { useSubscription } from "@/composables";
 import { showToast } from "@/lib/toast";
 import {
   billingApi,
@@ -24,6 +25,7 @@ import {
 import type {
   ProductSchema,
   SubscriptionOutputSchema,
+  SubscriptionDetailSchema,
   TransactionItemSchema,
 } from "@/lib/billing";
 
@@ -56,7 +58,7 @@ function redirectToReturnUrl(updated: 1 | 0) {
 const loading = ref(true);
 const loadError = ref(false);
 const products = ref<ProductSchema[]>([]);
-const subscriptions = ref<SubscriptionOutputSchema[]>([]);
+const { subscriptions, refetchSubscriptions } = useSubscription();
 const actionLoading = ref<string | null>(null);
 const transactions = ref<TransactionItemSchema[]>([]);
 const transactionsLoading = ref(false);
@@ -72,10 +74,6 @@ const showCancelModal = ref(false);
 const cancelModalSub = ref<SubscriptionOutputSchema | null>(null);
 // SEC-02: Cancel reason state
 const cancelReason = ref("");
-
-const activeSubscriptions = computed(() =>
-  subscriptions.value.filter((s) => ["active", "trialing", "past_due", "canceled"].includes(s.status)),
-);
 
 const hasPaidSubscription = computed(() =>
   subscriptions.value.some(
@@ -100,10 +98,7 @@ const stats = computed(() => {
   const nextEnd = subscriptions.value
     .filter((s) => s.current_period_end && s.status !== "expired")
     .sort((a, b) => new Date(a.current_period_end!).getTime() - new Date(b.current_period_end!).getTime());
-  const paidCount = active.filter((s) => {
-    const plan = subscriptions.value.find((sub) => sub.id === s.id);
-    return plan && !plan.plan_slug.includes("free");
-  });
+  const paidCount = active.filter((s) => !s.plan_slug.includes("free"));
 
   return {
     activeCount: active.length,
@@ -202,12 +197,8 @@ onMounted(async () => {
         subscriptions.value.map((s) => [s.product_slug, s.status])
       );
 
-      console.log("[PORTAL-SYNC] Calling syncSubscriptions...");
       const synced = await billingApi.syncSubscriptions();
-      console.log("[PORTAL-SYNC] Synced subscriptions:", JSON.stringify(
-        synced.map((s) => ({ product: s.product_slug, status: s.status, cancel_at_period_end: s.cancel_at_period_end }))
-      ));
-      subscriptions.value = synced;
+      await refetchSubscriptions();
 
       // PORTAL-CANCEL SYNC: Compare pre-portal vs synced state to show
       // the same feedback messages as the Cancel/Reactivate buttons.
@@ -232,11 +223,10 @@ onMounted(async () => {
         }
       }
     } catch (err) {
-      console.error("[PORTAL-SYNC] syncSubscriptions failed:", err);
       showToast("Failed to sync billing state from Stripe. Please reload the page.", "error", { duration: 5000 });
       // Fallback: re-fetch from local DB (webhook may have processed by now)
       try {
-        subscriptions.value = await billingApi.getSubscriptions();
+        await refetchSubscriptions();
       } catch {
         // Non-critical — data will refresh on next page load
       }
@@ -248,58 +238,67 @@ onMounted(async () => {
     }
   }
 
-    // UX-04: Error state — retry capability when initial data fetch fails
-    async function retryFetch() {
-      loading.value = true;
-      loadError.value = false;
-      await fetchInitialData();
-    }
-
-    async function fetchInitialData() {
-      try {
-        const [productsData, subsData] = await Promise.all([
-          billingApi.getProducts(),
-          billingApi.getSubscriptions(),
-        ]);
-        products.value = productsData;
-        subscriptions.value = subsData;
-
-        // Fetch user's preferred currency from auth/me (F13)
-        try {
-          const authData = await billingApi.getAuthMe();
-          if (authData?.user?.currency) {
-            const cur = authData.user.currency as string;
-            userCurrency.value = cur;
-            // Also update the global default so PlanComparison etc. benefit
-            setUserCurrency(cur);
-          }
-        } catch {
-          // Non-critical — falls back to "USD"
-        }
-
-        // UX-01: Auto-load initial billing history for paid subscribers
-        if (subsData.some(
-          (s) => ["active", "trialing", "past_due"].includes(s.status) && s.plan_slug !== "free",
-        )) {
-          try {
-            const txResult = await billingApi.getTransactionHistory(20);
-            transactions.value = txResult.transactions;
-            transactionsHasMore.value = txResult.has_more;
-          } catch {
-            // Non-critical — user can manually load
-          }
-        }
-      } catch (err) {
-        // UX-04 Fix: Set error state instead of just showing a toast
-        loadError.value = true;
-        showToast(getErrorMessage(err), "error");
-      } finally {
-        loading.value = false;
-      }
-    }
-
     await fetchInitialData();
-});
+  });
+
+  // UX-04: Error state — retry capability when initial data fetch fails
+  async function retryFetch() {
+    loading.value = true;
+    loadError.value = false;
+    await fetchInitialData();
+  }
+
+  // Moved out of onMounted so it's accessible from the template
+  async function fetchInitialData() {
+    try {
+      const [productsData] = await Promise.all([
+        billingApi.getProducts(),
+        refetchSubscriptions(),
+      ]);
+      products.value = productsData;
+
+      // Fetch user's preferred currency from auth/me (F13)
+      try {
+        const authData = await billingApi.getAuthMe();
+        if (authData?.user?.currency) {
+          const cur = authData.user.currency as string;
+          userCurrency.value = cur;
+          // Also update the global default so PlanComparison etc. benefit
+          setUserCurrency(cur);
+
+          // UX-03: Detect currency mismatch between user preference and
+          // the global default that was set by Navbar before this fetch
+          // completed (race condition recovery).
+          const prevGlobal = getUserCurrency();
+          if (prevGlobal && prevGlobal !== cur) {
+            currencyMismatch.value = true;
+            lockedCurrency.value = cur;
+          }
+        }
+      } catch {
+        // Non-critical — falls back to "USD"
+      }
+
+      // UX-01: Auto-load initial billing history for paid subscribers
+      if (subscriptions.value.some(
+        (s) => ["active", "trialing", "past_due"].includes(s.status) && s.plan_slug !== "free",
+      )) {
+        try {
+          const txResult = await billingApi.getTransactionHistory(20);
+          transactions.value = txResult.transactions;
+          transactionsHasMore.value = txResult.has_more;
+        } catch {
+          // Non-critical — user can manually load
+        }
+      }
+    } catch (err) {
+      // UX-04 Fix: Set error state instead of just showing a toast
+      loadError.value = true;
+      showToast(getErrorMessage(err), "error");
+    } finally {
+      loading.value = false;
+    }
+  }
 
 // UX-02: Cancel subscription modal — replaces simple toast confirmation
 function openCancelModal(sub: SubscriptionOutputSchema) {
@@ -397,7 +396,7 @@ async function executeCancel(productSlug: string, reason: string = "") {
     } else {
       showToast("Subscription canceled. Access continues until period end.", "success");
     }
-    subscriptions.value = await billingApi.getSubscriptions();
+    await refetchSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -410,7 +409,7 @@ async function handleReactivate(productSlug: string) {
   try {
     await billingApi.reactivateSubscription(productSlug);
     showToast("Subscription reactivated successfully.", "success");
-    subscriptions.value = await billingApi.getSubscriptions();
+    await refetchSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -450,9 +449,36 @@ async function switchCurrency(currency: string) {
   setUserCurrency(currency);
   currencyMismatch.value = false;
   try {
-    subscriptions.value = await billingApi.getSubscriptions();
+    await refetchSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
+  }
+}
+
+// M1: Subscription detail expand state
+const expandedSubSlug = ref<string | null>(null);
+const subDetails = ref<Map<string, SubscriptionDetailSchema>>(new Map());
+const subDetailLoading = ref<string | null>(null);
+
+async function toggleSubDetail(productSlug: string) {
+  if (expandedSubSlug.value === productSlug) {
+    expandedSubSlug.value = null;
+    return;
+  }
+  expandedSubSlug.value = productSlug;
+
+  // Already fetched — just toggle visibility
+  if (subDetails.value.has(productSlug)) return;
+
+  subDetailLoading.value = productSlug;
+  try {
+    const detail = await billingApi.getSubscriptionDetail(productSlug);
+    subDetails.value.set(productSlug, detail);
+  } catch (err) {
+    showToast(getErrorMessage(err), "error");
+    expandedSubSlug.value = null;
+  } finally {
+    subDetailLoading.value = null;
   }
 }
 
@@ -769,6 +795,23 @@ async function loadTransactions() {
 
               <!-- Right: Actions -->
               <div class="flex items-center gap-2 shrink-0">
+                <!-- M1: Toggle plan details -->
+                <button
+                  class="btn-ghost text-xs"
+                  :class="expandedSubSlug === sub.product_slug ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]'"
+                  :disabled="subDetailLoading === sub.product_slug"
+                  @click="toggleSubDetail(sub.product_slug)"
+                >
+                  <svg
+                    class="h-3.5 w-3.5 mr-1 transition-transform duration-200"
+                    :class="expandedSubSlug === sub.product_slug ? 'rotate-180' : ''"
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                  {{ subDetailLoading === sub.product_slug ? 'Loading...' : 'Details' }}
+                </button>
+
                 <!-- UX-09: Prominent Upgrade CTA for free plans -->
                 <a
                   v-if="sub.plan_slug === 'free'"
@@ -829,6 +872,105 @@ async function loadTransactions() {
                   {{ actionLoading === `fix-${sub.product_slug}` ? 'Opening...' : 'Fix Payment' }}
                 </button>
               </div>
+            </div>
+
+            <!-- M1: Plan Details (expandable — sibling of flex row, child of card) -->
+            <div
+              v-if="expandedSubSlug === sub.product_slug"
+              class="mt-4 pt-4 border-t border-border"
+            >
+              <!-- Loading skeleton for detail -->
+              <div v-if="subDetailLoading === sub.product_slug" class="space-y-3 animate-pulse">
+                <div class="h-4 w-32 rounded bg-[var(--color-muted)]"></div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div v-for="i in 4" :key="i" class="h-8 rounded bg-[var(--color-muted)]"></div>
+                </div>
+              </div>
+
+              <!-- Detail content -->
+              <template v-else-if="subDetails.get(sub.product_slug)">
+                <div class="space-y-4">
+                  <!-- Plan Features -->
+                  <div v-if="Object.keys(subDetails.get(sub.product_slug)!.plan.features).length > 0">
+                    <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)] mb-2">Plan Features</h4>
+                    <div class="grid gap-1.5 sm:grid-cols-2">
+                      <div
+                        v-for="(value, key) in subDetails.get(sub.product_slug)!.plan.features"
+                        :key="key"
+                        class="flex items-start gap-2 text-sm"
+                      >
+                        <svg class="h-4 w-4 shrink-0 mt-0.5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <div class="min-w-0">
+                          <span class="font-medium text-foreground">{{ key }}</span>
+                          <span class="text-[var(--color-muted-foreground)]">: {{ value }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Access Entries -->
+                  <div v-if="subDetails.get(sub.product_slug)!.plan.access_entries.length > 0">
+                    <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)] mb-2">Access Limits</h4>
+                    <div class="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                      <div
+                        v-for="entry in subDetails.get(sub.product_slug)!.plan.access_entries"
+                        :key="entry.key"
+                        class="flex items-center justify-between rounded-lg border border-border px-3 py-2"
+                      >
+                        <div class="min-w-0">
+                          <p class="text-sm font-medium truncate">{{ entry.key }}</p>
+                          <p v-if="entry.description" class="text-xs text-[var(--color-muted-foreground)] truncate">{{ entry.description }}</p>
+                        </div>
+                        <span
+                          class="ml-2 shrink-0 text-sm font-semibold"
+                          :class="typeof entry.value === 'boolean'
+                            ? (entry.value ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]')
+                            : 'text-foreground'
+                          "
+                        >
+                          {{ typeof entry.value === 'boolean' ? (entry.value ? 'Yes' : 'No') : entry.value }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Current Access Map (actual values the user has) -->
+                  <div v-if="Object.keys(subDetails.get(sub.product_slug)!.access).length > 0">
+                    <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)] mb-2">Your Current Access</h4>
+                    <div class="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                      <div
+                        v-for="(value, key) in subDetails.get(sub.product_slug)!.access"
+                        :key="key"
+                        class="flex items-center justify-between rounded-lg border border-border px-3 py-2"
+                      >
+                        <span class="text-sm text-[var(--color-muted-foreground)] truncate">{{ key }}</span>
+                        <span
+                          class="ml-2 shrink-0 text-sm font-semibold"
+                          :class="typeof value === 'boolean'
+                            ? (value ? 'text-brand-600 dark:text-brand-400' : 'text-[var(--color-muted-foreground)]')
+                            : 'text-foreground'
+                          "
+                        >
+                          {{ typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Plan metadata summary -->
+                  <div class="flex flex-wrap items-center gap-4 text-xs text-[var(--color-muted-foreground)]">
+                    <span>
+                      <span class="font-medium">Price:</span>
+                      {{ subDetails.get(sub.product_slug)!.plan.is_free ? 'Free' : formatPrice(subDetails.get(sub.product_slug)!.plan.price_cents, subDetails.get(sub.product_slug)!.plan.currency) + '/' + (subDetails.get(sub.product_slug)!.plan.billing_cycle === 'monthly' ? 'mo' : subDetails.get(sub.product_slug)!.plan.billing_cycle === 'yearly' ? 'yr' : 'lifetime') }}
+                    </span>
+                    <span v-if="subDetails.get(sub.product_slug)!.plan.trial_days > 0">
+                      <span class="font-medium">Trial:</span> {{ subDetails.get(sub.product_slug)!.plan.trial_days }} days
+                    </span>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -907,7 +1049,18 @@ async function loadTransactions() {
       <!-- Billing History (F11 — pulled from Stripe) -->
       <div v-if="hasPaidSubscription" class="mt-8">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold">Billing History</h2>
+          <div class="flex items-center gap-3">
+            <h2 class="text-lg font-semibold">Billing History</h2>
+            <a
+              href="/dashboard/billing/transactions"
+              class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 font-medium flex items-center gap-1 transition-colors"
+            >
+              View all
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </a>
+          </div>
           <button
             v-if="transactionsHasMore"
             :disabled="transactionsLoading"

@@ -3,25 +3,25 @@
 // Handles email verification via OTP (6-digit code sent to user's email)
 // POST /auth/verify-email/request → POST /auth/verify-email/confirm
 
-import { ref, reactive, onMounted, computed } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { requestEmailVerification, verifyEmail } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
+import { useCooldownTimer, useOtpInput } from "@/composables";
 
 const props = defineProps<{
   email?: string;
 }>();
 
 // ─── OTP input state ─────────────────────────────────────────────────────────
-const otpDigits = reactive(["", "", "", "", "", ""]);
-const otpRefs = ref<(HTMLInputElement | null)[]>([]);
+const { digits: otpDigits, otpValue, isComplete, refs: otpRefs, handleInput: handleOtpInput, handleKeydown: handleOtpKeydown, handlePaste: handleOtpPaste, reset: resetOtp, focusFirst: focusOtpInput } = useOtpInput(6);
 const loading = ref(false);
 const error = ref("");
 const done = ref(false);
-const resent = ref(false);
-const resendCooldown = ref(0);
 
-const otpValue = computed(() => otpDigits.join(""));
+
+// ─── Resend cooldown timer — uses composable ───────────────────────────────
+const { cooldown: resendCooldown, startCooldown } = useCooldownTimer(60);
 
 // ─── Email tracking ──────────────────────────────────────────────────────────
 const email = ref(props.email || "");
@@ -30,93 +30,6 @@ const requestingOtp = ref(false);
 
 // Determine if we're in the "enter email" phase or "enter OTP" phase
 const showEmailStep = computed(() => !email.value);
-
-// ─── Resend cooldown timer ───────────────────────────────────────────────────
-let cooldownInterval: ReturnType<typeof setInterval> | null = null;
-
-function startCooldown(seconds: number = 60) {
-  resendCooldown.value = seconds;
-  resent.value = true;
-  if (cooldownInterval) clearInterval(cooldownInterval);
-  cooldownInterval = setInterval(() => {
-    resendCooldown.value--;
-    if (resendCooldown.value <= 0) {
-      if (cooldownInterval) clearInterval(cooldownInterval);
-      cooldownInterval = null;
-      resent.value = false;
-    }
-  }, 1000);
-}
-
-// ─── Auto-focus helpers ─────────────────────────────────────────────────────
-function focusOtpInput(index: number) {
-  const el = otpRefs.value[index];
-  if (el) el.focus();
-}
-
-function handleOtpInput(index: number, event: Event) {
-  const target = event.target as HTMLInputElement;
-  const value = target.value.replace(/[^0-9]/g, "");
-
-  // Take only the last digit
-  otpDigits[index] = value.slice(-1);
-
-  // Auto-advance to next input
-  if (value && index < 5) {
-    focusOtpInput(index + 1);
-  }
-
-  // Auto-submit when all 6 digits are filled
-  if (otpValue.value.length === 6) {
-    handleVerify();
-  }
-}
-
-function handleOtpKeydown(index: number, event: KeyboardEvent) {
-  // Backspace: clear current and go back
-  if (event.key === "Backspace") {
-    if (!otpDigits[index] && index > 0) {
-      otpDigits[index - 1] = "";
-      focusOtpInput(index - 1);
-    } else {
-      otpDigits[index] = "";
-    }
-    event.preventDefault();
-  }
-  // Arrow left
-  if (event.key === "ArrowLeft" && index > 0) {
-    focusOtpInput(index - 1);
-    event.preventDefault();
-  }
-  // Arrow right
-  if (event.key === "ArrowRight" && index < 5) {
-    focusOtpInput(index + 1);
-    event.preventDefault();
-  }
-}
-
-function handleOtpPaste(event: ClipboardEvent) {
-  event.preventDefault();
-  const paste = event.clipboardData?.getData("text") || "";
-  const digits = paste.replace(/[^0-9]/g, "").slice(0, 6);
-
-  for (let i = 0; i < digits.length; i++) {
-    otpDigits[i] = digits[i];
-  }
-
-  // Focus on the next empty slot or the last one
-  const nextEmpty = otpDigits.findIndex((d) => !d);
-  if (nextEmpty !== -1) {
-    focusOtpInput(nextEmpty);
-  } else {
-    focusOtpInput(5);
-  }
-
-  // Auto-submit if all filled
-  if (digits.length === 6) {
-    handleVerify();
-  }
-}
 
 // ─── Request OTP ─────────────────────────────────────────────────────────────
 async function handleRequestOtp() {
@@ -167,8 +80,8 @@ async function handleVerify() {
     error.value = message;
     showToast(message, "error");
     // Clear OTP on error so user can re-enter
-    for (let i = 0; i < 6; i++) otpDigits[i] = "";
-    focusOtpInput(0);
+    resetOtp();
+    focusOtpInput();
   } finally {
     loading.value = false;
   }
@@ -176,7 +89,7 @@ async function handleVerify() {
 
 // ─── Resend OTP ──────────────────────────────────────────────────────────────
 async function handleResend() {
-  if (resent.value || !email.value) return;
+  if (resendCooldown.value > 0 || !email.value) return;
 
   error.value = "";
   try {
@@ -290,41 +203,48 @@ onMounted(() => {
         {{ error }}
       </div>
 
-      <!-- OTP Input -->
-      <div class="mt-6 flex items-center justify-center gap-2 sm:gap-3">
-        <div v-for="i in 6" :key="i">
-          <input
-            :ref="(el: any) => { otpRefs[i - 1] = el as HTMLInputElement; }"
-            type="text"
-            inputmode="numeric"
-            maxlength="1"
-            :value="otpDigits[i - 1]"
-            class="h-12 w-11 rounded-lg border border-input bg-transparent text-center text-xl font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 transition-colors disabled:opacity-50"
-            :class="{
-              'border-brand-500 ring-1 ring-brand-500': otpDigits[i - 1],
-              'border-red-500': !!error,
-            }"
-            :disabled="loading"
-            :aria-label="`Digit ${i} of 6`"
-            @input="handleOtpInput(i - 1, $event)"
-            @keydown="handleOtpKeydown(i - 1, $event)"
-            @paste="handleOtpPaste"
-          />
+      <form @submit.prevent="handleVerify" class="mt-6 space-y-6">
+        <!-- OTP Input -->
+        <div class="flex items-center justify-center gap-2 sm:gap-3">
+          <div v-for="i in 6" :key="i">
+            <input
+              :ref="(el: any) => { otpRefs[i - 1] = el as HTMLInputElement; }"
+              type="text"
+              inputmode="numeric"
+              maxlength="1"
+              :value="otpDigits[i - 1]"
+              class="h-12 w-11 rounded-lg border border-input bg-transparent text-center text-xl font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 transition-colors disabled:opacity-50"
+              :class="{
+                'border-brand-500 ring-1 ring-brand-500': otpDigits[i - 1],
+                'border-red-500': !!error,
+              }"
+              :disabled="loading"
+              :aria-label="`Digit ${i} of 6`"
+              @input="handleOtpInput(i - 1, $event)"
+              @keydown="handleOtpKeydown(i - 1, $event)"
+              @paste="handleOtpPaste"
+            />
+          </div>
         </div>
-      </div>
 
-      <!-- Loading indicator during verification -->
-      <div v-if="loading" class="mt-4 flex items-center justify-center gap-2 text-sm text-[var(--color-muted-foreground)]">
-        <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-        Verifying...
-      </div>
+        <!-- Submit button -->
+        <button
+          type="submit"
+          :disabled="loading || !isComplete"
+          class="btn-primary mx-auto flex w-auto items-center justify-center gap-2"
+          aria-label="Verify email"
+        >
+          <svg v-if="loading" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          {{ loading ? 'Verifying...' : 'Verify email' }}
+        </button>
+      </form>
 
       <!-- Resend -->
-      <div class="mt-6">
-        <p v-if="resent && resendCooldown > 0" class="text-sm text-[var(--color-muted-foreground)]">
+      <div class="mt-2">
+        <p v-if="resendCooldown > 0" class="text-sm text-[var(--color-muted-foreground)]">
           Resend code in <strong>{{ resendCooldown }}s</strong>
         </p>
         <button

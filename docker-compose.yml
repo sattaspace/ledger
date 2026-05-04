@@ -57,6 +57,15 @@ services:
       - "127.0.0.1:4321:4321" # Only accessible to local reverse proxy
     networks:
       - sattabase_net
+  
+  sb-sattadocs:
+    build: ./sattadocs
+    container_name: sb-sattadocs
+    restart: always
+    ports:
+      - "127.0.0.1:4322:4322" # Only accessible to local reverse proxy
+    networks:
+      - sattabase_net
 
   sb-celery:
     build: ./backend

@@ -14,8 +14,9 @@
  */
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
-import { getCurrentUser } from "@/lib/auth";
+import { requireAuth, getErrorMessage, getCurrentUser } from "@/lib/auth";
+import { useAuth } from "@/composables";
+import { useSubscription } from "@/composables";
 import { showToast } from "@/lib/toast";
 import {
   billingApi,
@@ -36,7 +37,7 @@ const emit = defineEmits<{ (e: "plan-changed"): void }>();
 
 const loading = ref(true);
 const product = ref<ProductDetailSchema | null>(null);
-const subscriptions = ref<SubscriptionOutputSchema[]>([]);
+const { subscriptions, refetchSubscriptions } = useSubscription();
 const actionLoading = ref<string | null>(null);
 const tosAccepted = ref(false);
 const prorationBehavior = ref<"create_prorations" | "none">("create_prorations");
@@ -144,12 +145,11 @@ onMounted(async () => {
       // Non-critical — fall back to global default
     }
 
-    const [productData, subsData] = await Promise.all([
+    const [productData] = await Promise.all([
       billingApi.getProductBySlug(props.slug, userCurrency),
-      billingApi.getSubscriptions(),
+      refetchSubscriptions(),
     ]);
     product.value = productData;
-    subscriptions.value = subsData;
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -271,7 +271,7 @@ async function confirmProrationChange() {
       showToast(`Plan change to ${result.plan_name} will take effect at your next billing cycle.`, 'success');
     }
     emit('plan-changed');
-    subscriptions.value = await billingApi.getSubscriptions();
+    await refetchSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), 'error');
   } finally {
@@ -366,7 +366,7 @@ async function executeChangePlan(planSlug: string) {
       if (result.reactivated || !result.checkout_url) {
         showToast("Subscription reactivated successfully.", "success");
         emit("plan-changed");
-        subscriptions.value = await billingApi.getSubscriptions();
+        await refetchSubscriptions();
         return;
       }
 
@@ -379,7 +379,7 @@ async function executeChangePlan(planSlug: string) {
     await billingApi.changePlan(props.slug, planSlug, prorationBehavior.value);
     const behaviorLabel = prorationBehavior.value === "none" ? " at next billing cycle" : " with proration";
     showToast(`Plan changed successfully${behaviorLabel}.`, "success");
-    subscriptions.value = await billingApi.getSubscriptions();
+    await refetchSubscriptions();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {

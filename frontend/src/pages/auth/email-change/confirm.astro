@@ -6,6 +6,6 @@ import EmailChangeConfirm from "@/components/vue/EmailChangeConfirm.vue";
 const token = Astro.url.searchParams.get("token") || undefined;
 ---
 
-<AuthLayout title="Confirm Email Change — Satta Ledger" description="Confirm your email change with the token sent to your email.">
+<AuthLayout title="Confirm Email Change — SattaBase" description="Confirm your email change with the token sent to your email.">
   <EmailChangeConfirm client:only="vue" token={token} />
 </AuthLayout>

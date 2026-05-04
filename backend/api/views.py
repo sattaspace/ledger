@@ -53,7 +53,69 @@ api = NinjaExtraAPI(
         "- `POST /billing/subscriptions/{product_slug}/checkout`\n"
         "- `POST /billing/portal`\n\n"
         "### Webhooks (signature-verified, no JWT)\n"
-        "- `POST /billing/webhooks/stripe`"
+        "- `POST /billing/webhooks/stripe`\n\n"
+        "## Admin Endpoints (`/api/v1/admin/`)  \n"
+        "All admin endpoints require JWT authentication with ``is_staff=True``.  \n"
+        "Write endpoints are rate-limited to 30 req/min; read endpoints to 120 req/min.\n\n"
+        "### Products & Domains\n"
+        "- `POST   /admin/products` — Create product\n"
+        "- `GET    /admin/products` — List products (paginated)\n"
+        "- `GET    /admin/products/{id}` — Product detail\n"
+        "- `PUT    /admin/products/{id}` — Update product\n"
+        "- `PATCH  /admin/products/{id}/toggle` — Activate/deactivate\n"
+        "- `DELETE /admin/products/{id}` — Soft-delete\n"
+        "- `POST   /admin/products/{id}/domains` — Add domain\n"
+        "- `PUT    /admin/domains/{id}` — Update domain\n"
+        "- `DELETE /admin/domains/{id}` — Remove domain\n\n"
+        "### Plans & Access Entries\n"
+        "- `POST   /admin/products/{id}/plans` — Create plan\n"
+        "- `GET    /admin/products/{id}/plans` — List plans (paginated)\n"
+        "- `GET    /admin/plans/{id}` — Plan detail with access entries\n"
+        "- `PUT    /admin/plans/{id}` — Update plan\n"
+        "- `PATCH  /admin/plans/{id}/toggle` — Toggle is_active\n"
+        "- `PATCH  /admin/plans/{id}/feature` — Toggle is_featured\n"
+        "- `POST   /admin/plans/{id}/duplicate` — Duplicate plan\n"
+        "- `DELETE /admin/plans/{id}` — Delete plan\n"
+        "- `POST   /admin/plans/{id}/access-entries` — Create access entry\n"
+        "- `PUT    /admin/access-entries/{id}` — Update access entry\n"
+        "- `DELETE /admin/access-entries/{id}` — Remove access entry\n"
+        "- `POST   /admin/plans/{id}/access-entries/bulk` — Bulk replace\n"
+        "- `GET    /admin/products/{id}/access-matrix` — Feature matrix\n\n"
+        "### Subscriptions\n"
+        "- `GET    /admin/subscriptions` — List (paginated, filterable)\n"
+        "- `GET    /admin/subscriptions/{id}` — Detail with access map\n"
+        "- `PATCH  /admin/subscriptions/{id}/override` — Override plan/status\n"
+        "- `PATCH  /admin/subscriptions/{id}/cancel` — Force cancel\n"
+        "- `PATCH  /admin/subscriptions/{id}/expire` — Force expire\n"
+        "- `PATCH  /admin/subscriptions/{id}/extend` — Extend period\n"
+        "- `GET    /admin/subscriptions/{id}/plan-changes` — Plan history (paginated)\n"
+        "- `GET    /admin/subscriptions/{id}/invoices` — Invoices (paginated)\n"
+        "- `GET    /admin/subscriptions/{id}/refunds` — Refunds (paginated)\n\n"
+        "### Users\n"
+        "- `GET    /admin/users` — List users (paginated, filterable)\n"
+        "- `GET    /admin/users/{id}` — User detail\n"
+        "- `PATCH  /admin/users/{id}/status` — Activate/deactivate\n"
+        "- `PATCH  /admin/users/{id}/role` — Change role\n"
+        "- `GET    /admin/users/{id}/audit` — User audit trail (paginated)\n\n"
+        "### Refunds\n"
+        "- `GET    /admin/refunds` — List refunds (paginated, filterable)\n"
+        "- `PATCH  /admin/refunds/{id}/approve` — Approve (two-person rule)\n"
+        "- `PATCH  /admin/refunds/{id}/reject` — Reject\n\n"
+        "### Metrics\n"
+        "- `GET  /admin/metrics/overview` — MRR, churn, trial conversion\n"
+        "- `GET  /admin/metrics/revenue` — Revenue by product/plan/month\n"
+        "- `GET  /admin/metrics/subscriptions` — Subscription funnel\n"
+        "- `GET  /admin/metrics/products` — Per-product metrics\n\n"
+        "### Audit Log\n"
+        "- `GET  /admin/audit-log` — Admin action log (paginated)\n\n"
+        "### Webhook Monitoring\n"
+        "- `GET  /admin/webhooks` — List webhook events (paginated)\n"
+        "- `POST /admin/webhooks/{id}/retry` — Retry failed webhook\n\n"
+        "### API Keys\n"
+        "- `GET   /admin/api-keys/` — List API keys (paginated)\n"
+        "- `POST  /admin/api-keys/` — Create API key\n"
+        "- `PATCH /admin/api-keys/{id}/revoke` — Revoke key\n"
+        "- `POST  /admin/api-keys/{id}/rotate` — Rotate key"
     ),
     urls_namespace="sattaledger",
     openapi_extra={
@@ -169,5 +231,19 @@ def unhandled_exception_handler(request, exc: Exception):
         status=500,
     )
 
+
+# =============================================================================
+# Explicitly import admin controllers that live outside the standard
+# ``controllers.py`` naming convention so ninja_extra registers them.
+# Must happen AFTER Django apps are loaded (here in api/views.py, not
+# in billing/__init__.py which runs too early — AppRegistryNotReady).
+# =============================================================================
+
+from billing import (  # noqa: E402, F401
+    admin_controller,  # 9.2–9.3 + 9.6: Products, Domains, Plans, Access Entries, Refunds
+    admin_subscription_controller,  # 9.4: Subscriptions
+    admin_user_controller,  # 9.5: Users
+    admin_metrics_controller,  # 9.7: Metrics, Audit, Webhooks
+)
 
 api.auto_discover_controllers()
