@@ -17,11 +17,12 @@
 8. [Backend — Service Layer](#8-backend--service-layer)
 9. [Backend — API Endpoints](#9-backend--api-endpoints)
 10. [Authentication System](#10-authentication-system)
-11. [Frontend — Library Layer](#11-frontend--library-layer)
-12. [Frontend — Components & Pages](#12-frontend--components--pages)
-13. [Security](#13-security)
-14. [Infrastructure](#14-infrastructure)
-15. [Conventions & Patterns](#15-conventions--patterns)
+11. [Service-to-Service API Key Authentication](#11-service-to-service-api-key-authentication)
+12. [Frontend — Library Layer](#12-frontend--library-layer)
+13. [Frontend — Components & Pages](#13-frontend--components--pages)
+14. [Security](#14-security)
+15. [Infrastructure](#15-infrastructure)
+16. [Conventions & Patterns](#16-conventions--patterns)
 
 ---
 
@@ -39,6 +40,7 @@ Satta Ledger is a full-stack multi-tenant SaaS application for personal accounti
 - **Stripe as billing engine** — all subscription lifecycle operations (checkout, renewal, cancellation, refund) go through Stripe APIs. The local database mirrors Stripe state via webhooks for fast reads and audit trails.
 - **Modular Stripe integration** — Stripe API calls are encapsulated in `billing/stripe/` sub-package (client, checkout, customer, portal, prices, gdpr, webhooks) rather than scattered across the codebase.
 - **Idempotent plan changes** — plan changes use a two-step preview-then-confirm flow with server-side tokens to prevent double-charges.
+- **Service-to-service API key authentication** — sister domain backends authenticate via `X-API-Key` header validated by `service_credential_middleware` (global Django middleware using ``@sync_and_async_middleware`` pattern for full ASGI compatibility). Keys are stored as SHA-256 hashes with `sb_live_` prefix, one active key per `ServiceDomain`. Enforcement mode (`API_KEY_ENFORCED`) allows gradual rollout.
 
 ---
 
@@ -83,10 +85,11 @@ Satta Ledger is a full-stack multi-tenant SaaS application for personal accounti
 
 1. **Frontend** — Vue component calls a function from `src/lib/auth.ts` or `src/lib/billing.ts`
 2. **API Client** — `src/lib/api.ts` wraps the call with JWT headers and error handling
-3. **Backend Router** — Ninja Extra auto-discovers controllers, routes to handler
-4. **Controller** — validates rate limit, parses payload via Pydantic schema
-5. **Service** — executes business logic (OTP generation, cache checks, DB writes, Stripe API calls)
-6. **Response** — serialized via `ModelSchema` / `Schema`, returned as JSON
+3. **Django Middleware** — `service_credential_middleware` validates `X-API-Key` if present (sets `request.service_credential`); CORS middleware handles domain origins; regular user auth untouched
+4. **Backend Router** — Ninja Extra auto-discovers controllers, routes to handler
+5. **Controller** — validates rate limit (per-IP for browser traffic, per-API-key for SDK traffic), parses payload via Pydantic schema
+6. **Service** — executes business logic (OTP generation, cache checks, DB writes, Stripe API calls)
+7. **Response** — serialized via `ModelSchema` / `Schema`, returned as JSON
 
 ### Authentication Flow
 
@@ -100,6 +103,36 @@ Login ──→ Validate credentials ──→ Issue JWT pair ──→ Record l
     └─ Refresh Token (7 days) — used to obtain new token pair
          │
          └─ 401 response → auto-refresh via api.ts → retry original request
+```
+
+### Service-to-Service (SDK) Authentication Flow
+
+```
+Sister Domain Backend (SDK)
+    │
+    │  X-API-Key: sb_live_...        ← service_credential_middleware validates
+    │  X-Service-Domain: docs.example.com  ← Cross-checked against credential
+    │  Authorization: Bearer <jwt>   (optional, for user-scoped endpoints)
+    │
+    ▼
+Django Middleware Layer
+    │  1. service_credential_middleware:
+    │     ├─ No X-API-Key → pass through (regular user auth)
+    │     ├─ Invalid prefix → 403 (or warn if enforcement off)
+    │     ├─ Missing X-Service-Domain → 400
+    │     ├─ Key not found → 403
+    │     ├─ Credential revoked → 403
+    │     ├─ Domain inactive → 403
+    │     ├─ Domain mismatch → 403
+    │     └─ Valid → set request.service_credential + request.service_domain_from_key
+    │
+    ▼
+Controller (e.g., auth/me)
+    │  Uses request.service_domain_from_key for domain-scoped access map
+    │  Rate limiter uses API key prefix as bucket (1000 req/hr)
+    │
+    ▼
+Response
 ```
 
 ### Subscription Billing Flow
@@ -174,10 +207,14 @@ sattaledger/
 │   │   └── ...
 │   ├── common/                       # Shared utilities
 │   │   ├── models.py                 # TimeStampedModel, SoftDeleteModel, ActivatorModel
-│   │   ├── permissions.py            # IsAuthenticated, IsAdmin, IsVerified, IsSelfOrAdmin
-│   │   ├── rate_limit.py             # check_rate_limit(), get_client_ip()
+│   │   ├── middleware.py             # service_credential_middleware (API key validation)
+│   │   ├── api_key_auth.py           # validate_api_key() utility (middleware-aware)
+│   │   ├── controllers.py            # AdminApiKeyController (CRUD endpoints)
+│   │   ├── schemas.py                # API key Pydantic schemas
+│   │   ├── permissions.py            # IsAuthenticated, IsAdmin, IsServiceAuthenticated
+│   │   ├── rate_limit.py             # check_rate_limit(), get_client_ip() (per-API-key buckets)
 │   │   ├── exceptions.py             # Custom APIException classes
-│   │   └── ...
+│   │   └── utils.py                  # generate_api_key(), pagination helpers
 │   ├── users/                        # User authentication & profile app
 │   │   ├── models.py                 # User, UserLoginHistory, Choice constants
 │   │   ├── managers.py               # CustomUserManager (sync + async)
@@ -381,8 +418,13 @@ npm run build
 | `JWT_ACCESS_TOKEN_MINUTES` | Access token lifetime | `60` |
 | `JWT_REFRESH_TOKEN_DAYS` | Refresh token lifetime | `7` |
 | `PUBLIC_API_BASE_URL` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
+| `SB_API_KEY_ENFORCED` | Reject invalid API keys (False = warn only) | `False` |
+| `SB_RATE_LIMIT_SDK_ATTEMPTS` | SDK rate limit (requests per window) | `1000` |
+| `SB_RATE_LIMIT_SDK_WINDOW` | SDK rate limit window (seconds) | `3600` |
 
 > **Note**: In production, `JWT_SIGNING_KEY` must be explicitly set and must differ from `SF_SECRET_KEY`. The server will refuse to start without it.
+>
+> **Note**: `SB_API_KEY_ENFORCED` defaults to `False` for gradual rollout. When `True`, all requests with an invalid or revoked `X-API-Key` receive an immediate 403 response. Set this to `True` before deploying SDK consumers to production.
 
 ---
 
@@ -542,6 +584,29 @@ Maps custom domains to products. Used for multi-product routing via `X-Service-D
 | `is_active` | BooleanField | default `True` | Whether domain is active |
 
 **Database table:** `billing_service_domain`
+
+#### ServiceCredential
+
+Stores API key credentials for service-to-service authentication. Each `ServiceDomain` can have one active credential at a time. The raw API key is **never stored** — only its SHA-256 hash is persisted. The raw key is returned only once at creation time and during rotation.
+
+Inherits from `TimeStampedModel` (auto `created_at` / `updated_at`).
+
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| `name` | CharField(100) | — | Human-readable label (e.g. "Finance App Production") |
+| `service_domain` | OneToOneField(ServiceDomain) | CASCADE, related `credential` | Associated domain |
+| `api_key_hash` | CharField(255) | unique, db_index | SHA-256 hash of raw API key |
+| `api_key_prefix` | CharField(12) | db_index | First 12 chars (e.g. `sb_live_aBcD`) for admin identification |
+| `permissions` | JSONField | default `dict` | Scoped permissions: `{'auth': True, 'billing_read': True}` |
+| `is_active` | BooleanField | default `True`, db_index | Whether key is valid |
+| `last_used_at` | DateTimeField | null | Last successful validation timestamp |
+| `created_by` | ForeignKey(User) | SET_NULL | Admin who created this credential |
+
+**Key format:** `sb_live_` + `secrets.token_urlsafe(32)` = 50 characters total.
+
+**Database table:** `billing_service_credential`
+
+**Django admin:** Read-only list view with bulk revoke action. Credentials are created via the API endpoint (`POST /admin/api-keys/`), not through the Django admin. See `billing/admin.py` → `ServiceCredentialAdmin`.
 
 #### AccessEntry
 
@@ -728,6 +793,7 @@ Daily revenue recognition entries for accounting (generated by Celery tasks).
 ### Model Relationship Hierarchy
 
 ```
+ServiceDomain → ServiceCredential (one-to-one)
 ServiceDomain → Product → Plan → AccessEntry
                              └── Subscription → Refund
                                           ├── Invoice → InvoiceLineItem
@@ -805,6 +871,19 @@ Billing schemas handle product/plan/subscription/invoice/refund request/response
 | `SubscriptionDetailSchema` | Full subscription with nested plan + access map | `GET /billing/subscriptions/{slug}` |
 | `ProrationPreviewOutputSchema` | subtotal, tax, total, next_billing, change_type, preview_token | Plan change preview |
 | `TransactionItemSchema` | id, type, amounts, hosted_url, pdf_url, card_brand | Transaction history |
+
+### Common API Key Schemas (`common/schemas.py`)
+
+Schemas for the admin API key management endpoints. These live in the `common` app because API key authentication is cross-app (used by billing, users, and future apps).
+
+| Schema | Type | Fields | Used By |
+|---|---|---|---|
+| `ApiKeyCreateInputSchema` | Request | `name` (str, 1-100), `service_domain_id` (int) | `POST /admin/api-keys/` |
+| `ApiKeyOutputSchema` | Response | id, name, api_key_prefix, service_domain, permissions, is_active, last_used_at, created_at, created_by | `GET /admin/api-keys/` |
+| `ApiKeyCreateOutputSchema` | Response | All OutputSchema fields + `raw_api_key`, `warning` | `POST /admin/api-keys/` (201) |
+| `ApiKeyRotateOutputSchema` | Response | id, name, old_prefix, new_api_key, new_prefix, service_domain, is_active, `warning` | `POST /admin/api-keys/{id}/rotate` |
+
+> **Security note:** The `raw_api_key` field is included only in creation and rotation responses. It is **never** stored in the database and cannot be recovered after the response is sent.
 
 ### Password Validation
 
@@ -1110,7 +1189,163 @@ Client IP is extracted from `X-Forwarded-For` header with `TRUSTED_PROXIES` CIDR
 
 ---
 
-## 11. Frontend — Library Layer
+## 11. Service-to-Service API Key Authentication
+
+Sister domain backends (e.g., `docs.sattaspace.com`, `finance.sattaspace.com`) authenticate against Sattabase using API keys rather than user JWT tokens. This enables server-to-server communication where the sister domain acts on behalf of its users.
+
+### Architecture Overview
+
+```
+┌─────────────────────────┐         ┌──────────────────────────────┐
+│  Sister Domain Backend    │         │     Sattabase Backend        │
+│  (uses @sattabase/sdk)    │         │     (Django Ninja + Daphne)   │
+│                           │         │                              │
+│  Config:                  │         │  Middleware Layer:           │
+│  - baseUrl                │ ──────> │  ┌─ service_credential_middleware │
+│  - apiKey (sb_live_...)  │  HTTP   │  │  Validates X-API-Key       │
+│  - serviceDomain          │         │  │  Cross-checks X-Service-    │
+│                           │  JSON   │  │    Domain against credential  │
+│  Every request includes:  │         │  └────────────────────────── │
+│  - X-API-Key header       │         │  Controller Layer:           │
+│  - X-Service-Domain header│         │  Uses request.service_       │
+│  - Authorization: Bearer  │         │    domain_from_key for       │
+│    (user JWT, optional)   │         │    domain-scoped data        │
+└─────────────────────────┘         └──────────────────────────────┘
+```
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `common/middleware.py` | `service_credential_middleware` — global Django middleware (``@sync_and_async_middleware`` pattern), validates `X-API-Key` on every request |
+| `common/api_key_auth.py` | `validate_api_key()` — standalone utility function (middleware-aware, skips if already validated) |
+| `common/controllers.py` | `AdminApiKeyController` — CRUD endpoints for API key management |
+| `common/schemas.py` | `ApiKeyCreateInputSchema`, `ApiKeyOutputSchema`, `ApiKeyCreateOutputSchema`, `ApiKeyRotateOutputSchema` |
+| `common/permissions.py` | `IsServiceAuthenticated` — permission class for endpoints requiring service identity |
+| `common/utils.py` | `generate_api_key()` — generates `sb_live_` + `token_urlsafe(32)` key |
+| `common/rate_limit.py` | `_get_sdk_rate_limit_params()` — switches rate limit bucket from per-IP to per-API-key for SDK traffic |
+| `billing/models.py` | `ServiceCredential` model — stores hashed keys with domain association |
+| `billing/admin.py` | `ServiceCredentialAdmin` — read-only Django admin with bulk revoke action |
+
+### service_credential_middleware (`common/middleware.py`)
+
+A Django middleware registered in ``MIDDLEWARE`` as ``common.middleware.service_credential_middleware`` (runs after CORS, before CSRF and auth). It uses Django 5.2's ``@sync_and_async_middleware`` decorator for full ASGI compatibility — the async path uses ``aget``/``aupdate`` ORM calls so the event loop is never blocked, while the sync path uses regular ``get``/``update`` calls for WSGI servers.
+
+It activates **only when `X-API-Key` header is present** — requests without the header pass through untouched, preserving regular user JWT authentication.
+
+**Validation flow:**
+
+1. Read `X-API-Key` from request headers. If absent, pass through immediately.
+2. Validate `sb_live_` prefix (fast reject without DB lookup).
+3. Verify `X-Service-Domain` header is also present (returns 400 if missing).
+4. SHA-256 hash the raw key, look up `ServiceCredential` by hash.
+5. Check `is_active` on both credential and service domain.
+6. **Cross-check**: verify the `X-Service-Domain` header value matches the domain bound to this credential (prevents domain spoofing).
+7. On success: attach `request.service_credential` and `request.service_domain_from_key`, update `last_used_at`.
+8. On failure: log warning. If `API_KEY_ENFORCED=True`, return JSON 403/400 response. If `False`, log and allow the request to continue.
+
+**Error response format:**
+
+```json
+{"detail": "Invalid API key. No credential found for the provided key.", "code": "api_key_forbidden"}
+```
+
+| Error Code | HTTP Status | Condition |
+|---|---|---|
+| `invalid_api_key_format` | 403 | Key doesn't start with `sb_live_` |
+| `missing_service_domain` | 400 | `X-API-Key` present but `X-Service-Domain` missing |
+| `api_key_forbidden` | 403 | No credential found for the provided key hash |
+| `api_key_revoked` | 403 | Credential exists but `is_active=False` |
+| `service_domain_inactive` | 403 | Associated `ServiceDomain.is_active=False` |
+| `domain_mismatch` | 403 | `X-Service-Domain` header doesn't match credential's domain |
+
+### Enforcement Mode (`API_KEY_ENFORCED`)
+
+| Setting | Behavior |
+|---|---|
+| `False` (default) | Invalid keys log a warning but the request continues. Used for gradual rollout — monitor logs for failed validations before enabling strict mode. |
+| `True` | Invalid/missing/revoked keys return an immediate 403 JSON response. **Must be set before deploying SDK consumers to production.** |
+
+### Admin API Key Endpoints (`common/controllers.py`)
+
+All endpoints require staff JWT authentication (`IsAuthenticated` + `IsAdmin` permissions).
+
+| Method | Route | Description | Rate Limit |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/api-keys/` | List all API keys (paginated, filterable by `service_domain_id` and `is_active`) | 120/min |
+| `POST` | `/api/v1/admin/api-keys/` | Create new API key. Raw key returned **only once** in the response. | 30/min |
+| `PATCH` | `/api/v1/admin/api-keys/{id}/revoke` | Revoke an API key (sets `is_active=False`). Immediately invalid. | 30/min |
+| `POST` | `/api/v1/admin/api-keys/{id}/rotate` | Rotate: revoke old key, create new one. New raw key returned **only once**. | 30/min |
+
+**Key creation example:**
+
+```bash
+curl -X POST /api/v1/admin/api-keys/ \
+  -H "Authorization: Bearer <staff_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Finance App Production", "service_domain_id": 1}'
+
+# Response (201):
+# {
+#   "id": 1,
+#   "name": "Finance App Production",
+#   "api_key_prefix": "sb_live_aBcD",
+#   "raw_api_key": "sb_live_aBcDeFgHiJkLmNoPqRsTuVwXyZ01234",  ← SAVE THIS NOW
+#   "service_domain": "finance.sattaspace.com",
+#   "is_active": true,
+#   "created_at": "2026-05-06T10:00:00Z",
+#   "warning": "Save this API key now. It cannot be recovered after this response."
+# }
+```
+
+### Per-API-Key Rate Limiting
+
+When a valid `X-API-Key` is present, the rate limiter (`common/rate_limit.py`) switches from per-IP buckets to per-API-key-prefix buckets with higher limits. This prevents a sister domain backend that proxies many users through a single IP from exhausting the shared bucket.
+
+| Traffic Type | Bucket | Max Attempts | Window |
+|---|---|---|---|
+| Browser/direct | `action:{user_id}:{client_ip}` | 5 (sensitive) | 3600s |
+| SDK/server-to-server | `action:{user_id}:sdk:{api_key_prefix}` | 1000 | 3600s |
+
+### `IsServiceAuthenticated` Permission (`common/permissions.py`)
+
+A declarative permission class that checks `request.service_credential` (set by the middleware). Can be applied to endpoints that require service identity:
+
+```python
+from common.permissions import IsServiceAuthenticated
+
+@http_get("/billing/auth/me")
+@permissions([IsServiceAuthenticated])
+async def auth_me(self, request):
+    # request.service_credential is guaranteed to be valid here
+    domain = request.service_domain_from_key.domain
+    return await BillingService.aget_auth_me_data(request.user, domain)
+```
+
+### Django Admin (`billing/admin.py`)
+
+The `ServiceCredentialAdmin` provides a read-only audit view:
+
+- **List display:** name, domain, api_key_prefix, is_active, last_used_at, created_by, created_at
+- **No add/change forms:** creation is API-only (prevents accidental admin creation without secure key storage)
+- **Actions:** "Revoke selected" (bulk `is_active=False`)
+- **Filters:** is_active, service_domain, created_at
+- **Search:** name, api_key_prefix, service_domain__domain
+
+### Key Generation Utility (`common/utils.py`)
+
+```python
+from common.utils import generate_api_key
+
+raw_key, prefix, key_hash = generate_api_key()
+# raw_key = "sb_live_aBcDeFgHiJkLmNoPqRsTuVwXyZ01234"  (50 chars)
+# prefix   = "sb_live_aBcD"                            (12 chars)
+# key_hash = "5f4dcc3b5aa765d..."                       (64 hex chars)
+```
+
+---
+
+## 12. Frontend — Library Layer
 
 ### API Client (`src/lib/api.ts`)
 
@@ -1257,7 +1492,7 @@ showToast(message, type?, options?)
 
 ---
 
-## 12. Frontend — Components & Pages
+## 13. Frontend — Components & Pages
 
 ### Auth Pages (unauthenticated)
 
@@ -1308,7 +1543,7 @@ The avatar system spans multiple layers:
 
 ---
 
-## 13. Security
+## 14. Security
 
 ### Middleware Stack
 
@@ -1389,7 +1624,7 @@ In production (`DEBUG=False`):
 
 ---
 
-## 14. Infrastructure
+## 15. Infrastructure
 
 ### Docker Compose
 
@@ -1442,7 +1677,7 @@ services:
 
 ---
 
-## 15. Conventions & Patterns
+## 16. Conventions & Patterns
 
 ### Backend Patterns
 

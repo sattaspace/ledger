@@ -126,3 +126,39 @@ class ApiKeyRotateOutputSchema(Schema):
         "Save this new API key now. The old key is immediately revoked and cannot be recovered.",
         description="Security warning",
     )
+
+
+# --- Analytics Schemas (C6) ---
+
+
+class ApiKeyUsageDaySchema(Schema):
+    """Single day of API key usage."""
+
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    requests: int = Field(..., description="Number of API requests on this day")
+
+
+class ApiKeyAnalyticsResponse(Schema):
+    """Response schema for API key usage analytics."""
+
+    credential_id: int
+    api_key_prefix: str
+    service_domain: str
+    period_days: int
+    total_requests: int
+    daily_usage: List[ApiKeyUsageDaySchema] = []
+
+
+class ApiKeyAnalyticsOverviewSchema(Schema):
+    """Response schema for aggregated analytics across all credentials."""
+
+    total_requests: int = Field(
+        ..., description="Total requests across all credentials in the period"
+    )
+    period_days: int = Field(
+        ..., description="Number of days in the analysis period"
+    )
+    credentials: dict = Field(
+        default={},
+        description="Map of credential_id → total requests",
+    )

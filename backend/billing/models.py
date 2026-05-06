@@ -99,6 +99,25 @@ class ServiceDomain(TimeStampedModel):
         db_index=True,
         help_text=_("Whether this domain is accepting requests"),
     )
+    webhook_url = models.URLField(
+        _("Webhook URL"),
+        blank=True,
+        default="",
+        help_text=_(
+            "URL to receive credential status change notifications "
+            "(revocation, rotation). Must be HTTPS in production."
+        ),
+    )
+    webhook_secret = models.CharField(
+        _("Webhook Secret"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_(
+            "HMAC-SHA256 secret for signing webhook payloads. "
+            "Shared with the sister domain to verify webhook authenticity."
+        ),
+    )
 
     class Meta:
         db_table = "billing_service_domain"

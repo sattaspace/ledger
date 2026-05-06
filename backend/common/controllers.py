@@ -27,6 +27,8 @@ from common.schemas import (
     ApiKeyOutputSchema,
     ApiKeyCreateOutputSchema,
     ApiKeyRotateOutputSchema,
+    ApiKeyAnalyticsResponse,
+    ApiKeyAnalyticsOverviewSchema,
 )
 
 # Import JWTAuth from users controllers — single auth class shared across apps
@@ -199,6 +201,21 @@ class AdminApiKeyController:
             request.META.get("REMOTE_ADDR"),
         )
 
+        # C4: Explicit audit log with request context.
+        try:
+            from common.audit import write_credential_audit
+            await sync_to_async(write_credential_audit)(
+                action="api_key.created",
+                credential=credential,
+                admin_user=request.user,
+                method=request.method,
+                path=request.path,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                status_code=201,
+            )
+        except Exception:
+            pass
+
         return {
             "id": credential.id,
             "name": credential.name,
@@ -246,6 +263,31 @@ class AdminApiKeyController:
             request.user.email,
             request.META.get("REMOTE_ADDR"),
         )
+
+        # C4: Explicit audit log with request context.
+        try:
+            from common.audit import write_credential_audit
+            await sync_to_async(write_credential_audit)(
+                action="api_key.revoked",
+                credential=credential,
+                admin_user=request.user,
+                method=request.method,
+                path=request.path,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                status_code=200,
+            )
+        except Exception:
+            pass
+
+        # C5: Dispatch webhook notification to sister domain.
+        try:
+            from common.webhooks import dispatch_credential_webhook
+            dispatch_credential_webhook(
+                event_type="credential.revoked",
+                credential=credential,
+            )
+        except Exception:
+            pass
 
         return MessageResponse(
             message=f"API key '{credential.api_key_prefix}...' has been revoked."
@@ -313,6 +355,38 @@ class AdminApiKeyController:
             request.META.get("REMOTE_ADDR"),
         )
 
+        # C4: Explicit audit log with request context.
+        try:
+            from common.audit import write_credential_audit
+            await sync_to_async(write_credential_audit)(
+                action="api_key.rotated",
+                credential=new_credential,
+                admin_user=request.user,
+                method=request.method,
+                path=request.path,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                status_code=200,
+                details={
+                    "old_credential_id": old_credential.id,
+                    "old_prefix": old_credential.api_key_prefix,
+                    "new_prefix": new_prefix,
+                },
+            )
+        except Exception:
+            pass
+
+        # C5: Dispatch webhook notification to sister domain.
+        try:
+            from common.webhooks import dispatch_credential_webhook
+            dispatch_credential_webhook(
+                event_type="credential.rotated",
+                credential=new_credential,
+                old_prefix=old_credential.api_key_prefix,
+                new_prefix=new_prefix,
+            )
+        except Exception:
+            pass
+
         return {
             "id": new_credential.id,
             "name": new_credential.name,
@@ -326,4 +400,75 @@ class AdminApiKeyController:
                 "Save this new API key now. The old key is immediately "
                 "revoked and cannot be recovered."
             ),
+        }
+
+    # =========================================================================
+    # C6 — Analytics endpoints
+    # =========================================================================
+
+    @http_get(
+        "/analytics",
+        response=ApiKeyAnalyticsOverviewSchema,
+        summary="API key analytics overview",
+        description=(
+            "Get aggregated API key usage statistics across all credentials "
+            "for the last N days. Uses Redis counters for real-time data."
+        ),
+    )
+    @_admin_read_rate_limit
+    async def analytics_overview(
+        self,
+        request: HttpRequest,
+        days: int = Query(7, ge=1, le=90),
+    ):
+        """Return aggregated usage stats across all credentials."""
+        from common.analytics import get_all_usage_stats
+
+        all_stats = await sync_to_async(get_all_usage_stats)(days=days)
+        total = sum(all_stats.values())
+
+        return {
+            "total_requests": total,
+            "period_days": days,
+            "credentials": all_stats,
+        }
+
+    @http_get(
+        "/{key_id}/analytics",
+        response=ApiKeyAnalyticsResponse,
+        summary="Single credential analytics",
+        description=(
+            "Get daily API key usage statistics for a specific credential. "
+            "Returns daily request counts for the last N days."
+        ),
+    )
+    @_admin_read_rate_limit
+    async def credential_analytics(
+        self,
+        request: HttpRequest,
+        key_id: int,
+        days: int = Query(30, ge=1, le=90),
+    ):
+        """Return daily usage stats for a single credential."""
+        try:
+            credential = await sync_to_async(
+                ServiceCredential.objects.select_related("service_domain").get
+            )(id=key_id)
+        except ServiceCredential.DoesNotExist:
+            raise NotFoundException("API key not found.")
+
+        from common.analytics import get_usage_stats
+
+        daily = await sync_to_async(get_usage_stats)(
+            credential_id=credential.id, days=days
+        )
+        total = sum(d["requests"] for d in daily)
+
+        return {
+            "credential_id": credential.id,
+            "api_key_prefix": credential.api_key_prefix,
+            "service_domain": credential.service_domain.domain,
+            "period_days": days,
+            "total_requests": total,
+            "daily_usage": daily,
         }

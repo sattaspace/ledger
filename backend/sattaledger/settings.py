@@ -83,6 +83,7 @@ MIDDLEWARE = [
     "common.cors_middleware.service_domain_cors_middleware",
     "django.middleware.common.CommonMiddleware",
     "ninja.compatibility.files.fix_request_files_middleware",  # <-- ADD THIS LINE
+    "common.middleware.service_credential_middleware", 
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",

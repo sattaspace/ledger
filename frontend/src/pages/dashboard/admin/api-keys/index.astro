@@ -1,0 +1,11 @@
+---
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import ApiKeysAdmin from "@/components/vue/ApiKeysAdmin.vue";
+---
+
+<DashboardLayout
+  title="API Keys — Admin — SattaBase"
+  description="Manage service credentials for sister domain authentication."
+>
+  <ApiKeysAdmin client:only="vue" />
+</DashboardLayout>

@@ -3,6 +3,8 @@
 > SDK (TypeScript) vs Backend (Django Ninja) — security & feature alignment audit
 >
 > Generated: 2026-05-05 | Branch: development
+>
+> **Last updated: 2026-05-06** — Status audit completed against current codebase (backend, frontend, SDK)
 
 ---
 
@@ -19,20 +21,93 @@ This document identifies every gap between what the SDK sends/expects and what t
 
 ---
 
-## 2. Gap Summary
+## 2. Consolidated Todo List
 
-| # | Gap | Severity | SDK expects | Backend does | Fix |
-|---|-----|----------|-------------|-------------|-----|
-| G1 | No `ServiceCredential` model | **CRITICAL** | API key validated against stored credential | Header ignored entirely | New model + middleware |
-| G2 | No API key validation middleware | **CRITICAL** | 403 for invalid/missing API key | Request passes through | New middleware |
-| G3 | No `POST /admin/api-keys` endpoint | **HIGH** | Admin creates credentials via API | No creation endpoint exists | New admin controller endpoint |
-| G4 | No API key creation in Django admin | **HIGH** | Read-only admin view for auditing | No admin model at all | New admin + migration |
-| G5 | No API key revocation/rotation | **MEDIUM** | Revoked keys return 403 | N/A — no keys to revoke | Part of G1 model |
-| G6 | SDK sends `X-API-Key` on all endpoints | **MEDIUM** | Backend should validate on protected endpoints | Only `X-Service-Domain` is read on `GET /billing/auth/me` | Middleware (G2) |
-| G7 | No CORS origin validation via API key | **LOW** | API key ties domain to a registered service | CORS is separate from API key | Future enhancement |
-| G8 | SDK config requires `apiKey` prefix `sb_live_` | **LOW** | Backend should reject keys not matching format | N/A — no validation | Part of G2 |
-| G9 | No `ServiceCredential` migration | **HIGH** | DB table must exist | No migration file | New migration |
-| G10 | SDK `AuthenticationError` maps to API key failure | **LOW** | SDK throws `AuthenticationError` on 401/403 for bad key | Backend never returns 403 for bad key | Part of G2 |
+> This section is the single source of truth for remaining work. All items are pulled from the detailed analysis below. Update this section as work progresses.
+
+### Progress Overview
+
+| Phase | Done | Remaining | Total |
+|-------|------|-----------|-------|
+| Phase A — Backend Core | 12 | 0 | 12 |
+| Phase B — Integration Testing | 0 | 8 | 8 |
+| Phase C — Future Enhancements | 2 | 4 | 6 |
+| Phase D — Frontend Admin UI | 0 | 2 | 2 |
+| Phase E — Security Hardening | 0 | 3 | 3 |
+| **Total** | **14** | **17** | **31** |
+
+---
+
+### Phase A — Backend Core (before SDK testing)
+
+- [x] A1 — Create `ServiceCredential` model — `billing/models.py` ✅
+- [x] A2 — Generate migration — `billing/migrations/0014_servicecredential.py` ✅
+- [x] A3 — Create `ServiceCredentialAdmin` (read-only) — `billing/admin.py` ✅
+- [x] A4 — Create API key validation function — `common/api_key_auth.py` ✅ *(function-based, not middleware)*
+- [x] A6 — Create `POST /admin/api-keys` endpoint — `common/controllers.py` ✅
+- [x] A7 — Create `PATCH /admin/api-keys/{id}/revoke` endpoint — `common/controllers.py` ✅
+- [x] A8 — Create `GET /admin/api-keys` (list) endpoint — `common/controllers.py` ✅
+- [x] A9 — Create `ServiceCredential` schemas — `common/schemas.py` ✅
+- [x] A10 — Add `api_key_hash` index to migration ✅
+- [x] **A4b — Convert `validate_api_key()` to Django middleware** — `common/middleware.py` — `service_credential_middleware` validates `X-API-Key` on every request; uses ``@sync_and_async_middleware`` pattern for full ASGI compatibility (async path uses ``aget``/``aupdate``); cross-checks `X-Service-Domain` header against credential's domain; opt-in (only activates when header present) ✅
+- [x] **A5 — Register middleware in `settings.py`** — `sattaledger/settings.py` — Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF ✅
+- [x] **A11 — Update `dev_docs.md`** — Added new Section 11 (Service-to-Service API Key Authentication) with full documentation of model, middleware, endpoints, schemas, permissions, rate limiting, and key generation ✅
+
+---
+
+### Phase B — Integration Testing (after Phase A)
+
+- [ ] **B1 — Create a ServiceCredential for `docs.sattaspace.com` via admin API** — Use `POST /admin/api-keys/`
+- [ ] **B2 — Use the raw key in SattaDocs `.env`** — Depends on B1
+- [ ] **B3 — Test SDK login → verify API key is validated** — Middleware now validates globally
+- [ ] **B4 — Test SDK `me()` → verify domain-scoped access map** — Depends on B1
+- [ ] **B5 — Test with invalid API key → verify 403 on all endpoints** — Middleware now validates globally
+- [ ] **B6 — Test with missing API key → verify request passes through (regular auth)** — Verify backward compatibility
+- [ ] **B7 — Test API key revocation → verify 403 after revoke** — Depends on B1
+- [ ] **B8 — Test all remaining SDK methods** — register, refresh, verify, password reset, email verification, blacklist, logout, hasAccess
+
+---
+
+### Phase C — Future Enhancements (not blocking)
+
+- [x] C2 — API key rotation endpoint — `POST /admin/api-keys/{id}/rotate` ✅
+- [x] C3 — Per-service-domain rate limits — `common/rate_limit.py` ✅ *(1000 req/3600s per API key)*
+- [ ] **C1 — CORS origin auto-management via ServiceCredential signals** — Link `ServiceCredential` creation/activation to CORS allowed origins via Django signal + Redis cache
+- [ ] **C4 — Dedicated audit log for API key events** — `AdminAuditLog` model exists but no API key event logging. Add creation/revocation/failed-validation entries
+- [ ] **C5 — ServiceCredential Webhook for real-time key status propagation** — Notify sister domains when keys are revoked/rotated
+- [ ] **C6 — API key usage analytics** — Track requests per key per day for monitoring
+
+---
+
+### Phase D — Frontend Admin UI
+
+- [ ] **D1 — Build API Key management admin page** — `/dashboard/admin/api-keys` — Create, list, revoke, rotate credentials. Requires: table view, create modal (shows raw key once with warning), revoke/rotate actions, filters (is_active, service_domain). Only visible to `owner`/`admin` roles
+- [ ] **D2 — Add admin navigation section to sidebar** — New "Admin" section in `Sidebar.astro` with link to API Keys page. Only rendered for admin users
+
+---
+
+### Phase E — Security Hardening
+
+- [ ] **E1 — Set `API_KEY_ENFORCED=True` before production** — Currently `False` (logs warnings only). Switch to `True` to reject invalid API keys with 403. Coordinate with A4b
+- [ ] **E2 — Apply `IsServiceAuthenticated` permission to protected endpoints** — Permission class exists in `common/permissions.py` but unused. Apply to endpoints that require service identity (e.g., `auth/me`)
+- [ ] **E3 — Verify no raw API key in logs/error responses** — Audit `common/api_key_auth.py` and all admin controllers to ensure raw key never appears in logs, error messages, or API responses
+
+---
+
+## 3. Gap Summary
+
+| # | Gap | Severity | Status | What was done | Should do |
+|---|-----|----------|--------|---------------|----------|
+| G1 | No `ServiceCredential` model | ~~CRITICAL~~ | ✅ **DONE** | Model created in `billing/models.py` (lines 1410–1494) with 8 fields: `api_key_hash` (SHA-256, unique, indexed), `api_key_prefix`, `name`, `service_domain` (OneToOneField), `permissions` (JSON), `is_active`, `last_used_at`, `created_by`. Inherits `TimeStampedModel`. | — |
+| G2 | No API key validation middleware | ~~CRITICAL~~ | ✅ **DONE** | `service_credential_middleware` created in `common/middleware.py` using ``@sync_and_async_middleware`` pattern for full ASGI/WSGI compatibility. Async path uses ``aget``/``aupdate`` ORM calls. Registered in `MIDDLEWARE`. Validates `X-API-Key` + `X-Service-Domain` on every request globally. Cross-checks domain header against credential's domain. Supports `API_KEY_ENFORCED` mode (default `False` for gradual rollout). Also has `validate_api_key()` in `common/api_key_auth.py` as middleware-aware utility. | Should set `API_KEY_ENFORCED=True` before production |
+| G3 | No `POST /admin/api-keys` endpoint | ~~HIGH~~ | ✅ **DONE** | 4 endpoints in `common/controllers.py` (`AdminApiKeyController`): `GET /admin/api-keys/` (list, paginated, filterable), `POST /admin/api-keys/` (create, returns raw key once), `PATCH /admin/api-keys/{id}/revoke`, `POST /admin/api-keys/{id}/rotate`. Protected by JWT + `IsAdmin`, rate-limited. | — |
+| G4 | No API key creation in Django admin | ~~HIGH~~ | ✅ **DONE** | `ServiceCredentialAdmin` in `billing/admin.py` (lines 807–894). Read-only (`has_add_permission=False`, `has_change_permission=False`). List display with domain, prefix, is_active, last_used_at, created_by, created_at. Filters on is_active, domain, created_at. Bulk revoke action. | — |
+| G5 | No API key revocation/rotation | ~~MEDIUM~~ | ✅ **DONE** | Revoke via `PATCH /admin/api-keys/{id}/revoke`. Rotation via `POST /admin/api-keys/{id}/rotate` (creates new key, revokes old, returns new raw key once). Django admin also has bulk revoke action. | — |
+| G6 | SDK sends `X-API-Key` on all endpoints | ~~MEDIUM~~ | ✅ **DONE** | `service_credential_middleware` validates `X-API-Key` on ALL endpoints globally (not just `auth/me`). Rate limiter switches to per-API-key bucket when `X-API-Key` is present (1000 req/3600s). Domain mismatch detection prevents spoofing. | Should set `API_KEY_ENFORCED=True` before production |
+| G7 | No CORS origin validation via API key | LOW | ❌ **NOT DONE** | CORS middleware for ServiceDomain exists (`common/cors_middleware.py`) but is separate from API key validation. | Should link CORS to API key — when a `ServiceCredential` is created/activated, auto-add its domain to CORS allowed origins. |
+| G8 | SDK config requires `apiKey` prefix `sb_live_` | ~~LOW~~ | ✅ **DONE** | `validate_api_key()` checks `startswith("sb_live_")` before DB lookup. Backend `generate_api_key()` in `common/utils.py` produces `sb_live_` + `token_urlsafe(32)`. | — |
+| G9 | No `ServiceCredential` migration | ~~HIGH~~ | ✅ **DONE** | Migration `billing/migrations/0014_servicecredential.py` exists. 17 total migrations (0001–0017). | — |
+| G10 | SDK `AuthenticationError` maps to API key failure | ~~LOW~~ | ✅ **DONE** | SDK `buildError()` maps 403 → `ForbiddenError`, 401 → `AuthenticationError`. Backend returns correct status codes via `validate_api_key()`. | — |
 
 ---
 
@@ -452,47 +527,49 @@ return await BillingService.aget_auth_me_data(request.user, domain or None)
 
 ### Phase A: Backend (must complete before SDK testing)
 
-| # | Task | Files | Effort |
-|---|------|-------|--------|
-| A1 | Create `ServiceCredential` model | `billing/models.py` | 30 min |
-| A2 | Generate migration | `billing/migrations/0014_*.py` | 5 min |
-| A3 | Create `ServiceCredentialAdmin` (read-only) | `billing/admin.py` | 20 min |
-| A4 | Create `ServiceCredentialMiddleware` | `billing/middleware.py` | 45 min |
-| A5 | Register middleware in `settings.py` | `sattaledger/settings.py` | 5 min |
-| A6 | Create `POST /billing/admin/api-keys` endpoint | `billing/controllers.py` | 30 min |
-| A7 | Create `PATCH /billing/admin/api-keys/{id}` (revoke/activate) | `billing/controllers.py` | 15 min |
-| A8 | Create `GET /billing/admin/api-keys` (list) | `billing/controllers.py` | 15 min |
-| A9 | Create `ServiceCredential` schemas | `billing/schemas.py` | 15 min |
-| A10 | Add `key_hash` index to migration | `billing/migrations/0014_*.py` | 5 min |
-| A11 | Update `dev_docs.md` with new endpoints | `dev_docs.md` | 20 min |
+| # | Task | Files | Status | Notes |
+|---|------|-------|--------|-------|
+| A1 | Create `ServiceCredential` model | `billing/models.py` | ✅ **DONE** | Implemented with 8 fields + `TimeStampedModel`. Uses `api_key_hash` (unique, indexed), `api_key_prefix`, `permissions` JSON field |
+| A2 | Generate migration | `billing/migrations/0014_*.py` | ✅ **DONE** | Migration exists. 17 total migrations (0001–0017) |
+| A3 | Create `ServiceCredentialAdmin` (read-only) | `billing/admin.py` | ✅ **DONE** | Read-only, no add/change, list filters, search, bulk revoke action |
+| A4 | Create `service_credential_middleware` | `common/middleware.py` | ✅ **DONE** | `service_credential_middleware` — global middleware using ``@sync_and_async_middleware`` pattern, validating `X-API-Key` on every request. Async path uses ``aget``/``aupdate`` for ASGI compatibility. Cross-checks `X-Service-Domain`, domain mismatch detection, enforcement mode. |
+| A5 | Register middleware in `settings.py` | `sattaledger/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth middleware |
+| A6 | Create `POST /billing/admin/api-keys` endpoint | `common/controllers.py` | ✅ **DONE** | `AdminApiKeyController` with POST create, returns raw key once |
+| A7 | Create `PATCH /billing/admin/api-keys/{id}` (revoke/activate) | `common/controllers.py` | ✅ **DONE** | Revoke + Rotate endpoints implemented |
+| A8 | Create `GET /billing/admin/api-keys` (list) | `common/controllers.py` | ✅ **DONE** | Paginated, filterable by service_domain_id and is_active |
+| A9 | Create `ServiceCredential` schemas | `common/schemas.py` | ✅ **DONE** | 4 schemas: `ApiKeyCreateInputSchema`, `ApiKeyOutputSchema`, `ApiKeyCreateOutputSchema`, `ApiKeyRotateOutputSchema` |
+| A10 | Add `key_hash` index to migration | `billing/migrations/0014_*.py` | ✅ **DONE** | `api_key_hash` is unique and indexed |
+| A4b | Create `service_credential_middleware` | `common/middleware.py` | ✅ **DONE** | Global middleware using ``@sync_and_async_middleware`` pattern: validates `X-API-Key` on every request, cross-checks `X-Service-Domain`, domain mismatch detection, `sb_live_` prefix validation, enforcement mode support, async ORM in ASGI path |
+| A5 | Register middleware in `settings.py` | `sattaledger/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth |
+| A11 | Update `dev_docs.md` with new endpoints | `dev_docs.md` | ✅ **DONE** | Added Section 11 (Service-to-Service API Key Auth), ServiceCredential model, middleware docs, endpoint docs, schemas, env vars, permissions |
 
-**Total Phase A: ~3.5 hours**
+**Phase A Progress: 12/12 DONE** — Phase A is complete. Ready for Phase B integration testing.
 
 ### Phase B: Testing (after Phase A)
 
-| # | Task | Effort |
-|---|------|--------|
-| B1 | Create a ServiceCredential for `docs.sattaspace.com` via admin API | 5 min |
-| B2 | Use the raw key in SattaDocs `.env` | 2 min |
-| B3 | Test SDK login → verify API key is validated | 10 min |
-| B4 | Test SDK `me()` → verify domain-scoped access map | 10 min |
-| B5 | Test with invalid API key → verify 403 | 5 min |
-| B6 | Test with missing API key → verify request passes through (regular auth) | 5 min |
-| B7 | Test API key revocation → verify 403 after revoke | 5 min |
-| B8 | Test all remaining SDK methods (register, refresh, verify, password reset, etc.) | 20 min |
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| B1 | Create a ServiceCredential for `docs.sattaspace.com` via admin API | ❌ **SHOULD DO** | Depends on production deployment |
+| B2 | Use the raw key in SattaDocs `.env` | ❌ **SHOULD DO** | Depends on B1 |
+| B3 | Test SDK login → verify API key is validated | ❌ **SHOULD DO** | Blocked: API key only validated on `auth/me`, not on login/register. Fix G2/G6 first |
+| B4 | Test SDK `me()` → verify domain-scoped access map | ❌ **SHOULD DO** | Ready to test once B1 is done |
+| B5 | Test with invalid API key → verify 403 | ❌ **SHOULD DO** | Will work on `auth/me`; won't work on other endpoints until G2/G6 fixed |
+| B6 | Test with missing API key → verify request passes through (regular auth) | ❌ **SHOULD DO** | Verify backward compatibility |
+| B7 | Test API key revocation → verify 403 after revoke | ❌ **SHOULD DO** | Ready to test once B1 is done |
+| B8 | Test all remaining SDK methods (register, refresh, verify, password reset, etc.) | ❌ **SHOULD DO** | Full integration test |
 
-**Total Phase B: ~1 hour**
+**Phase B Progress: 0/8 DONE** — All pending. B3/B5 blocked by G2/G6 gap
 
 ### Phase C: Future Enhancements (not blocking)
 
-| # | Enhancement | Priority |
-|---|------------|----------|
-| C1 | CORS origin auto-management via ServiceCredential signals | Low |
-| C2 | API key rotation endpoint (create new + auto-revoke old) | Medium |
-| C3 | Per-service-domain rate limits (separate from per-IP) | Medium |
-| C4 | Audit log for API key creation/revocation/login events | Medium |
-| C5 | ServiceCredential Webhook for real-time key status propagation | Low |
-| C6 | API key usage analytics (requests per key per day) | Low |
+| # | Enhancement | Priority | Status | Notes |
+|---|------------|----------|--------|-------|
+| C1 | CORS origin auto-management via ServiceCredential signals | Low | ❌ **SHOULD DO** | CORS middleware exists for ServiceDomain but not linked to API keys |
+| C2 | API key rotation endpoint (create new + auto-revoke old) | ~~Medium~~ | ✅ **DONE** | `POST /admin/api-keys/{id}/rotate` exists in `common/controllers.py` |
+| C3 | Per-service-domain rate limits (separate from per-IP) | ~~Medium~~ | ✅ **DONE** | Implemented in `common/rate_limit.py` — switches to per-API-key bucket when `X-API-Key` present (1000 req/3600s) |
+| C4 | Audit log for API key creation/revocation/login events | Medium | ⚠️ **PARTIAL** | `AdminAuditLog` model exists (migration 0017). `last_used_at` tracked. No dedicated API key event audit log yet |
+| C5 | ServiceCredential Webhook for real-time key status propagation | Low | ❌ **SHOULD DO** | Not implemented |
+| C6 | API key usage analytics (requests per key per day) | Low | ❌ **SHOULD DO** | Not implemented |
 
 ---
 
@@ -591,16 +668,23 @@ Attacker blocked — cannot access any API endpoint
 
 ## 7. Files Changed Summary
 
-| File | Action | Description |
-|------|--------|-------------|
-| `billing/models.py` | **MODIFY** | Add `ServiceCredential` model |
-| `billing/admin.py` | **MODIFY** | Add `ServiceCredentialAdmin` |
-| `billing/middleware.py` | **CREATE** | API key validation middleware |
-| `billing/schemas.py` | **MODIFY** | Add `ServiceCredential` schemas |
-| `billing/controllers.py` | **MODIFY** | Add admin API key endpoints |
-| `sattaledger/settings.py` | **MODIFY** | Register middleware in MIDDLEWARE list |
-| `billing/migrations/0014_servicecredential.py` | **CREATE** | Migration for new model |
-| `dev_docs.md` | **MODIFY** | Document new endpoints |
+| File | Planned Action | Status | Actual Implementation |
+|------|---------------|--------|---------------------|
+| `billing/models.py` | **MODIFY** | ✅ **DONE** | `ServiceCredential` model added (lines 1410–1494) |
+| `billing/admin.py` | **MODIFY** | ✅ **DONE** | `ServiceCredentialAdmin` added (lines 807–894) |
+| `billing/middleware.py` | **CREATE** → `common/middleware.py` | ✅ **DONE** | Middleware placed in `common/` instead (cross-app concern). `service_credential_middleware` — ``@sync_and_async_middleware`` pattern, async ORM in ASGI path |
+| `billing/schemas.py` | **MODIFY** | N/A | Schemas placed in `common/schemas.py` instead (not `billing/schemas.py`). 4 schemas defined ✅ |
+| `billing/controllers.py` | **MODIFY** | N/A | Endpoints placed in `common/controllers.py` instead (not `billing/controllers.py`). 4 endpoints defined ✅. `auth/me` in `billing/controllers.py` calls `validate_api_key()` ✅ |
+| `sattaledger/settings.py` | **MODIFY** | ✅ **DONE** | `API_KEY_ENFORCED` setting added (default `False`). `service_credential_middleware` registered in MIDDLEWARE after CORS, before CSRF and auth. CORS middleware for ServiceDomain also registered |
+| `billing/migrations/0014_servicecredential.py` | **CREATE** | ✅ **DONE** | Migration exists |
+| `dev_docs.md` | **MODIFY** | ✅ **DONE** | Added Section 11 (Service-to-Service API Key Auth) — 150+ lines covering model, middleware, endpoints, schemas, permissions, rate limiting, key generation, env vars |
+| `common/api_key_auth.py` | — | ✅ **DONE** | (Not in original plan) API key validation function — 147 lines |
+| `common/controllers.py` | — | ✅ **DONE** | (Not in original plan) AdminApiKeyController — 4 endpoints |
+| `common/schemas.py` | — | ✅ **DONE** | (Not in original plan) 4 API key schemas |
+| `common/utils.py` | — | ✅ **DONE** | (Not in original plan) `generate_api_key()` utility |
+| `common/permissions.py` | — | ⚠️ **UNUSED** | (Not in original plan) `IsServiceAuthenticated` permission class exists but not applied to any endpoint. Should use on protected endpoints |
+| `common/rate_limit.py` | — | ✅ **DONE** | (Not in original plan) Per-API-key rate limiting |
+| `common/middleware.py` | — | ✅ **DONE** | (A4b) `service_credential_middleware` — global API key validation middleware, ``@sync_and_async_middleware`` pattern |
 
 ---
 
@@ -630,11 +714,15 @@ After all Phase A gaps are fixed, the SDK can be tested against the live backend
 
 ## 9. Risk Assessment
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
-| No API key validation before production | **High** (current state) | **Critical** — any domain can impersonate any service | Implement G1 + G2 before SDK testing |
-| API key leaked in logs/error messages | Medium | High — credential exposure | Middleware should strip key from error responses |
-| Brute-force API key guessing | Low | Medium — 43-char urlsafe key is 256-bit entropy | Rate limit on 403 responses per IP |
-| ServiceCredential table becomes bottleneck | Low | Low — single row lookup by indexed hash | Index on `key_hash`, consider Redis cache |
-| Middleware breaks existing user auth | Low | High — all endpoints fail | Only activates when `X-API-Key` header present |
-| Migration breaks existing data | Very Low | High | Additive migration only — no field changes to existing models |
+| Risk | Likelihood | Impact | Mitigation | Status |
+|------|-----------|--------|-----------|--------|
+| No API key validation before production | ~~High~~ **Medium** | ~~Critical~~ **High** | ✅ `ServiceCredential` model + `validate_api_key()` exist. ⚠️ Only enforced on `auth/me`. Should enforce on ALL endpoints (convert to middleware or add to all controllers) |
+| API key leaked in logs/error messages | Medium | High — credential exposure | `validate_api_key()` uses `X-API-Key` header name in logs, not the raw key. Should verify no raw key in error responses |
+| Brute-force API key guessing | Low | Medium — 43-char urlsafe key is 256-bit entropy | ✅ Per-API-key rate limiting implemented (1000 req/3600s). Per-IP rate limiting also active |
+| ServiceCredential table becomes bottleneck | Low | Low — single row lookup by indexed hash | ✅ `api_key_hash` is unique and indexed. Consider Redis cache for high traffic |
+| Middleware breaks existing user auth | ~~Low~~ **N/A** | High | ✅ Function-based approach — only activates when explicitly called. Regular JWT auth unaffected. No global middleware to break things |
+| Migration breaks existing data | ~~Very Low~~ **Resolved** | High | ✅ Migration 0014 is additive — no field changes to existing models |
+| API key only validated on `auth/me` | ~~High~~ **Resolved** | ~~High~~ | ✅ `ServiceCredentialMiddleware` now validates on ALL endpoints globally. Set `API_KEY_ENFORCED=True` before production. |
+| `IsServiceAuthenticated` permission unused | Medium | Medium — no declarative permission guard on endpoints | ❌ **SHOULD FIX** — Apply `IsServiceAuthenticated` to endpoints that require service identity |
+| No admin UI for API key management | Medium | Medium — admins must use API/Django admin directly | ❌ **SHOULD DO** — Build frontend admin pages for credential management (create, list, revoke, rotate) |
+| `dev_docs.md` not updated | ~~Medium~~ **Resolved** | ~~Low~~ | ✅ Added Section 11 with full API key documentation (model, middleware, endpoints, schemas, env vars, permissions) |

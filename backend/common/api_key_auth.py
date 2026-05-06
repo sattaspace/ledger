@@ -30,14 +30,24 @@ logger = logging.getLogger(__name__)
 def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
     """Validate the X-API-Key header and attach credential to request.
 
+    This function is middleware-aware: if the
+    ``service_credential_middleware`` (``common/middleware.py``) has already
+    validated the key and attached ``request.service_credential``, this
+    function returns the cached credential immediately without re-querying
+    the database.  This makes controllers that call ``validate_api_key()``
+    directly (e.g., ``auth/me``) work seamlessly with or without the
+    middleware enabled.
+
     Flow:
-    1. Extract ``X-API-Key`` from the request header.
-    2. SHA-256 hash the raw key.
-    3. Look up ``ServiceCredential`` by hash.
-    4. Check ``is_active`` and ``service_domain.is_active``.
-    5. Update ``last_used_at`` (atomic update to avoid race conditions).
-    6. Attach ``request.service_credential`` and ``request.service_domain``.
-    7. When ``API_KEY_ENFORCED`` is ``False`` (default), missing keys
+    1. Check if ``request.service_credential`` is already set (by
+       middleware).  If so, return it.
+    2. Extract ``X-API-Key`` from the request header.
+    3. SHA-256 hash the raw key.
+    4. Look up ``ServiceCredential`` by hash.
+    5. Check ``is_active`` and ``service_domain.is_active``.
+    6. Update ``last_used_at`` (atomic update to avoid race conditions).
+    7. Attach ``request.service_credential`` and ``request.service_domain``.
+    8. When ``API_KEY_ENFORCED`` is ``False`` (default), missing keys
        log a warning but allow the request through for backward compatibility.
        When ``True``, missing/invalid keys raise ``UnauthorizedException``.
 
@@ -47,6 +57,11 @@ def validate_api_key(request: HttpRequest) -> Optional["ServiceCredential"]:
     Raises:
         ``UnauthorizedException`` if key is invalid and enforcement is on.
     """
+    # Middleware-aware: return cached credential if already validated.
+    credential = getattr(request, "service_credential", None)
+    if credential is not None:
+        return credential
+
     from billing.models import ServiceCredential
 
     api_key = request.headers.get("X-API-Key", "").strip()
