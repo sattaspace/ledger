@@ -19,6 +19,7 @@ After this middleware, every request has:
 
 from __future__ import annotations
 
+import atexit
 import logging
 from typing import Any
 
@@ -62,6 +63,10 @@ class SattabaseAuthMiddleware:
         if cls._client is None:
             from django.conf import settings
 
+            from .access import AccessModule
+
+            cache_ttl = float(getattr(settings, "SATTABASE_AUTH_CACHE_TTL", 60))
+
             config = SattabaseConfig(
                 base_url=getattr(settings, "SATTABASE_BASE_URL", ""),
                 service_domain=getattr(settings, "SATTABASE_SERVICE_DOMAIN", ""),
@@ -69,7 +74,32 @@ class SattabaseAuthMiddleware:
                 timeout=getattr(settings, "SATTABASE_AUTH_TIMEOUT", 5),
             )
             cls._client = SattabaseClient(config)
+
+            # Reassign access module with the configured cache TTL
+            cls._client.access = AccessModule(cls._client, cache_ttl=cache_ttl)
+
+            # Register cleanup on process shutdown
+            atexit.register(cls.close)
         return cls._client
+
+    @classmethod
+    def close(cls) -> None:
+        """Close the shared SattabaseClient and release resources.
+
+        Called automatically via ``atexit`` on process shutdown, but can also
+        be called manually (e.g. in tests or when reconfiguring).
+        """
+        if cls._client is not None:
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+                # If there's a running loop, create a task to close
+                loop.create_task(cls._client.close())
+            except RuntimeError:
+                # No running loop — run close synchronously
+                asyncio.run(cls._client.close())
+            cls._client = None
 
     def _extract_token(self, request: Any) -> str | None:
         """Extract JWT access token from the request.

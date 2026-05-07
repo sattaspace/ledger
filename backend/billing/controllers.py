@@ -69,7 +69,7 @@ from common.exceptions import (
     BadRequestException,
     AccountNotActiveException,
 )
-from common.permissions import IsAuthenticated
+from common.permissions import IsAuthenticated, IsServiceAuthenticated, IsAuthenticatedOrService
 from common.schemas import MessageResponse, PaginatedResponse, PaginationInput
 from common.rate_limit import check_rate_limit_or_raise
 
@@ -314,8 +314,10 @@ class BillingProtectedController:
             "subscription info, and a domain-specific access map.  "
             "Requires the ``X-Service-Domain`` header to return "
             "subscription data.  Without the header, returns plain "
-            "user profile with ``null`` subscription."
+            "user profile with ``null`` subscription.  Accepts both "
+            "JWT Bearer tokens (frontend) and X-API-Key headers (SDK)."
         ),
+        permissions=[IsAuthenticatedOrService],
     )
     async def get_auth_me(self, request: HttpRequest):
         """Return user info + subscription + access for the requesting domain.

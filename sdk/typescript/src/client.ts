@@ -88,7 +88,12 @@ export class SattabaseClient {
    *
    * @internal — public for testing; prefer `client.auth.*` methods.
    */
-  async request<T>(method: string, path: string, opts?: RequestOptions, _retryCount = 0): Promise<T> {
+  async request<T>(
+    method: string,
+    path: string,
+    opts?: RequestOptions,
+    _retryCount = 0,
+  ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "X-API-Key": this.config.apiKey,
@@ -146,8 +151,25 @@ export class SattabaseClient {
     ) {
       const newToken = await this.tryRefresh();
       if (newToken) {
-        return this.request<T>(method, path, { ...opts, token: newToken }, _retryCount + 1);
+        return this.request<T>(
+          method,
+          path,
+          { ...opts, token: newToken },
+          _retryCount + 1,
+        );
       }
+    }
+
+    // 429 — retry after delay
+    if (
+      response.status === 429 &&
+      body &&
+      typeof body["retry_after"] === "number" &&
+      _retryCount < 1
+    ) {
+      const retryAfter = (body["retry_after"] as number) * 1000;
+      await new Promise((r) => setTimeout(r, retryAfter));
+      return this.request<T>(method, path, opts, _retryCount + 1);
     }
 
     // Error — map to typed exception
@@ -186,12 +208,19 @@ export class SattabaseClient {
       if (!refreshToken) return null;
 
       try {
-        const response = await fetch(`${this.config.baseUrl}/auth/token/refresh`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh: refreshToken }),
-          signal: AbortSignal.timeout(this.config.timeout),
-        });
+        const response = await fetch(
+          `${this.config.baseUrl}/auth/token/refresh`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": this.config.apiKey,
+              "X-Service-Domain": this.config.serviceDomain,
+            },
+            body: JSON.stringify({ refresh: refreshToken }),
+            signal: AbortSignal.timeout(this.config.timeout),
+          },
+        );
 
         if (!response.ok) return null;
 
@@ -232,5 +261,3 @@ export class SattabaseClient {
     return store.getUserIdByRefresh(refreshToken);
   }
 }
-
-

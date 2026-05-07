@@ -20,7 +20,7 @@ from .exceptions import (
 from .models import TokenPair
 from .redirect import BillingRedirectModule
 from .access import AccessModule
-from .token_store import TokenStore
+from .token_store import TokenStore, TokenStoreWithLookup
 
 logger = logging.getLogger("sattabase_sdk")
 
@@ -59,9 +59,9 @@ class SattabaseClient:
                 "Content-Type": "application/json",
             },
         )
-        # Refresh lock to prevent concurrent refresh calls
+        # Refresh lock and promise for deduplication of concurrent refreshes
         self._refresh_lock = asyncio.Lock()
-        self._refreshing = False
+        self._refresh_promise: asyncio.Task[str | None] | None = None
 
         # Namespaces
         self.auth = AuthModule(self)
@@ -181,22 +181,28 @@ class SattabaseClient:
         """Attempt to refresh the access token.
 
         Returns the new access token on success, None on failure.
-        Uses a lock to prevent concurrent refresh calls.
-        """
-        if self._refreshing:
-            # Another coroutine is already refreshing — wait for it
-            await asyncio.sleep(0.5)
-            return None
 
-        async with self._refresh_lock:
-            self._refreshing = True
-            try:
+        Uses a promise-based deduplication pattern: if a refresh is already
+        in progress, concurrent callers await the same promise instead of
+        starting a second refresh or returning None prematurely.
+        """
+        # If a refresh is already in progress, wait for the same result
+        if self._refresh_promise is not None:
+            return await self._refresh_promise
+
+        async def _do_refresh() -> str | None:
+            async with self._refresh_lock:
                 if not self._token_store:
                     return None
 
-                # Find the user_id by iterating stores (in-memory)
-                # In production, the caller should pass user_id context
-                refresh_token = await self._find_refresh_token()
+                # Find refresh token via TokenStoreWithLookup protocol
+                store = self._token_store
+                if isinstance(store, TokenStoreWithLookup):
+                    refresh_token = await store.get_first_token_pair()
+                    refresh_token = refresh_token.refresh if refresh_token else None
+                else:
+                    return None
+
                 if not refresh_token:
                     return None
 
@@ -209,7 +215,10 @@ class SattabaseClient:
                         data = result.json()
                         new_tokens = TokenPair(**data)
                         # Store new tokens — find user_id from store
-                        user_id = await self._find_user_id_by_refresh(refresh_token)
+                        if isinstance(store, TokenStoreWithLookup):
+                            user_id = await store.get_user_id_by_refresh(refresh_token)
+                        else:
+                            user_id = None
                         if user_id and self._token_store:
                             await self._token_store.set_tokens(user_id, new_tokens)
                         logger.debug("Token refreshed successfully")
@@ -217,29 +226,38 @@ class SattabaseClient:
                 except Exception as exc:
                     logger.warning("Token refresh failed: %s", exc)
                 return None
-            finally:
-                self._refreshing = False
+
+        self._refresh_promise = asyncio.create_task(_do_refresh())
+        try:
+            return await self._refresh_promise
+        finally:
+            self._refresh_promise = None
 
     async def _find_refresh_token(self) -> str | None:
         """Find a refresh token from the token store.
 
-        This is a simple approach for the initial SDK version.
-        Production implementations should pass user_id context.
+        Uses the TokenStoreWithLookup protocol instead of accessing
+        private ``_store`` attribute directly.
+
+        Returns None if the token store doesn't support lookup.
         """
-        if not self._token_store or not hasattr(self._token_store, "_store"):
+        store = self._token_store
+        if store is None:
             return None
-        store = getattr(self._token_store, "_store", {})
-        for tokens in store.values():
-            if isinstance(tokens, TokenPair):
-                return tokens.refresh
+        if isinstance(store, TokenStoreWithLookup):
+            tokens = await store.get_first_token_pair()
+            return tokens.refresh if tokens else None
         return None
 
     async def _find_user_id_by_refresh(self, refresh_token: str) -> str | None:
-        """Find user_id by matching refresh token in the store."""
-        if not self._token_store or not hasattr(self._token_store, "_store"):
+        """Find user_id by matching refresh token in the store.
+
+        Uses the TokenStoreWithLookup protocol instead of accessing
+        private ``_store`` attribute directly.
+        """
+        store = self._token_store
+        if store is None:
             return None
-        store = getattr(self._token_store, "_store", {})
-        for user_id, tokens in store.items():
-            if isinstance(tokens, TokenPair) and tokens.refresh == refresh_token:
-                return user_id
+        if isinstance(store, TokenStoreWithLookup):
+            return await store.get_user_id_by_refresh(refresh_token)
         return None

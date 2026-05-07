@@ -23,6 +23,7 @@ from common.schemas import (
     MessageResponse,
     PaginatedResponse,
     PaginationInput,
+    ServiceDomainOptionSchema,
     ApiKeyCreateInputSchema,
     ApiKeyOutputSchema,
     ApiKeyCreateOutputSchema,
@@ -132,10 +133,51 @@ class AdminApiKeyController:
         ]
         return {"meta": meta, "results": items}
 
+    @http_get(
+        "/service-domains",
+        response=list[ServiceDomainOptionSchema],
+        summary="List service domains for key creation",
+        description=(
+            "Return all service domains with their parent product names. "
+            "Used by the admin UI to populate the create-key dropdown. "
+            "Domains that already have an active credential are still listed "
+            "(the frontend can decide whether to disable them)."
+        ),
+    )
+    @_admin_read_rate_limit
+    async def list_service_domains(self, request: HttpRequest):
+        """Return all service domains with product names for the admin dropdown.
+
+        Uses select_related('product') for efficient joins. Returns both
+        active and inactive domains so the admin has full visibility.
+        """
+        domains = await sync_to_async(
+            lambda: list(
+                ServiceDomain.objects.select_related("product")
+                .order_by("product__name", "domain")
+                .values(
+                    "id",
+                    "domain",
+                    "product__name",
+                    "is_active",
+                )
+            )
+        )()
+
+        return [
+            {
+                "id": d["id"],
+                "domain": d["domain"],
+                "product_name": d["product__name"],
+                "is_active": d["is_active"],
+            }
+            for d in domains
+        ]
+
     @_admin_write_rate_limit
     @http_post(
         "/",
-        response={201: ApiKeyCreateOutputSchema, 400: dict, 409: dict},
+        response={200: ApiKeyCreateOutputSchema, 400: dict, 409: dict},
         summary="Create API key",
         description=(
             "Create a new API key for a service domain. "
@@ -163,33 +205,55 @@ class AdminApiKeyController:
         except ServiceDomain.DoesNotExist:
             raise NotFoundException("Service domain not found.")
 
-        # Check uniqueness (one active credential per domain)
+        # Check uniqueness (one credential per domain — OneToOne constraint)
         existing = await sync_to_async(
             ServiceCredential.objects.filter(
                 service_domain_id=payload.service_domain_id,
-                is_active=True,
-            ).exists
+            ).first
         )()
-        if existing:
-            raise ConflictException(
-                "An active API key already exists for this service domain. "
-                "Revoke or rotate the existing key first."
-            )
 
         # Generate the key
         raw_key, prefix, key_hash = generate_api_key()
 
-        # Create credential
         from django.utils import timezone
 
-        credential = await sync_to_async(ServiceCredential.objects.create)(
-            name=payload.name,
-            service_domain=domain,
-            api_key_hash=key_hash,
-            api_key_prefix=prefix,
-            is_active=True,
-            created_by=request.user,
-        )
+        if existing:
+            if existing.is_active:
+                raise ConflictException(
+                    "An active API key already exists for this service domain. "
+                    "Rotate the existing key to generate a new one."
+                )
+            # Reuse the revoked credential — update in place
+            existing.api_key_hash = key_hash
+            existing.api_key_prefix = prefix
+            existing.name = payload.name
+            existing.is_active = True
+            existing.created_by = request.user
+            await sync_to_async(existing.save)(
+                update_fields=[
+                    "api_key_hash", "api_key_prefix", "name",
+                    "is_active", "created_by", "updated_at",
+                ]
+            )
+            credential = existing
+        else:
+            # Create credential (IntegrityError safety-net for race conditions)
+            from django.db.utils import IntegrityError
+
+            try:
+                credential = await sync_to_async(ServiceCredential.objects.create)(
+                    name=payload.name,
+                    service_domain=domain,
+                    api_key_hash=key_hash,
+                    api_key_prefix=prefix,
+                    is_active=True,
+                    created_by=request.user,
+                )
+            except IntegrityError:
+                raise ConflictException(
+                    "An API key already exists for this service domain. "
+                    "Rotate the existing key to generate a new one."
+                )
 
         logger.info(
             "ADMIN_API_KEY_CREATED: key_id=%s, prefix='%s', domain='%s', "

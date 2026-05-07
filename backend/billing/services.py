@@ -130,7 +130,7 @@ class BillingService:
             plan = Plan.objects.select_related("product").get(
                 id=plan_id, is_active=True
             )
-            prefetch_related_objects(plan, "access_entries")
+            prefetch_related_objects([plan], "access_entries")
             return plan
         except Plan.DoesNotExist:
             return None
@@ -247,8 +247,7 @@ class BillingService:
         with transaction.atomic():
             try:
                 sub = (
-                    Subscription.objects
-                    .select_related("plan")
+                    Subscription.objects.select_related("plan")
                     .select_for_update()
                     .get(user=user, product=product)
                 )
@@ -353,7 +352,9 @@ class BillingService:
     @staticmethod
     async def async_sync_user_subscriptions_from_stripe(user) -> list:
         """Async version of sync_user_subscriptions_from_stripe."""
-        return await sync_to_async(BillingService.sync_user_subscriptions_from_stripe)(user)
+        return await sync_to_async(BillingService.sync_user_subscriptions_from_stripe)(
+            user
+        )
 
     @staticmethod
     def reactivate_subscription(subscription: Subscription) -> None:
@@ -574,8 +575,7 @@ class BillingService:
         # subscription exists.  This makes the GET endpoint read-only in
         # the common case (users who already have a subscription).
         subscription = (
-            Subscription.objects
-            .filter(user=user, product=product)
+            Subscription.objects.filter(user=user, product=product)
             .select_related("plan")
             .first()
         )
@@ -591,8 +591,10 @@ class BillingService:
             }
 
         # Build access map
+        # prefetch_related_objects requires an iterable of model instances,
+        # not a single instance.  Wrap in a list to avoid TypeError.
         prefetch_related_objects(
-            subscription.plan,
+            [subscription.plan],
             Prefetch(
                 "access_entries",
                 queryset=AccessEntry.objects.all(),
@@ -656,8 +658,7 @@ class BillingService:
         # subscription exists.  This makes the GET endpoint read-only in
         # the common case (users who already have a subscription).
         subscription = (
-            await Subscription.objects
-            .filter(user=user, product=product)
+            await Subscription.objects.filter(user=user, product=product)
             .select_related("plan")
             .afirst()
         )
@@ -674,8 +675,10 @@ class BillingService:
             }
 
         # Build access map
+        # prefetch_related_objects requires an iterable of model instances,
+        # not a single instance.  Wrap in a list to avoid TypeError.
         await sync_to_async(prefetch_related_objects)(
-            subscription.plan,
+            [subscription.plan],
             Prefetch(
                 "access_entries",
                 queryset=AccessEntry.objects.all(),

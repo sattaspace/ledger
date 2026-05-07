@@ -52,6 +52,22 @@ class ErrorResponse(Schema):
     code: Optional[str] = None
 
 
+# --- Service Domain Option (for admin dropdown) ---
+
+
+class ServiceDomainOptionSchema(Schema):
+    """Lightweight schema for populating the admin create-key dropdown.
+
+    Returns a flat list of active service domains with their parent
+    product name, so the admin can pick which domain to create a key for.
+    """
+
+    id: int
+    domain: str = Field(..., description="Service domain, e.g. 'finance.sattabase.tld'")
+    product_name: str = Field(..., description="Parent product display name")
+    is_active: bool
+
+
 # --- Service Credential / API Key Schemas ---
 
 

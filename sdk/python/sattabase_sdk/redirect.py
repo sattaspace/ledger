@@ -7,7 +7,7 @@ Actual ``return_url`` validation happens server-side in ``validate_return_url()`
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import urlencode, parse_qs, urlparse
 
 if TYPE_CHECKING:
     from .client import SattabaseClient
@@ -109,18 +109,14 @@ class BillingRedirectModule:
             if ok and val == 1:
                 await refresh_user_access()
         """
-        if "billing_updated=" not in url:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+
+        if "billing_updated" not in params:
             return (False, None)
 
-        # Parse query params manually to avoid importing urllib.parse.querystring
-        query_part = url.split("?")[-1] if "?" in url else ""
-        for param in query_part.split("&"):
-            if "=" in param:
-                key, value = param.split("=", 1)
-                if key == "billing_updated":
-                    try:
-                        return (True, int(value))
-                    except ValueError:
-                        return (True, None)
-
-        return (False, None)
+        raw = params["billing_updated"][0]
+        try:
+            return (True, int(raw))
+        except ValueError:
+            return (True, None)

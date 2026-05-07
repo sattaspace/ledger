@@ -53,6 +53,14 @@ INSTALLED_APPS = [
     "cache_cleaner",
 ]
 SILENCED_SYSTEM_CHECKS = ["security.W019"]
+
+# --- Frontend URL ---
+# The frontend runs on a separate domain/port (Docker).  This setting ensures
+# the backend accepts requests from the frontend origin for CORS, CSRF,
+# and Stripe redirect URLs.  Automatically added to CORS_ALLOWED_ORIGINS
+# and CSRF_TRUSTED_ORIGINS so you don't need to duplicate it in both lists.
+FRONTEND_URL = env("SB_FRONTEND_URL", default="http://localhost:4321").rstrip("/")
+
 CORS_ALLOW_ALL_ORIGINS = env("SB_CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
@@ -65,6 +73,10 @@ CORS_ALLOWED_ORIGINS = env.list(
     ],
 )
 
+# Ensure the frontend URL is always in CORS_ALLOWED_ORIGINS.
+if FRONTEND_URL not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
+
 CSRF_TRUSTED_ORIGINS = env.list(
     "SB_CSRF_TRUSTED_ORIGINS",
     default=[
@@ -74,6 +86,10 @@ CSRF_TRUSTED_ORIGINS = env.list(
         "http://127.0.0.1:8090",
     ],
 )
+
+# Ensure the frontend URL is always in CSRF_TRUSTED_ORIGINS.
+if FRONTEND_URL not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_URL)
 
 
 MIDDLEWARE = [
@@ -307,7 +323,23 @@ EMAIL_CHANGE_TOKEN_EXPIRY_SECONDS = env(
 )  # 1 hour
  
 # --- API Key Authentication ---
+# When True, requests with an invalid or revoked X-API-Key receive an
+# immediate 403 response.  When False (default), invalid keys log a warning
+# but the request passes through — useful for gradual rollout during
+# development.  **Must be set to True before deploying SDK consumers to
+# production.**  Controlled via SB_API_KEY_ENFORCED env var.
 API_KEY_ENFORCED = env("SB_API_KEY_ENFORCED", default=False, cast=bool)
+
+# Production safety check: warn if enforcement is off in production mode.
+if not API_KEY_ENFORCED and not DEBUG:
+    import warnings
+    warnings.warn(
+        "API_KEY_ENFORCED is False in non-debug mode. "
+        "Set SB_API_KEY_ENFORCED=True before deploying to production. "
+        "Invalid API keys will be logged but allowed through.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
 
 # --- SDK Rate Limiting (server-to-server traffic via X-API-Key) ---
 # Higher limits than per-IP because SDK traffic comes from trusted
@@ -435,7 +467,7 @@ USER_ROLES = ["owner", "admin", "member"]
 STRIPE_SECRET_KEY = env("SB_STRIPE_SECRET_KEY", default="")
 STRIPE_PUBLISHABLE_KEY = env("SB_STRIPE_PUBLISHABLE_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env("SB_STRIPE_WEBHOOK_SECRET", default="")
-STRIPE_APP_DOMAIN = env("SB_STRIPE_APP_DOMAIN", default="http://localhost:4321")
+STRIPE_APP_DOMAIN = env("SB_STRIPE_APP_DOMAIN", default=FRONTEND_URL)
 STRIPE_PORTAL_RETURN_URL = env(
     "SB_STRIPE_PORTAL_RETURN_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing",

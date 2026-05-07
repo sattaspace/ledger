@@ -31,6 +31,13 @@ const billingNav: NavSection = {
   ],
 };
 
+const adminNav: NavSection = {
+  title: "Admin",
+  items: [
+    { label: "API Keys", href: "/dashboard/admin/api-keys", icon: "api-keys", tooltip: "Manage service-to-service API keys" },
+  ],
+};
+
 const currentPath = Astro.url.pathname;
 ---
 
@@ -178,6 +185,53 @@ const currentPath = Astro.url.pathname;
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               )}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div class="my-3 border-t border-border" data-admin-section style="display:none"></div>
+
+    <!-- Section: Admin (owner/admin only) -->
+    <div class="nav-section" data-section="admin" data-admin-section style="display:none">
+      <button
+        type="button"
+        class="section-header flex w-full items-center justify-between px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-muted-foreground transition-colors"
+        aria-expanded="true"
+        data-section-toggle="admin"
+      >
+        <span>{adminNav.title}</span>
+        <svg class="section-chevron h-3.5 w-3.5 transition-transform duration-200 rotate-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <div class="section-items space-y-0.5 mt-1" data-section-items="admin">
+        {adminNav.items.map((item) => {
+          const isActive = currentPath === item.href ||
+            (item.href !== "/dashboard/admin/api-keys" && currentPath.startsWith(item.href));
+          return (
+            <a
+              href={item.href}
+              class:list={[
+                "nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
+                isActive
+                  ? "bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-400"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              ]}
+              aria-current={isActive ? "page" : undefined}
+              {...(item.tooltip ? { "data-tooltip": item.tooltip } : {})}
+            >
+              {isActive && (
+                <span class="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-r-full bg-brand-600 dark:bg-brand-500" />
+              )}
+              {item.icon === "api-keys" && (
+                <svg class="nav-icon h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+                </svg>
+              )}
+              <span class="nav-label truncate">{item.label}</span>
             </a>
           );
         })}
@@ -404,12 +458,12 @@ const currentPath = Astro.url.pathname;
     // ── Role-based admin section visibility ──
     // Fetches user profile and shows the Admin nav section for owner/admin roles.
     // The section is hidden by default (style="display:none") and only revealed
-    // if the authenticated user has an admin role.
+    // if the authenticated user has an admin role or is_staff (superuser).
     async function checkAdminVisibility() {
       try {
         const { apiClient } = await import("@/lib/api");
-        const user = await apiClient.get<{ role: string }>("/users/me");
-        const isAdmin = user.role === "owner" || user.role === "admin";
+        const user = await apiClient.get<{ role: string; is_staff: boolean }>("/users/me");
+        const isAdmin = user.is_staff === true || user.role === "owner" || user.role === "admin";
         const adminElements = document.querySelectorAll("[data-admin-section]");
         adminElements.forEach((el) => {
           (el as HTMLElement).style.display = isAdmin ? "" : "none";

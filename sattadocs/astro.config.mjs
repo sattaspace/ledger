@@ -77,6 +77,10 @@ export default defineConfig({
                   label: 'SattaBase',
                   autogenerate: { directory: 'sattabase' },
               },
+              {
+                  label: 'Dev Docs',
+                  autogenerate: { directory: 'dev_docs' },
+              },
               // Future products will be added here:
               // {
               //     label: 'Product Name',
@@ -146,6 +150,12 @@ export default defineConfig({
           cssMinify: true,
           minify: 'esbuild',
       },
+    //   server: {
+    //         fs: {
+    //             // Allow serving files from one level up from the project root
+    //             allow: ['../../../'] 
+    //         }
+    //     }
   },
 
   // Image optimization

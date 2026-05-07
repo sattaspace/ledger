@@ -76,7 +76,11 @@ export class AccessModule {
    * @param defaultValue - Default value if key not found
    * @param token - Optional JWT token
    */
-  async getAccess(key: string, defaultValue?: unknown, token?: string | null): Promise<unknown> {
+  async getAccess(
+    key: string,
+    defaultValue?: unknown,
+    token?: string | null,
+  ): Promise<unknown> {
     const authMe = await this.getAuthMe(token);
     return authMe.getAccess(key, defaultValue);
   }

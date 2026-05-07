@@ -135,35 +135,14 @@ export const adminApi = {
 
   /**
    * Fetch available service domains for the create key dropdown.
-   * Uses the public products endpoint to get domains.
+   * Calls the admin endpoint which returns a flat list of all
+   * service domains with their parent product names.
    */
   async fetchServiceDomains(): Promise<ServiceDomainOption[]> {
-    const products = await apiClient.get<
-      Array<{
-        id: number;
-        name: string;
-        slug: string;
-        service_domains: Array<{
-          id: number;
-          domain: string;
-          is_primary: boolean;
-          is_active: boolean;
-        }>;
-      }>
-    >("/billing/products");
-
-    const domains: ServiceDomainOption[] = [];
-    for (const product of products || []) {
-      for (const domain of product.service_domains || []) {
-        domains.push({
-          id: domain.id,
-          domain: domain.domain,
-          product_name: product.name,
-          is_active: domain.is_active,
-        });
-      }
-    }
-    return domains;
+    const domains = await apiClient.get<ServiceDomainOption[]>(
+      "/admin/api-keys/service-domains",
+    );
+    return domains || [];
   },
 };
 

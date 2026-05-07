@@ -1,3 +1,8 @@
+---
+title: Commnds
+description: A reference page in my new Starlight docs site.
+---
+
 ## First run (creates everything, skips existing)
 python manage.py billing_seed_data
 

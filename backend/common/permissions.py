@@ -65,3 +65,27 @@ class IsServiceAuthenticated(BasePermission):
             getattr(request, "service_credential", None) is not None
             and request.service_credential.is_active
         )
+
+
+class IsAuthenticatedOrService(BasePermission):
+    """Allows access if the request is either JWT-authenticated OR carries a
+    valid service API key.
+
+    This is the primary permission for endpoints that serve both the
+    SattaBase frontend (regular user JWT) and sister-domain SDKs
+    (``X-API-Key`` header).  The ``service_credential_middleware`` sets
+    ``request.service_credential`` before this permission is checked, so
+    SDK requests with a valid key pass through even if no JWT is present
+    (or the JWT is absent because the SDK calls auth/me after login).
+
+    When the middleware runs with ``API_KEY_ENFORCED=True``, invalid API
+    keys are rejected with 403 *before* this permission is evaluated.
+    """
+
+    def has_permission(self, request, view=None, controller=None, **kwargs):
+        is_user = bool(request.user and request.user.is_authenticated)
+        is_service = bool(
+            getattr(request, "service_credential", None) is not None
+            and request.service_credential.is_active
+        )
+        return is_user or is_service

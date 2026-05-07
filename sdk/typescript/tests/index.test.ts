@@ -5,9 +5,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SattabaseClient, SattabaseConfig, InMemoryTokenStore, LocalStorageTokenStore,
-  SattabaseError, AuthenticationError, AccountInactiveError, AccountDeletedError,
-  ForbiddenError, RateLimitError, ApiServerError, buildError, BillingRedirect,
+import {
+  SattabaseClient,
+  SattabaseConfig,
+  InMemoryTokenStore,
+  LocalStorageTokenStore,
+  SattabaseError,
+  AuthenticationError,
+  AccountInactiveError,
+  AccountDeletedError,
+  ForbiddenError,
+  RateLimitError,
+  ApiServerError,
+  buildError,
+  BillingRedirect,
   AuthMeResponse,
 } from "../dist/index.js";
 
@@ -92,6 +103,23 @@ function restoreFetch(): void {
   globalThis.fetch = originalFetch;
 }
 
+/** Mock fetch with sequential responses (for auto-refresh tests). */
+function mockFetchSequential(
+  responses: Array<{ status: number; body?: unknown }>,
+): void {
+  const queue = [...responses];
+  globalThis.fetch = vi.fn().mockImplementation(async () => {
+    const resp = queue.shift();
+    if (!resp) throw new Error("mockFetchSequential: no more responses queued");
+    return {
+      ok: resp.status >= 200 && resp.status < 300,
+      status: resp.status,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.resolve(resp.body),
+    };
+  });
+}
+
 // ─── Config Tests ──────────────────────────────────────────────────────────────
 
 describe("SattabaseConfig", () => {
@@ -103,22 +131,24 @@ describe("SattabaseConfig", () => {
 
   it("rejects invalid API key format", () => {
     expect(
-      () => new SattabaseConfig({
-        baseUrl: TEST_BASE_URL,
-        serviceDomain: TEST_SERVICE_DOMAIN,
-        apiKey: "invalid_key",
-        debug: true,
-      }),
+      () =>
+        new SattabaseConfig({
+          baseUrl: TEST_BASE_URL,
+          serviceDomain: TEST_SERVICE_DOMAIN,
+          apiKey: "invalid_key",
+          debug: true,
+        }),
     ).toThrow("must start with 'sb_live_'");
   });
 
   it("rejects HTTP in production", () => {
     expect(
-      () => new SattabaseConfig({
-        baseUrl: "http://sattabase.tld/api/v1",
-        serviceDomain: TEST_SERVICE_DOMAIN,
-        apiKey: TEST_API_KEY,
-      }),
+      () =>
+        new SattabaseConfig({
+          baseUrl: "http://sattabase.tld/api/v1",
+          serviceDomain: TEST_SERVICE_DOMAIN,
+          apiKey: TEST_API_KEY,
+        }),
     ).toThrow("HTTPS");
   });
 
@@ -152,7 +182,10 @@ describe("buildError", () => {
   });
 
   it("maps account_inactive code to AccountInactiveError", () => {
-    const err = buildError(401, { detail: "Inactive", code: "account_inactive" });
+    const err = buildError(401, {
+      detail: "Inactive",
+      code: "account_inactive",
+    });
     expect(err.status).toBe(401);
     expect(err.message).toBe("Inactive");
     expect(err).toBeInstanceOf(AuthenticationError);
@@ -184,7 +217,10 @@ describe("buildError", () => {
   });
 
   it("code takes priority over status", () => {
-    const err = buildError(401, { detail: "Inactive", code: "account_inactive" });
+    const err = buildError(401, {
+      detail: "Inactive",
+      code: "account_inactive",
+    });
     expect(err.status).toBe(401);
     expect(err.message).toBe("Inactive");
     // account_inactive maps to AccountInactiveError (subclass of AuthenticationError)
@@ -235,21 +271,36 @@ describe("AuthMe", () => {
   });
 
   it("account_inactive raises AccountInactiveError", async () => {
-    mockFetch({ status: 401, body: { detail: "Account is inactive", code: "account_inactive" } });
+    mockFetch({
+      status: 401,
+      body: { detail: "Account is inactive", code: "account_inactive" },
+    });
     const client = makeClient();
-    await expect(client.auth.me(tokenResponse.access)).rejects.toThrow(AccountInactiveError);
+    await expect(client.auth.me(tokenResponse.access)).rejects.toThrow(
+      AccountInactiveError,
+    );
   });
 
   it("account_deleted raises AccountDeletedError", async () => {
-    mockFetch({ status: 401, body: { detail: "Account has been deleted", code: "account_deleted" } });
+    mockFetch({
+      status: 401,
+      body: { detail: "Account has been deleted", code: "account_deleted" },
+    });
     const client = makeClient();
-    await expect(client.auth.me(tokenResponse.access)).rejects.toThrow(AccountDeletedError);
+    await expect(client.auth.me(tokenResponse.access)).rejects.toThrow(
+      AccountDeletedError,
+    );
   });
 
   it("no domain returns empty access", async () => {
     mockFetch({
       status: 200,
-      body: { user: authMeResponse.user, account_status: "active", subscription: null, access: {} },
+      body: {
+        user: authMeResponse.user,
+        account_status: "active",
+        subscription: null,
+        access: {},
+      },
     });
     const client = makeClient();
     const result = await client.auth.me(tokenResponse.access);
@@ -272,13 +323,19 @@ describe("AccessModule", () => {
 
   it("has_access returns false for denied features", async () => {
     const client = makeClient();
-    expect(await client.access.hasAccess("priority_support", "test-token")).toBe(false);
-    expect(await client.access.hasAccess("nonexistent", "test-token")).toBe(false);
+    expect(
+      await client.access.hasAccess("priority_support", "test-token"),
+    ).toBe(false);
+    expect(await client.access.hasAccess("nonexistent", "test-token")).toBe(
+      false,
+    );
   });
 
   it("get_access returns integer values", async () => {
     const client = makeClient();
-    expect(await client.access.getAccess("max_bank_accounts", 1, "test-token")).toBe(5);
+    expect(
+      await client.access.getAccess("max_bank_accounts", 1, "test-token"),
+    ).toBe(5);
   });
 
   it("keys returns all access key names", async () => {
@@ -313,7 +370,10 @@ describe("AccessModule", () => {
 describe("BillingRedirect", () => {
   it("builds manage_subscription URL", () => {
     const billing = new BillingRedirect("https://sattabase.tld");
-    const url = billing.manageSubscription("finance", "https://finance.sattabase.tld/settings");
+    const url = billing.manageSubscription(
+      "finance",
+      "https://finance.sattabase.tld/settings",
+    );
     expect(url).toContain("/dashboard/billing/plans/finance");
     expect(url).toContain("return_url=");
     expect(url).toContain("finance.sattabase.tld");
@@ -327,7 +387,10 @@ describe("BillingRedirect", () => {
 
   it("builds upgrade URL", () => {
     const billing = new BillingRedirect("https://sattabase.tld");
-    const url = billing.upgrade("analytics", "https://analytics.sattabase.tld/billing");
+    const url = billing.upgrade(
+      "analytics",
+      "https://analytics.sattabase.tld/billing",
+    );
     expect(url).toContain("/dashboard/billing/plans/analytics");
     expect(url).toContain("return_url=");
   });
@@ -504,23 +567,414 @@ describe("SattabaseClient.request", () => {
   it("401 raises AuthenticationError", async () => {
     mockFetch({ status: 401, body: { detail: "Unauthorized" } });
     const client = makeClient();
-    await expect(client.request("GET", "/test")).rejects.toThrow(AuthenticationError);
+    await expect(client.request("GET", "/test")).rejects.toThrow(
+      AuthenticationError,
+    );
   });
 
   it("429 raises RateLimitError", async () => {
-    mockFetch({ status: 429, body: { detail: "Too many requests", retry_after: 30 } });
+    // retry_after: 0 so the SDK's built-in retry delay is instant (0ms).
+    // The SDK will: receive 429 → wait 0s → retry → get 429 again → throw RateLimitError.
+    mockFetchSequential([
+      { status: 429, body: { detail: "Too many requests", retry_after: 0 } },
+      { status: 429, body: { detail: "Too many requests", retry_after: 0 } },
+    ]);
     const client = makeClient();
     try {
       await client.request("GET", "/test");
     } catch (err) {
       expect(err).toBeInstanceOf(RateLimitError);
-      expect((err as RateLimitError).retryAfter).toBe(30);
+      expect((err as RateLimitError).retryAfter).toBe(0);
     }
   });
 
   it("500 raises ApiServerError", async () => {
     mockFetch({ status: 500, body: { detail: "Internal error" } });
     const client = makeClient();
-    await expect(client.request("GET", "/test")).rejects.toThrow(ApiServerError);
+    await expect(client.request("GET", "/test")).rejects.toThrow(
+      ApiServerError,
+    );
+  });
+});
+
+// ─── Auth Module — Register Tests ─────────────────────────────────────────────
+
+describe("AuthModule.register", () => {
+  afterEach(restoreFetch);
+
+  it("returns MessageResponse on success", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Registration successful", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.register(
+      "new@example.com",
+      "Pass123!",
+      "Test",
+      "User",
+    );
+    expect(result.message).toBe("Registration successful");
+    expect(result.success).toBe(true);
+  });
+
+  it("sends snake_case fields in body", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OK", success: true },
+    });
+    const client = makeClient();
+    await client.auth.register("new@example.com", "Pass123!", "Test", "User");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      `${TEST_BASE_URL}/auth/register`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    // Verify the body was serialized with snake_case keys
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.email).toBe("new@example.com");
+    expect(body.first_name).toBe("Test");
+    expect(body.last_name).toBe("User");
+  });
+
+  it("includes optional fields when provided", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OK", success: true },
+    });
+    const client = makeClient();
+    await client.auth.register("new@example.com", "Pass123!", "Test", "User", {
+      timezone: "Asia/Dhaka",
+      currency: "BDT",
+      language: "en",
+    });
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.timezone).toBe("Asia/Dhaka");
+    expect(body.currency).toBe("BDT");
+    expect(body.language).toBe("en");
+  });
+
+  it("omits optional fields when not provided", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OK", success: true },
+    });
+    const client = makeClient();
+    await client.auth.register("new@example.com", "Pass123!", "Test", "User");
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.timezone).toBeUndefined();
+    expect(body.currency).toBeUndefined();
+    expect(body.language).toBeUndefined();
+  });
+
+  it("409 raises ConflictError on duplicate email", async () => {
+    mockFetch({
+      status: 409,
+      body: { detail: "User with this email already exists." },
+    });
+    const client = makeClient();
+    await expect(
+      client.auth.register("existing@example.com", "Pass123!", "Test", "User"),
+    ).rejects.toThrow();
+  });
+});
+
+// ─── Auth Module — Refresh Tests ─────────────────────────────────────────────
+
+describe("AuthModule.refresh", () => {
+  afterEach(restoreFetch);
+
+  it("returns new TokenPair", async () => {
+    mockFetch({
+      status: 200,
+      body: { access: "new_access", refresh: "new_refresh" },
+    });
+    const client = makeClient();
+    const tokens = await client.auth.refresh("old_refresh_token");
+    expect(tokens.access).toBe("new_access");
+    expect(tokens.refresh).toBe("new_refresh");
+  });
+
+  it("sends refresh token in JSON body", async () => {
+    mockFetch({
+      status: 200,
+      body: { access: "a", refresh: "r" },
+    });
+    const client = makeClient();
+    await client.auth.refresh("my_refresh_token");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      `${TEST_BASE_URL}/auth/token/refresh`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.refresh).toBe("my_refresh_token");
+  });
+});
+
+// ─── Auth Module — Verify Tests ─────────────────────────────────────────────
+
+describe("AuthModule.verify", () => {
+  afterEach(restoreFetch);
+
+  it("returns MessageResponse on valid token", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Token is valid", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.verify("my_access_token");
+    expect(result.success).toBe(true);
+  });
+
+  it("raises error on invalid token", async () => {
+    mockFetch({
+      status: 401,
+      body: { detail: "Token is invalid or expired" },
+    });
+    const client = makeClient();
+    await expect(client.auth.verify("expired_token")).rejects.toThrow(
+      AuthenticationError,
+    );
+  });
+});
+
+// ─── Auth Module — Blacklist Tests ──────────────────────────────────────────
+
+describe("AuthModule.blacklist", () => {
+  afterEach(restoreFetch);
+
+  it("returns MessageResponse on success", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Token blacklisted", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.blacklist("refresh_to_invalidate");
+    expect(result.message).toBe("Token blacklisted");
+  });
+});
+
+// ─── Auth Module — Logout Tests ─────────────────────────────────────────────
+
+describe("AuthModule.logout", () => {
+  afterEach(restoreFetch);
+
+  it("blacklists refresh and clears token store", async () => {
+    // First call: blacklist endpoint, Second call: none (store clear is sync)
+    mockFetchSequential([
+      {
+        status: 200,
+        body: { message: "Token blacklisted", success: true },
+      },
+    ]);
+
+    const store = new InMemoryTokenStore();
+    store.setTokens("default", { access: "a", refresh: "my_refresh" });
+    const client = new SattabaseClient(makeConfig(), store);
+
+    await client.auth.logout("access_token", "my_refresh");
+
+    // Verify token was deleted from store
+    expect(store.getTokens("default")).toBeNull();
+    // Verify blacklist was called
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Auth Module — Password Reset Tests ─────────────────────────────────────
+
+describe("AuthModule.passwordReset", () => {
+  afterEach(restoreFetch);
+
+  it("requestPasswordReset returns MessageResponse", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OTP sent", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.requestPasswordReset("user@example.com");
+    expect(result.message).toBe("OTP sent");
+  });
+
+  it("confirmPasswordReset returns MessageResponse", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Password reset successful", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.confirmPasswordReset(
+      "user@example.com",
+      "123456",
+      "NewPass123!",
+      "NewPass123!",
+    );
+    expect(result.message).toBe("Password reset successful");
+  });
+
+  it("confirmPasswordReset sends correct body", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OK", success: true },
+    });
+    const client = makeClient();
+    await client.auth.confirmPasswordReset(
+      "user@example.com",
+      "123456",
+      "NewPass123!",
+      "NewPass123!",
+    );
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.email).toBe("user@example.com");
+    expect(body.otp).toBe("123456");
+    expect(body.new_password).toBe("NewPass123!");
+    expect(body.confirm_password).toBe("NewPass123!");
+  });
+});
+
+// ─── Auth Module — Email Verification Tests ─────────────────────────────────
+
+describe("AuthModule.emailVerification", () => {
+  afterEach(restoreFetch);
+
+  it("requestEmailVerification returns MessageResponse", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Verification OTP sent", success: true },
+    });
+    const client = makeClient();
+    const result =
+      await client.auth.requestEmailVerification("user@example.com");
+    expect(result.message).toBe("Verification OTP sent");
+  });
+
+  it("confirmEmailVerification returns MessageResponse", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "Email verified", success: true },
+    });
+    const client = makeClient();
+    const result = await client.auth.confirmEmailVerification(
+      "user@example.com",
+      "654321",
+    );
+    expect(result.message).toBe("Email verified");
+  });
+
+  it("confirmEmailVerification sends correct body", async () => {
+    mockFetch({
+      status: 200,
+      body: { message: "OK", success: true },
+    });
+    const client = makeClient();
+    await client.auth.confirmEmailVerification("user@example.com", "654321");
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.email).toBe("user@example.com");
+    expect(body.otp).toBe("654321");
+  });
+});
+
+// ─── Auto-Refresh Tests ─────────────────────────────────────────────────────
+
+describe("Auto-refresh", () => {
+  afterEach(restoreFetch);
+
+  it("auto-refreshes on 401 and retries with new token", async () => {
+    const store = new InMemoryTokenStore();
+    store.setTokens("default", {
+      access: "old_access",
+      refresh: "old_refresh",
+    });
+    const client = new SattabaseClient(makeConfig(), store);
+
+    // Sequential responses:
+    // 1st: GET /test → 401 (original fails)
+    // 2nd: POST /auth/token/refresh → 200 with new tokens
+    // 3rd: GET /test → 200 with expected data (retry succeeds)
+    mockFetchSequential([
+      { status: 401, body: { detail: "Token expired" } },
+      { status: 200, body: { access: "new_access", refresh: "new_refresh" } },
+      { status: 200, body: { data: "success" } },
+    ]);
+
+    const result = await client.request<{ data: string }>("GET", "/test", {
+      token: "old_access",
+    });
+    expect(result.data).toBe("success");
+    // 3 fetch calls: 401 → refresh → retry
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("auto-refresh updates token store with new tokens", async () => {
+    const store = new InMemoryTokenStore();
+    store.setTokens("default", {
+      access: "old_access",
+      refresh: "old_refresh",
+    });
+    const client = new SattabaseClient(makeConfig(), store);
+
+    mockFetchSequential([
+      { status: 401, body: { detail: "Token expired" } },
+      { status: 200, body: { access: "new_access", refresh: "new_refresh" } },
+      { status: 200, body: { ok: true } },
+    ]);
+
+    await client.request("GET", "/test", { token: "old_access" });
+
+    // Token store should have new tokens
+    const tokens = store.getTokens("default");
+    expect(tokens).not.toBeNull();
+    expect(tokens!.access).toBe("new_access");
+    expect(tokens!.refresh).toBe("new_refresh");
+  });
+
+  it("skips auto-refresh when autoRefresh=false", async () => {
+    const noRefreshConfig = new SattabaseConfig({
+      baseUrl: TEST_BASE_URL,
+      serviceDomain: TEST_SERVICE_DOMAIN,
+      apiKey: TEST_API_KEY,
+      debug: true,
+      autoRefresh: false,
+    });
+    const store = new InMemoryTokenStore();
+    store.setTokens("default", {
+      access: "old_access",
+      refresh: "old_refresh",
+    });
+    const client = new SattabaseClient(noRefreshConfig, store);
+
+    mockFetch({ status: 401, body: { detail: "Token expired" } });
+
+    // Should NOT auto-refresh — just raise the error
+    await expect(
+      client.request("GET", "/test", { token: "old_access" }),
+    ).rejects.toThrow(AuthenticationError);
+
+    // Only 1 fetch call (no refresh attempt)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips auto-refresh when no token store", async () => {
+    // Client without token store
+    const client = makeClient();
+
+    mockFetch({ status: 401, body: { detail: "Token expired" } });
+
+    await expect(
+      client.request("GET", "/test", { token: "some_token" }),
+    ).rejects.toThrow(AuthenticationError);
+
+    // Only 1 fetch call (no refresh attempt possible)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });

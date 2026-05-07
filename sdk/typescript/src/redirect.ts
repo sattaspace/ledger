@@ -107,7 +107,8 @@ export class BillingRedirect {
     }
 
     try {
-      const params = new URL(url.startsWith("http") ? url : `https://x${url}`).searchParams;
+      const params = new URL(url.startsWith("http") ? url : `https://x${url}`)
+        .searchParams;
       const value = params.get("billing_updated");
       if (value === null) {
         return { updated: false, success: null };

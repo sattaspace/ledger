@@ -28,6 +28,12 @@ export class AuthModule {
     const data = await this.client.request<TokenPair>("POST", "/auth/login", {
       json: { email, password },
     });
+    // Auto-store tokens if a token store is configured
+    if (this.client.tokenStore) {
+      // We don't have userId yet — use "default" key for single-user scenarios
+      // Multi-user apps should store tokens manually after login
+      this.client.tokenStore.setTokens("default", data);
+    }
     return data;
   }
 
@@ -58,7 +64,9 @@ export class AuthModule {
     if (options?.currency) body["currency"] = options.currency;
     if (options?.language) body["language"] = options.language;
 
-    return this.client.request<MessageResponse>("POST", "/auth/register", { json: body });
+    return this.client.request<MessageResponse>("POST", "/auth/register", {
+      json: body,
+    });
   }
 
   /**
@@ -120,9 +128,13 @@ export class AuthModule {
    * @param refreshToken - The refresh token to invalidate
    */
   async blacklist(refreshToken: string): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>("POST", "/auth/token/blacklist", {
-      json: { refresh: refreshToken },
-    });
+    return this.client.request<MessageResponse>(
+      "POST",
+      "/auth/token/blacklist",
+      {
+        json: { refresh: refreshToken },
+      },
+    );
   }
 
   /**
@@ -149,9 +161,13 @@ export class AuthModule {
    * @param email - The account email address
    */
   async requestPasswordReset(email: string): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>("POST", "/auth/password-reset/request", {
-      json: { email },
-    });
+    return this.client.request<MessageResponse>(
+      "POST",
+      "/auth/password-reset/request",
+      {
+        json: { email },
+      },
+    );
   }
 
   /**
@@ -168,14 +184,18 @@ export class AuthModule {
     newPassword: string,
     confirmPassword: string,
   ): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>("POST", "/auth/password-reset/confirm", {
-      json: {
-        email,
-        otp,
-        new_password: newPassword,
-        confirm_password: confirmPassword,
+    return this.client.request<MessageResponse>(
+      "POST",
+      "/auth/password-reset/confirm",
+      {
+        json: {
+          email,
+          otp,
+          new_password: newPassword,
+          confirm_password: confirmPassword,
+        },
       },
-    });
+    );
   }
 
   /**
@@ -184,9 +204,13 @@ export class AuthModule {
    * @param email - The account email address
    */
   async requestEmailVerification(email: string): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>("POST", "/auth/verify-email/request", {
-      json: { email },
-    });
+    return this.client.request<MessageResponse>(
+      "POST",
+      "/auth/verify-email/request",
+      {
+        json: { email },
+      },
+    );
   }
 
   /**
@@ -195,10 +219,17 @@ export class AuthModule {
    * @param email - The account email address
    * @param otp - 6-digit OTP code
    */
-  async confirmEmailVerification(email: string, otp: string): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>("POST", "/auth/verify-email/confirm", {
-      json: { email, otp },
-    });
+  async confirmEmailVerification(
+    email: string,
+    otp: string,
+  ): Promise<MessageResponse> {
+    return this.client.request<MessageResponse>(
+      "POST",
+      "/auth/verify-email/confirm",
+      {
+        json: { email, otp },
+      },
+    );
   }
 
   /** Try to resolve a token from the configured token store. */
@@ -206,7 +237,10 @@ export class AuthModule {
     const store = this.client.tokenStore;
     if (!store) return null;
 
-    if (store && typeof (store as TokenStoreWithLookup).getFirstTokenPair === "function") {
+    if (
+      store &&
+      typeof (store as TokenStoreWithLookup).getFirstTokenPair === "function"
+    ) {
       const first = (store as TokenStoreWithLookup).getFirstTokenPair();
       return first?.access ?? null;
     }

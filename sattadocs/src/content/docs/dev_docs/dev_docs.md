@@ -1,3 +1,8 @@
+---
+title: Developer docs
+description: A reference page in my new Starlight docs site.
+---
+
 # Satta Ledger — Development Documentation
 
 > Personal Accounting & Billing SaaS

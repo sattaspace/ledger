@@ -7,8 +7,9 @@ domain is added.
 
 How it works:
     1. Check the ``Origin`` header on every request.
-    2. If the origin matches an active ``ServiceDomain.domain``, inject the
-       necessary CORS headers directly into the response.
+    2. If the origin matches an active ``ServiceDomain.domain`` OR the
+       configured ``FRONTEND_URL`` from settings, inject the necessary
+       CORS headers directly into the response.
     3. Otherwise, fall through to ``django-cors-headers`` default behavior.
 
 The ServiceDomain origins are cached with a 5-minute TTL to avoid
@@ -18,6 +19,8 @@ Security:
     - Only ``is_active=True`` domains are allowed.
     - The origin must match exactly (no wildcards).
     - ``CORS_ALLOW_ALL_ORIGINS`` in DEBUG mode still takes precedence.
+    - ``FRONTEND_URL`` is always allowed (read from ``settings.FRONTEND_URL``
+      which is set via ``SB_FRONTEND_URL`` env var).
 
 Note:
     This middleware is fully ASGI-compatible (Django 5.2 ``@sync_and_async_middleware``
@@ -41,13 +44,24 @@ CACHE_TIMEOUT = 300  # 5 minutes
 def _get_allowed_origins() -> set:
     """Get the set of allowed CORS origins from ServiceDomain table.
 
-    Uses Django's cache framework with a 5-minute TTL.
-    Falls back to an empty set on cache failure.
+    Always includes the configured ``FRONTEND_URL`` (``settings.FRONTEND_URL``)
+    alongside all active ``ServiceDomain`` entries.  This ensures the main
+    frontend is accepted even when it runs on a different domain/port than
+    the backend (e.g., Docker deployments).
+
+    Uses Django's cache framework with a 5-minute TTL for the DB portion.
+    Falls back to {FRONTEND_URL} only on cache failure.
     """
+    from django.conf import settings
     from django.core.cache import cache
+
+    # Frontend URL is always allowed (from SB_FRONTEND_URL env var)
+    frontend_url = getattr(settings, "FRONTEND_URL", "").strip()
 
     origins = cache.get(CACHE_KEY)
     if origins is not None:
+        if frontend_url:
+            origins.add(frontend_url)
         return origins
 
     try:
@@ -66,6 +80,9 @@ def _get_allowed_origins() -> set:
     except Exception as e:
         logger.warning("CORS: failed to load service domains: %s", e)
         origins = set()
+
+    if frontend_url:
+        origins.add(frontend_url)
 
     return origins
 

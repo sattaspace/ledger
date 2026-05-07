@@ -80,7 +80,8 @@ export class AuthMeResponse {
     const value = this.access[key];
     if (value === undefined || value === null) return false;
     if (typeof value === "boolean") return value;
-    if (typeof value === "string") return ["true", "1", "yes"].includes(value.toLowerCase());
+    if (typeof value === "string")
+      return ["true", "1", "yes"].includes(value.toLowerCase());
     if (typeof value === "number") return value !== 0;
     return Boolean(value);
   }

@@ -84,7 +84,11 @@ export class RateLimitError extends SattabaseError {
   /** Seconds to wait before retrying (from Retry-After header or response body). */
   readonly retryAfter: number | null;
 
-  constructor(message = "Rate limit exceeded", detail?: unknown, retryAfter?: number | null) {
+  constructor(
+    message = "Rate limit exceeded",
+    detail?: unknown,
+    retryAfter?: number | null,
+  ) {
     super(message, 429, detail);
     this.name = "RateLimitError";
     this.retryAfter = retryAfter ?? null;
@@ -116,7 +120,10 @@ export class ApiServerError extends SattabaseError {
 }
 
 /** Map HTTP status codes to SDK exception classes. */
-const STATUS_MAP: Record<number, new (msg: string, detail?: unknown) => SattabaseError> = {
+const STATUS_MAP: Record<
+  number,
+  new (msg: string, detail?: unknown) => SattabaseError
+> = {
   400: BadRequestError,
   401: AuthenticationError,
   403: ForbiddenError,
@@ -127,7 +134,10 @@ const STATUS_MAP: Record<number, new (msg: string, detail?: unknown) => Sattabas
 };
 
 /** Map error codes to SDK exception classes (higher priority than status). */
-const ERROR_CODE_MAP: Record<string, new (msg: string, detail?: unknown) => SattabaseError> = {
+const ERROR_CODE_MAP: Record<
+  string,
+  new (msg: string, detail?: unknown) => SattabaseError
+> = {
   account_inactive: AccountInactiveError,
   account_deleted: AccountDeletedError,
   account_not_active: AccountNotActiveError,

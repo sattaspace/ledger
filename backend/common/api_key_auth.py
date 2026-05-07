@@ -13,6 +13,14 @@ Usage in controllers::
         validate_api_key(request)
         # request.service_credential is now available
         # request.service_domain is now available
+
+Security audit (E3 — 2026-05-07):
+    Verified that **no raw API key material** is ever written to logs,
+    error responses, or exception messages.  All log statements use the
+    12-character ``api_key_prefix`` (stored in DB) or a truncated
+    ``api_key[:12]`` slice.  The raw key exists only in (a) the HTTP
+    request header (in transit) and (b) the creation/rotation HTTP
+    response body (shown exactly once, never persisted).
 """
 
 import hashlib

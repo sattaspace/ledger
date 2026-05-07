@@ -84,21 +84,21 @@ export class InMemoryTokenStore implements TokenStoreWithLookup {
  * Browser localStorage token store.
  *
  * Persists tokens across page refreshes. Suitable for SPAs where the
- * user logs in via the browser.
- *
- * Note: Does NOT implement `TokenStoreWithLookup` — localStorage stores
- * are keyed by userId, and auto-refresh requires the userId to be passed
- * explicitly. For full auto-refresh support with localStorage, use the
- * InMemoryTokenStore wrapper or implement TokenStoreWithLookup yourself.
+ * user logs in via the browser. Implements `TokenStoreWithLookup` for
+ * full auto-refresh support.
  *
  * @example
  * ```ts
  * const store = new LocalStorageTokenStore();
  * const client = new SattabaseClient(config, store);
+ *
+ * await client.auth.login("user@example.com", "password");
+ * // tokens are auto-stored; auto-refresh works automatically
  * ```
  */
-export class LocalStorageTokenStore implements TokenStore {
+export class LocalStorageTokenStore implements TokenStoreWithLookup {
   private readonly keyPrefix: string;
+  private _currentUserId: string | null = null;
 
   constructor(keyPrefix = "sb:") {
     this.keyPrefix = keyPrefix;
@@ -121,11 +121,59 @@ export class LocalStorageTokenStore implements TokenStore {
 
   setTokens(userId: string, tokens: TokenPair): void {
     if (typeof localStorage === "undefined") return;
+    this._currentUserId = userId;
     localStorage.setItem(this.storageKey(userId), JSON.stringify(tokens));
   }
 
   deleteTokens(userId: string): void {
     if (typeof localStorage === "undefined") return;
     localStorage.removeItem(this.storageKey(userId));
+    if (this._currentUserId === userId) {
+      this._currentUserId = null;
+    }
+  }
+
+  /** Get the first (or current) available token pair from localStorage. */
+  getFirstTokenPair(): TokenPair | null {
+    if (typeof localStorage === "undefined") return null;
+    // Prefer the last userId used in setTokens
+    if (this._currentUserId) {
+      const tokens = this.getTokens(this._currentUserId);
+      if (tokens) return tokens;
+    }
+    // Fallback: scan localStorage for keys matching the prefix
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(this.keyPrefix)) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw) return JSON.parse(raw) as TokenPair;
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Find a userId by matching refresh token value. */
+  getUserIdByRefresh(refreshToken: string): string | null {
+    if (typeof localStorage === "undefined") return null;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(this.keyPrefix)) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const tokens = JSON.parse(raw) as TokenPair;
+          if (tokens.refresh === refreshToken) {
+            return key.slice(this.keyPrefix.length);
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
   }
 }

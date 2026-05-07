@@ -331,6 +331,26 @@ class MyTokenStore(TokenStore):
     async def delete_tokens(self, user_id: str) -> None: ...
 ```
 
+### Extended Protocol (`TokenStoreWithLookup`)
+
+For full auto-refresh support (including token resolution when `user_id` is unknown), implement the extended protocol. Both `InMemoryTokenStore` and `RedisTokenStore` implement this automatically.
+
+```python
+from sattabase_sdk.token_store import TokenStoreWithLookup
+from sattabase_sdk.models import TokenPair
+
+class MyStore(TokenStoreWithLookup):
+    # ... TokenStore methods ...
+
+    async def get_first_token_pair(self) -> TokenPair | None:
+        """Return the first available token pair (for auto-refresh)."""
+        ...
+
+    async def get_user_id_by_refresh(self, refresh_token: str) -> str | None:
+        """Find user_id by matching refresh token value."""
+        ...
+```
+
 ### In-Memory Store (development only)
 
 ```python
@@ -343,6 +363,7 @@ client = SattabaseClient(config, token_store=store)
 await store.set_tokens("user_42", tokens)
 
 # Auto-refresh will use the store to find refresh tokens
+# InMemoryTokenStore implements TokenStoreWithLookup for full auto-refresh support
 ```
 
 ### Redis Store
@@ -352,9 +373,11 @@ from sattabase_sdk.token_store import RedisTokenStore
 import redis.asyncio as redis
 
 redis_client = redis.from_url("redis://localhost:6379")
-store = RedisTokenStore(redis_client, key_prefix="sb:")
+store = RedisTokenStore(redis_client)  # key_prefix defaults to "sb:tokens:"
 client = SattabaseClient(config, token_store=store)
 ```
+
+The optional `key_prefix` parameter controls the Redis key namespace (default: `"sb:tokens:"`). Keys in Redis follow the pattern `sb:tokens:<user_id>` → `JSON(TokenPair)`.
 
 ### Auto-Refresh
 
@@ -579,7 +602,15 @@ pytest tests/test_auth.py -v
 pytest --cov=sattabase_sdk --cov-report=term-missing
 ```
 
-Tests use `respx` for HTTP mocking and `pytest-asyncio` for async test support.
+```bash
+# Run unit tests only (skip integration)
+pytest -m "not integration"
+
+# Run integration tests only (requires a running backend)
+pytest -m integration
+```
+
+Tests use `respx` for HTTP mocking and `pytest-asyncio` for async test support. Integration tests are marked with the `integration` marker and require a running Sattabase backend.
 
 ---
 
@@ -598,11 +629,12 @@ sdk/python/
     access.py                 # AccessModule — cached feature gating helpers
     redirect.py               # BillingRedirectModule — URL constructors
     middleware.py             # Django middleware (sync + async support)
-    token_store.py            # TokenStore protocol + InMemoryTokenStore
+    token_store.py            # TokenStore + TokenStoreWithLookup protocols + stores
     models.py                 # Pydantic v2 models (TokenPair, User, SubscriptionInfo, etc.)
     exceptions.py             # Typed exception hierarchy + build_error mapper
     py.typed                  # PEP 561 marker
   tests/
+    __init__.py               # Package marker
     conftest.py               # Shared fixtures
     test_auth.py              # Auth module tests
     test_access.py            # Access module tests
@@ -610,6 +642,9 @@ sdk/python/
     test_config.py            # Config validation + error builder tests
     test_models.py            # Model helper method tests
     test_redirect.py          # Billing URL constructor tests
+    test_middleware.py        # Django middleware tests
+    test_token_store.py       # Token store protocol + implementation tests
+    test_integration.py       # Integration tests (marked with `integration` marker)
 ```
 
 ### Toolchain

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import httpx
 import respx
 
 from .conftest import TEST_BASE_URL, token_response
@@ -16,7 +17,7 @@ class TestAccessModule:
         """has_access returns True for granted features."""
         with respx.mock(assert_all_called=True) as respx_mock:
             respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             assert await client.access.has_access("reports", token="test-token")
@@ -28,7 +29,7 @@ class TestAccessModule:
         """has_access returns False for denied features."""
         with respx.mock(assert_all_called=True) as respx_mock:
             respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             assert not await client.access.has_access("priority_support", token="test-token")
@@ -39,7 +40,7 @@ class TestAccessModule:
         """get_access returns integer values."""
         with respx.mock(assert_all_called=True) as respx_mock:
             respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             assert await client.access.get_access("max_bank_accounts", token="test-token") == 5
@@ -51,7 +52,7 @@ class TestAccessModule:
         """get_access returns default for missing keys."""
         with respx.mock(assert_all_called=True) as respx_mock:
             respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             assert await client.access.get_access("missing_key", default="fallback", token="test-token") == "fallback"
@@ -61,21 +62,21 @@ class TestAccessModule:
         """keys returns all access key names."""
         with respx.mock(assert_all_called=True) as respx_mock:
             respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             keys = await client.access.keys(token="test-token")
             assert "dashboard" in keys
             assert "reports" in keys
             assert "max_bank_accounts" in keys
-            assert len(keys) == 8
+            assert len(keys) == 9
 
     @pytest.mark.asyncio
     async def test_cache_avoids_extra_calls(self, client, auth_me_response):
         """Cached responses don't trigger additional API calls."""
         with respx.mock(assert_all_called=True) as respx_mock:
             route = respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             # First call fetches
@@ -91,7 +92,7 @@ class TestAccessModule:
         """invalidate_cache forces re-fetch."""
         with respx.mock(assert_all_called=True) as respx_mock:
             route = respx_mock.get(f"{TEST_BASE_URL}/billing/auth/me").mock(
-                return_value=respx.Response(200, json=auth_me_response)
+                return_value=httpx.Response(200, json=auth_me_response)
             )
 
             # First call

@@ -157,6 +157,10 @@ def build_error(status: int, body: dict | None, code: str | None = None) -> Satt
     if isinstance(body, dict):
         message = body.get("detail") or body.get("message") or str(body)
 
+    # Auto-extract code from body if not provided explicitly
+    if code is None and isinstance(body, dict):
+        code = body.get("code")
+
     # Check error code first (more specific)
     if code:
         exc_cls = _ERROR_CODE_MAP.get(code)

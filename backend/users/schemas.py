@@ -323,6 +323,7 @@ class UserOutputSchema(ModelSchema):
             "language",
             "is_email_verified",
             "is_active",
+            "is_staff",
             "role",
             "created_at",
         ]

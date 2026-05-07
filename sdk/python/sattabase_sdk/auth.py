@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .models import AuthMeResponse, MessageResponse, TokenPair
+from .token_store import TokenStoreWithLookup
 
 if TYPE_CHECKING:
     from .client import SattabaseClient
@@ -181,10 +182,11 @@ class AuthModule:
         await self.blacklist(refresh_token)
 
         # Clear token store if configured
-        if self._client._token_store:
-            user_id = await self._client._find_user_id_by_refresh(refresh_token)
+        store = self._client._token_store
+        if store is not None and isinstance(store, TokenStoreWithLookup):
+            user_id = await store.get_user_id_by_refresh(refresh_token)
             if user_id:
-                await self._client._token_store.delete_tokens(user_id)
+                await store.delete_tokens(user_id)
 
     async def request_password_reset(self, email: str) -> MessageResponse:
         """Request a password reset OTP via email.
@@ -272,15 +274,18 @@ class AuthModule:
     # --- Internal helpers ---
 
     async def _resolve_token_from_store(self) -> str | None:
-        """Try to resolve a token from the configured token store."""
+        """Try to resolve a token from the configured token store.
+
+        Uses the TokenStoreWithLookup protocol instead of accessing
+        private ``_store`` attribute directly.
+        """
         store = self._client._token_store
         if store is None:
             return None
 
-        # For in-memory stores, try to get the first available token pair
-        if hasattr(store, "_store"):
-            tokens = next(iter(store._store.values()), None)  # type: ignore[attr-defined]
-            if isinstance(tokens, TokenPair):
+        if isinstance(store, TokenStoreWithLookup):
+            tokens = await store.get_first_token_pair()
+            if tokens is not None:
                 return tokens.access
 
         return None

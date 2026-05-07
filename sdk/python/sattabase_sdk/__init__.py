@@ -32,13 +32,57 @@ from .models import (
     User,
 )
 
+# Lazy imports for token store classes (avoids potential circular deps)
+from .token_store import InMemoryTokenStore, TokenStore, TokenStoreWithLookup
+
+# Lazy imports for exceptions
+from .exceptions import (
+    AccountDeletedError,
+    AccountInactiveError,
+    AccountNotActiveError,
+    ApiServerError,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    RateLimitError,
+    SattabaseError,
+    ValidationError,
+)
+
+# Lazy import for middleware (Django is an optional dependency)
+from .middleware import SattabaseAuthMiddleware
+
 __all__ = [
+    # Client
     "SattabaseClient",
     "SattabaseConfig",
+    # Models
     "AuthMeResponse",
     "MessageResponse",
     "SubscriptionInfo",
     "TokenPair",
     "User",
+    # Token stores
+    "TokenStore",
+    "TokenStoreWithLookup",
+    "InMemoryTokenStore",
+    # Exceptions
+    "SattabaseError",
+    "AuthenticationError",
+    "AccountInactiveError",
+    "AccountDeletedError",
+    "ForbiddenError",
+    "AccountNotActiveError",
+    "NotFoundError",
+    "ConflictError",
+    "RateLimitError",
+    "ValidationError",
+    "BadRequestError",
+    "ApiServerError",
+    # Middleware
+    "SattabaseAuthMiddleware",
+    # Meta
     "__version__",
 ]

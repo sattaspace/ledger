@@ -1,3 +1,8 @@
+---
+title: Service Domain Communication Gap Analysis
+description: A reference page in my new Starlight docs site.
+---
+
 # Service Domain Communication Gap Analysis
 
 > SDK (TypeScript) vs Backend (Django Ninja) — security & feature alignment audit

@@ -7,15 +7,15 @@ class TestUser:
     """Tests for User model."""
 
     def test_display_property_with_display_name(self):
-        user = User(display_name="Rahim", full_name="Rahim Uddin", email="test@example.com")
+        user = User(id=1, slug="rahim", display_name="Rahim", full_name="Rahim Uddin", email="test@example.com")
         assert user.display == "Rahim"
 
     def test_display_property_fallback_to_full_name(self):
-        user = User(display_name="", full_name="Rahim Uddin", email="test@example.com")
+        user = User(id=2, slug="rahim2", display_name="", full_name="Rahim Uddin", email="test@example.com")
         assert user.display == "Rahim Uddin"
 
     def test_display_property_fallback_to_email(self):
-        user = User(display_name="", full_name="", email="user@example.com")
+        user = User(id=3, slug="userx", display_name="", full_name="", email="user@example.com")
         assert user.display == "user"
 
 

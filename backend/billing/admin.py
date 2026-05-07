@@ -107,6 +107,7 @@ class ServiceDomainAdmin(admin.ModelAdmin):
         "product_link",
         "is_primary",
         "is_active",
+        "credential_status",
         "created_at",
     )
     list_filter = ("product", "is_primary", "is_active", "created_at")
@@ -120,7 +121,7 @@ class ServiceDomainAdmin(admin.ModelAdmin):
         url = reverse("admin:billing_product_change", args=[obj.product.id])
         return format_html('<a href="{}">{}</a>', url, obj.product.name)
 
-    actions = ["set_as_primary"]
+    actions = ["set_as_primary", "create_api_key_credential"]
 
     @admin.action(description=_("Set selected domain(s) as primary"))
     def set_as_primary(self, request, queryset):
@@ -135,6 +136,71 @@ class ServiceDomainAdmin(admin.ModelAdmin):
             sd.save(update_fields=["is_primary"])
             count += 1
         self.message_user(request, _(f"Set {count} domain(s) as primary."))
+
+    @admin.action(description=_("Create API key credential for selected domain(s)"))
+    def create_api_key_credential(self, request, queryset):
+        """Generate a new API key for each selected service domain.
+
+        Uses the same key generation logic as POST /admin/api-keys/.
+        The raw key is shown once in the admin message and cannot be
+        recovered after that.  If a credential already exists for a
+        domain, it is revoked and replaced.
+        """
+        from common.utils import generate_api_key
+
+        created_keys = []
+        for sd in queryset:
+            raw_key, prefix, key_hash = generate_api_key()
+
+            # Revoke any existing credential for this domain
+            ServiceCredential.objects.filter(
+                service_domain=sd, is_active=True
+            ).update(is_active=False)
+
+            # Create new credential
+            ServiceCredential.objects.create(
+                service_domain=sd,
+                name=f"{sd.domain} — API Key",
+                api_key_hash=key_hash,
+                api_key_prefix=prefix,
+                permissions={"auth": True, "billing_read": True},
+                is_active=True,
+                created_by=request.user,
+            )
+            created_keys.append((sd.domain, raw_key))
+
+        if created_keys:
+            key_lines = "\n".join(
+                f"  {domain}: {key}" for domain, key in created_keys
+            )
+            self.message_user(
+                request,
+                _(
+                    f"Created {len(created_keys)} API key credential(s). "
+                    f"Save these keys now — they cannot be recovered:\n\n{key_lines}"
+                ),
+            )
+        else:
+            self.message_user(request, _("No domains selected."))
+
+    @admin.display(description=_("API Key"))
+    def credential_status(self, obj):
+        """Show whether an active API key credential exists."""
+        cred = ServiceCredential.objects.filter(
+            service_domain=obj, is_active=True
+        ).first()
+        if cred:
+            url = reverse(
+                "admin:billing_servicecredential_change", args=[cred.id]
+            )
+            return format_html(
+                '<a href="{}">{}</a>',
+                url,
+                cred.api_key_prefix,
+            )
+        return format_html(
+            '<span style="color:#999;">No active key</span>'
+        )
 
 
 # =============================================================================

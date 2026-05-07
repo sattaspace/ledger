@@ -289,7 +289,7 @@ const store = new LocalStorageTokenStore("sb:");
 const client = new SattabaseClient(config, store);
 ```
 
-Persists tokens across page refreshes. Suitable for browser-based SPAs.
+Persists tokens across page refreshes. Suitable for browser-based SPAs. Implements `TokenStoreWithLookup` for full auto-refresh support.
 
 ## Models
 
@@ -366,6 +366,17 @@ interface MessageResponse {
 }
 ```
 
+### `BillingUpdateStatus`
+
+Result of detecting a `billing_updated` query parameter after a billing redirect.
+
+```ts
+interface BillingUpdateStatus {
+  updated: boolean;           // Whether the parameter was present
+  success: 1 | 0 | null;     // 1 = billing action succeeded, 0 = cancelled/failed
+}
+```
+
 ## Exceptions
 
 All SDK errors inherit from `SattabaseError`.
@@ -422,7 +433,7 @@ npm install
 # Build the SDK
 npm run build
 
-# Run all tests
+# Run all tests (unit + integration if backend available)
 npm test
 
 # Run tests in watch mode
@@ -432,7 +443,7 @@ npm run test:watch
 npm run lint
 ```
 
-Tests use `vitest` with mocked `fetch` (globalThis.fetch). All 50 tests cover config, exceptions, auth, access, redirect, models, token store, and client request handling.
+Tests use `vitest` with mocked `fetch` (globalThis.fetch). Unit tests (50 tests in `index.test.ts`) cover config, exceptions, auth, access, redirect, models, token store, and client request handling. Integration tests in `integration.test.ts` require a running Sattabase backend.
 
 ## Development
 
@@ -455,7 +466,8 @@ sdk/typescript/
     models.ts              # TypeScript interfaces + AuthMeResponse class
     exceptions.ts          # Typed exception hierarchy + buildError mapper
   tests/
-    index.test.ts          # 50 tests covering all modules
+    index.test.ts          # 50 unit tests covering all modules
+    integration.test.ts    # Integration tests (requires running backend)
   dist/                     # Built output (ESM + CJS + DTS)
     index.js               # ESM entry
     index.cjs              # CJS entry
