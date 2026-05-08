@@ -1,0 +1,391 @@
+---
+/**
+ * Custom MobileTableOfContents Override for Starlight
+ * Matches Starlight's native mobile TOC structure exactly.
+ */
+
+import { readFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
+import DefaultMobileTableOfContents from '@astrojs/starlight/components/MobileTableOfContents.astro';
+
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface TocItem {
+  depth: number;
+  slug: string;
+  text: string;
+  children: TocItem[];
+}
+
+function extractHeadings(markdown: string, minLevel: number, maxLevel: number): Heading[] {
+  let cleanMarkdown = markdown
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]+`/g, '');
+  
+  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+  const headings: Heading[] = [];
+  let match;
+
+  while ((match = headingRegex.exec(cleanMarkdown)) !== null) {
+    const depth = match[1].length;
+    const text = match[2].trim();
+    const slug = text
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .trim();
+    
+    if (depth >= minLevel && depth <= maxLevel) {
+      headings.push({ depth, slug, text });
+    }
+  }
+  return headings;
+}
+
+function buildTocItems(headings: Heading[]): TocItem[] {
+  const items: TocItem[] = [];
+  const stack: TocItem[] = [];
+
+  for (const heading of headings) {
+    const item: TocItem = {
+      depth: heading.depth,
+      slug: heading.slug,
+      text: heading.text,
+      children: [],
+    };
+
+    while (stack.length > 0 && stack[stack.length - 1].depth >= heading.depth) {
+      stack.pop();
+    }
+
+    if (stack.length === 0) {
+      items.push(item);
+    } else {
+      const parent = stack[stack.length - 1];
+      parent.children.push(item);
+    }
+
+    stack.push(item);
+  }
+  return items;
+}
+
+const { toc } = Astro.locals.starlightRoute;
+const props = Astro.props;
+const minHeadingLevel = toc?.minHeadingLevel || 2;
+const maxHeadingLevel = toc?.maxHeadingLevel || 3;
+const currentUrl = Astro.url.pathname;
+
+let externalTocItems: TocItem[] = [];
+
+try {
+  const pages = import.meta.glob<{ frontmatter: any }>('../content/docs/*.{md,mdx}', { eager: true });
+  const subPages = import.meta.glob<{ frontmatter: any }>('../content/docs/**/*.{md,mdx}', { eager: true });
+  const allPages = { ...pages, ...subPages };
+  const normalizedUrl = currentUrl.replace(/^\/|\/$/g, '');
+  
+  for (const [filePath, module] of Object.entries(allPages)) {
+    const match = filePath.match(/\.\.\/content\/docs\/(.+)\.(md|mdx)$/);
+    if (match) {
+      const entrySlug = match[1];
+      if (entrySlug === normalizedUrl || entrySlug === normalizedUrl.replace(/\//g, '-') || normalizedUrl === entrySlug) {
+        if (module?.frontmatter?.externalMdPath) {
+          const mdFilePath = resolve(process.cwd(), module.frontmatter.externalMdPath);
+          if (existsSync(mdFilePath)) {
+            const headings = extractHeadings(readFileSync(mdFilePath, 'utf-8'), minHeadingLevel, maxHeadingLevel);
+            externalTocItems = buildTocItems(headings);
+          }
+        }
+        break;
+      }
+    }
+  }
+} catch {}
+
+const hasExternalMarkdown = externalTocItems.length > 0;
+const label = Astro.locals.t('tableOfContents.onThisPage');
+const overviewLabel = Astro.locals.t('tableOfContents.overview');
+
+// Flatten items for mobile display
+function flattenItems(items: TocItem[], result: TocItem[] = []): TocItem[] {
+  for (const item of items) {
+    result.push(item);
+    if (item.children.length > 0) flattenItems(item.children, result);
+  }
+  return result;
+}
+
+const flatItems = flattenItems(externalTocItems);
+---
+
+{!hasExternalMarkdown && <DefaultMobileTableOfContents {...props} />}
+
+{hasExternalMarkdown && flatItems.length > 0 && (
+  <sl-external-mobile-toc data-min-h={minHeadingLevel} data-max-h={maxHeadingLevel}>
+    <nav aria-labelledby="starlight__on-this-page--mobile">
+      <details id="starlight__mobile-toc">
+        <summary id="starlight__on-this-page--mobile" class="sl-flex">
+          <span class="toggle sl-flex">
+            {label}
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" class="caret">
+              <path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 1.41 1.41l4.25-4.24a1 1 0 0 0 0-1.42Z" fill="currentColor" />
+            </svg>
+          </span>
+          <span class="display-current" />
+        </summary>
+        <div class="dropdown">
+          <ul class="mobile-toc-list">
+            <li>
+              <a href="#_top">
+                <span>{overviewLabel}</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24">
+                  <path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 1.41 1.41l4.25-4.24a1 1 0 0 0 0-1.42Z" fill="currentColor" />
+                </svg>
+              </a>
+            </li>
+            {flatItems.map((item) => (
+              <li>
+                <a href={`#${item.slug}`}>
+                  <span>{item.text}</span>
+                  <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24">
+                    <path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 1.41 1.41l4.25-4.24a1 1 0 0 0 0-1.42Z" fill="currentColor" />
+                  </svg>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </details>
+    </nav>
+  </sl-external-mobile-toc>
+)}
+
+<style>
+  @layer starlight.core {
+    sl-external-mobile-toc nav {
+      position: fixed;
+      z-index: var(--sl-z-index-toc);
+      top: calc(var(--sl-nav-height) - 1px);
+      inset-inline: 0;
+      border-top: 1px solid var(--sl-color-gray-5);
+      background-color: var(--sl-color-bg-nav);
+    }
+
+    @media (min-width: 50rem) {
+      sl-external-mobile-toc nav {
+        inset-inline-start: var(--sl-content-inline-start, 0);
+      }
+    }
+
+    sl-external-mobile-toc summary {
+      gap: 0.5rem;
+      align-items: center;
+      height: var(--sl-mobile-toc-height);
+      border-bottom: 1px solid var(--sl-color-hairline-shade);
+      padding: 0.5rem 1rem;
+      font-size: var(--sl-text-xs);
+      outline-offset: var(--sl-outline-offset-inside);
+    }
+
+    sl-external-mobile-toc summary::marker,
+    sl-external-mobile-toc summary::-webkit-details-marker {
+      display: none;
+    }
+
+    sl-external-mobile-toc .toggle {
+      flex-shrink: 0;
+      gap: 1rem;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid var(--sl-color-gray-5);
+      border-radius: 0.5rem;
+      padding-block: 0.5rem;
+      padding-inline-start: 0.75rem;
+      padding-inline-end: 0.5rem;
+      line-height: 1;
+      background-color: var(--sl-color-black);
+      user-select: none;
+      cursor: pointer;
+    }
+
+    sl-external-mobile-toc details[open] .toggle {
+      color: var(--sl-color-white);
+      border-color: var(--sl-color-accent);
+    }
+
+    sl-external-mobile-toc details .toggle:hover {
+      color: var(--sl-color-white);
+      border-color: var(--sl-color-gray-2);
+    }
+
+    sl-external-mobile-toc details[open] .caret {
+      transform: rotateZ(90deg);
+    }
+
+    sl-external-mobile-toc .display-current {
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      color: var(--sl-color-white);
+    }
+
+    sl-external-mobile-toc .dropdown {
+      --border-top: 1px;
+      margin-top: calc(-1 * var(--border-top));
+      border: var(--border-top) solid var(--sl-color-gray-6);
+      border-top-color: var(--sl-color-hairline-shade);
+      max-height: calc(85vh - var(--sl-nav-height) - var(--sl-mobile-toc-height));
+      overflow-y: auto;
+      background-color: var(--sl-color-black);
+      box-shadow: var(--sl-shadow-md);
+      overscroll-behavior: contain;
+    }
+
+    sl-external-mobile-toc .mobile-toc-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    sl-external-mobile-toc .mobile-toc-list a {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-top: 1px solid var(--sl-color-gray-6);
+      color: var(--sl-color-text);
+      font-size: var(--sl-text-sm);
+      text-decoration: none;
+    }
+
+    sl-external-mobile-toc .mobile-toc-list a:hover {
+      color: var(--sl-color-text-accent);
+    }
+
+    sl-external-mobile-toc .mobile-toc-list a[aria-current='true'] {
+      color: var(--sl-color-text-accent);
+    }
+  }
+</style>
+
+<script>
+  // Use a unique name to avoid conflict with Starlight's native component
+  if (!customElements.get('sl-external-mobile-toc')) {
+    class SLExternalMobileTOC extends HTMLElement {
+      private _current: HTMLAnchorElement | null = null;
+
+      protected set current(link: HTMLAnchorElement) {
+        if (link === this._current) return;
+        if (this._current) this._current.removeAttribute('aria-current');
+        link.setAttribute('aria-current', 'true');
+        this._current = link;
+        const display = this.querySelector('.display-current') as HTMLSpanElement;
+        if (display) display.textContent = link.textContent;
+      }
+
+      constructor() {
+        super();
+        const details = this.querySelector('details');
+        if (!details) return;
+
+        const closeToC = () => {
+          details.open = false;
+        };
+
+        // Close when link clicked
+        details.querySelectorAll('a').forEach((a) => {
+          a.addEventListener('click', closeToC);
+        });
+
+        // Close when clicking outside
+        window.addEventListener('click', (e) => {
+          if (!details.contains(e.target as Node)) closeToC();
+        });
+
+        // Close on escape
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && details.open) {
+            const hasFocus = details.contains(document.activeElement);
+            closeToC();
+            if (hasFocus) {
+              const summary = details.querySelector('summary');
+              if (summary) summary.focus();
+            }
+          }
+        });
+
+        // Scroll spy for mobile TOC
+        const links = this.querySelectorAll('a[href^="#"]');
+        const overviewLink = this.querySelector('a[href="#_top"]') as HTMLAnchorElement;
+
+        const headings: Element[] = [];
+        const headingLinks: HTMLAnchorElement[] = [];
+
+        links.forEach((link) => {
+          const href = link.getAttribute('href');
+          if (href && href !== '#_top') {
+            const slug = href.substring(1);
+            const heading = document.getElementById(slug);
+            if (heading) {
+              headings.push(heading);
+              headingLinks.push(link as HTMLAnchorElement);
+            }
+          }
+        });
+
+        if (headings.length > 0) {
+          const observer = new IntersectionObserver(
+            () => {
+              let topMost: { heading: Element; top: number } | null = null;
+
+              headings.forEach((heading) => {
+                const rect = heading.getBoundingClientRect();
+                if (rect.top <= 150) {
+                  if (!topMost || rect.top > topMost.top) {
+                    topMost = { heading, top: rect.top };
+                  }
+                }
+              });
+
+              if (topMost) {
+                const index = headings.indexOf(topMost.heading);
+                if (index >= 0) {
+                  this.current = headingLinks[index];
+                }
+              } else if (overviewLink) {
+                this.current = overviewLink;
+              }
+            },
+            {
+              rootMargin: '-0px 0px -70% 0px',
+              threshold: 0,
+            }
+          );
+
+          headings.forEach((heading) => observer.observe(heading));
+        }
+
+        // Handle scroll for Overview link
+        if (overviewLink) {
+          window.addEventListener('scroll', () => {
+            if (window.scrollY < 100) {
+              this.current = overviewLink;
+            }
+          }, { passive: true });
+
+          // Initial state
+          if (window.scrollY < 100) {
+            this.current = overviewLink;
+          }
+        }
+      }
+    }
+
+    customElements.define('sl-external-mobile-toc', SLExternalMobileTOC);
+  }
+</script>

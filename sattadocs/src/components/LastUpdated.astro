@@ -1,0 +1,96 @@
+---
+/**
+ * Custom LastUpdated Override for Starlight
+ * 
+ * Shows last modified date for:
+ * - Regular .md/.mdx files: Uses Starlight's git-based date
+ * - .mdx files with externalMdPath: Shows the external file's modification date
+ */
+
+import { statSync, existsSync } from 'fs';
+import { resolve } from 'path';
+import DefaultLastUpdated from '@astrojs/starlight/components/LastUpdated.astro';
+
+interface Props {
+  entry?: {
+    data?: {
+      lastModified?: Date;
+    };
+  };
+}
+
+const props = Astro.props as Props;
+const currentUrl = Astro.url.pathname;
+
+// Try to get the externalMdPath from the current page's frontmatter
+let externalMdPath: string | null = null;
+let externalFileDate: Date | null = null;
+
+try {
+  const pages = import.meta.glob<{ frontmatter: any }>(
+    '../content/docs/*.{md,mdx}',
+    { eager: true }
+  );
+  
+  const subPages = import.meta.glob<{ frontmatter: any }>(
+    '../content/docs/**/*.{md,mdx}',
+    { eager: true }
+  );
+  
+  const allPages = { ...pages, ...subPages };
+  const normalizedUrl = currentUrl.replace(/^\/|\/$/g, '');
+  
+  for (const [filePath, module] of Object.entries(allPages)) {
+    const match = filePath.match(/\.\.\/content\/docs\/(.+)\.(md|mdx)$/);
+    if (match) {
+      const entrySlug = match[1];
+      const isMatch = 
+        entrySlug === normalizedUrl ||
+        entrySlug === normalizedUrl.replace(/\//g, '-') ||
+        normalizedUrl === entrySlug;
+      
+      if (isMatch && module?.frontmatter?.externalMdPath) {
+        externalMdPath = module.frontmatter.externalMdPath;
+        
+        const cwd = process.cwd();
+        const mdFilePath = resolve(cwd, externalMdPath);
+        
+        if (existsSync(mdFilePath)) {
+          const stats = statSync(mdFilePath);
+          externalFileDate = stats.mtime;
+        }
+        break;
+      }
+    }
+  }
+} catch (error) {
+  // Silently fail, will use default behavior
+}
+
+// Format date helper
+function formatDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
+}
+
+// Determine which date to show
+const showExternalDate = externalFileDate !== null;
+---
+
+{showExternalDate ? (
+  <span class="sl-last-updated">
+    Last updated: {formatDate(externalFileDate!)}
+  </span>
+) : (
+  <DefaultLastUpdated {...props} />
+)}
+
+<style>
+  .sl-last-updated {
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+</style>

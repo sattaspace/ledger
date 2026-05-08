@@ -1,0 +1,298 @@
+---
+/**
+ * Custom TableOfContents Override for Starlight
+ * 
+ * This overrides the right sidebar TOC to support external markdown files.
+ * In your MDX frontmatter, add:
+ *   externalMdPath: "../commands.md"  (path relative to project root)
+ * 
+ * Features:
+ * - Shows TOC from external markdown file when externalMdPath is specified
+ * - Falls back to normal page headings for regular .md/.mdx files
+ */
+
+import { readFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
+import TableOfContentsList from './TableOfContentsList.astro';
+
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface TocItem {
+  depth: number;
+  slug: string;
+  text: string;
+  children: TocItem[];
+}
+
+// Function to extract headings from markdown
+function extractHeadings(markdown: string, minLevel: number, maxLevel: number): Heading[] {
+  // First, remove all code blocks (fenced with ```) to avoid extracting comments as headings
+  // Also remove inline code to be safe
+  let cleanMarkdown = markdown
+    // Remove fenced code blocks (``` ... ```)
+    .replace(/```[\s\S]*?```/g, '')
+    // Remove inline code (`...`)
+    .replace(/`[^`]+`/g, '');
+  
+  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+  const headings: Heading[] = [];
+  let match;
+
+  while ((match = headingRegex.exec(cleanMarkdown)) !== null) {
+    const depth = match[1].length;
+    const text = match[2].trim();
+    const slug = text
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .trim();
+    
+    // Only include headings within the specified level range (e.g., h2-h3)
+    if (depth >= minLevel && depth <= maxLevel) {
+      headings.push({ depth, slug, text });
+    }
+  }
+
+  return headings;
+}
+
+// Convert flat headings array to nested TocItem structure (like Starlight expects)
+function buildTocItems(headings: Heading[]): TocItem[] {
+  const items: TocItem[] = [];
+  const stack: TocItem[] = [];
+
+  for (const heading of headings) {
+    const item: TocItem = {
+      depth: heading.depth,
+      slug: heading.slug,
+      text: heading.text,
+      children: [],
+    };
+
+    // Find the correct parent based on depth
+    while (stack.length > 0 && stack[stack.length - 1].depth >= heading.depth) {
+      stack.pop();
+    }
+
+    if (stack.length === 0) {
+      items.push(item);
+    } else {
+      const parent = stack[stack.length - 1];
+      parent.children.push(item);
+    }
+
+    stack.push(item);
+  }
+
+  return items;
+}
+
+// Get Starlight's original TOC data
+const { toc } = Astro.locals.starlightRoute;
+
+// Determine min/max heading levels early
+const minHeadingLevel = toc?.minHeadingLevel || 2;
+const maxHeadingLevel = toc?.maxHeadingLevel || 3;
+
+// Get current page URL
+const currentUrl = Astro.url.pathname;
+
+// Try to get the externalMdPath from the current page's frontmatter
+let externalMdPath: string | null = null;
+let externalTocItems: TocItem[] = [];
+
+try {
+  // Use Astro.glob to get all pages
+  const pages = import.meta.glob<{ frontmatter: any }>(
+    '../content/docs/*.{md,mdx}',
+    { eager: true }
+  );
+  
+  // Also check subdirectories
+  const subPages = import.meta.glob<{ frontmatter: any }>(
+    '../content/docs/**/*.{md,mdx}',
+    { eager: true }
+  );
+  
+  const allPages = { ...pages, ...subPages };
+  
+  // Normalize current URL for matching
+  const normalizedUrl = currentUrl.replace(/^\/|\/$/g, '');
+  
+  // Find the current page by matching URL to file path
+  for (const [filePath, module] of Object.entries(allPages)) {
+    // Extract slug from file path
+    const match = filePath.match(/\.\.\/content\/docs\/(.+)\.(md|mdx)$/);
+    if (match) {
+      const entrySlug = match[1];
+      
+      // Check for match - handle various URL formats
+      const isMatch = 
+        entrySlug === normalizedUrl ||
+        entrySlug === normalizedUrl.replace(/\//g, '-') ||
+        normalizedUrl === entrySlug ||
+        entrySlug === normalizedUrl.replace(/\/$/, '') ||
+        `${entrySlug}/` === normalizedUrl;
+      
+      if (isMatch && module?.frontmatter?.externalMdPath) {
+        externalMdPath = module.frontmatter.externalMdPath;
+        
+        const cwd = process.cwd();
+        const mdFilePath = resolve(cwd, externalMdPath);
+        
+        if (existsSync(mdFilePath)) {
+          const markdownContent = readFileSync(mdFilePath, 'utf-8');
+          const headings = extractHeadings(markdownContent, minHeadingLevel, maxHeadingLevel);
+          externalTocItems = buildTocItems(headings);
+          console.log(`[TOC] Found ${headings.length} headings from external file: ${mdFilePath}`);
+        } else {
+          console.log(`[TOC] External file not found: ${mdFilePath}`);
+        }
+        break;
+      }
+    }
+  }
+} catch (error) {
+  console.error('[TableOfContents] Error:', error);
+}
+
+// Determine which TOC items to use
+// Use external TOC if available, otherwise use original
+const finalTocItems = externalTocItems.length > 0 ? externalTocItems : (toc?.items || []);
+
+// Add "Overview" link at the top for external markdown (matches Starlight's default behavior)
+const overviewLabel = Astro.locals.t('tableOfContents.overview');
+---
+
+{
+        toc || externalTocItems.length > 0 ? (
+                <starlight-toc data-min-h={minHeadingLevel} data-max-h={maxHeadingLevel}>
+                        <nav aria-labelledby="starlight__on-this-page">
+                                <h2 id="starlight__on-this-page">{Astro.locals.t('tableOfContents.onThisPage')}</h2>
+                                {externalTocItems.length > 0 && (
+                                        <ul class="overview-link">
+                                                <li>
+                                                        <a href="#_top">
+                                                                <span>{overviewLabel}</span>
+                                                        </a>
+                                                </li>
+                                        </ul>
+                                )}
+                                <TableOfContentsList toc={finalTocItems} />
+                        </nav>
+                </starlight-toc>
+        ) : null
+}
+
+<style>
+        @layer starlight.core {
+                .overview-link {
+                        list-style: none;
+                        padding: 0;
+                        margin: 0;
+                }
+                .overview-link a {
+                        display: block;
+                        border-radius: 0.25rem;
+                        padding-block: 0.25rem;
+                        padding-inline: 0.5rem;
+                        line-height: 1.25;
+                }
+        }
+</style>
+
+{externalTocItems.length > 0 && (
+        <script>
+                // Scroll spy for external markdown TOC
+                document.addEventListener('DOMContentLoaded', () => {
+                        const toc = document.querySelector('starlight-toc');
+                        if (!toc) return;
+
+                        const links = toc.querySelectorAll('a[href^="#"]');
+                        if (links.length === 0) return;
+
+                        let currentLink: HTMLAnchorElement | null = null;
+
+                        const setActive = (link: HTMLAnchorElement) => {
+                                if (link === currentLink) return;
+                                if (currentLink) currentLink.removeAttribute('aria-current');
+                                link.setAttribute('aria-current', 'true');
+                                currentLink = link;
+                        };
+
+                        // For Overview link, set active when at top of page
+                        const overviewLink = toc.querySelector('a[href="#_top"]') as HTMLAnchorElement;
+                        
+                        // Build list of heading elements to observe
+                        const headings: Element[] = [];
+                        const headingLinks: HTMLAnchorElement[] = [];
+
+                        links.forEach((link) => {
+                                const href = link.getAttribute('href');
+                                if (href && href !== '#_top') {
+                                        const slug = href.substring(1);
+                                        const heading = document.getElementById(slug);
+                                        if (heading) {
+                                                headings.push(heading);
+                                                headingLinks.push(link as HTMLAnchorElement);
+                                        }
+                                }
+                        });
+
+                        // Set up IntersectionObserver for headings
+                        if (headings.length > 0) {
+                                const observer = new IntersectionObserver(
+                                        (entries) => {
+                                                // Find the heading closest to the top of viewport
+                                                let topMost: { heading: Element; top: number } | null = null;
+
+                                                headings.forEach((heading, index) => {
+                                                        const rect = heading.getBoundingClientRect();
+                                                        // Consider headings in the upper portion of viewport
+                                                        if (rect.top <= 150) {
+                                                                if (!topMost || rect.top > topMost.top) {
+                                                                        topMost = { heading, top: rect.top };
+                                                                }
+                                                        }
+                                                });
+
+                                                if (topMost) {
+                                                        const index = headings.indexOf(topMost.heading);
+                                                        if (index >= 0) {
+                                                                setActive(headingLinks[index]);
+                                                        }
+                                                } else if (overviewLink) {
+                                                        // At top of page, highlight Overview
+                                                        setActive(overviewLink);
+                                                }
+                                        },
+                                        {
+                                                rootMargin: '-0px 0px -70% 0px',
+                                                threshold: 0,
+                                        }
+                                );
+
+                                headings.forEach((heading) => observer.observe(heading));
+                        }
+
+                        // Handle scroll for Overview link
+                        if (overviewLink) {
+                                window.addEventListener('scroll', () => {
+                                        if (window.scrollY < 100) {
+                                                setActive(overviewLink);
+                                        }
+                                }, { passive: true });
+                                
+                                // Initial state
+                                if (window.scrollY < 100) {
+                                        setActive(overviewLink);
+                                }
+                        }
+                });
+        </script>
+)}

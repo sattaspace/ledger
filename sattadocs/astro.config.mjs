@@ -100,6 +100,9 @@ export default defineConfig({
           // Custom components for enhanced SEO
           components: {
               Head: './src/components/Head.astro',
+              TableOfContents: './src/components/TableOfContents.astro',
+              MobileTableOfContents: './src/components/MobileTableOfContents.astro',
+              LastUpdated: './src/components/LastUpdated.astro',  // Add this
           },
 
           // Banner for announcements (uncomment when needed)
