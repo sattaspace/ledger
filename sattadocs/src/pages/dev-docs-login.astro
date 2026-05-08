@@ -1,0 +1,268 @@
+---
+/**
+ * Staff login gate page for accessing /dev_docs/* content.
+ *
+ * This is a standalone page (not part of Starlight) that provides:
+ * - A login form (email + password)
+ * - Client-side form submission via fetch to /api/auth/login
+ * - On success, the server sets a session cookie and the client redirects back
+ * - If already authenticated as staff, auto-redirects to dev_docs
+ */
+
+const redirectTarget = Astro.url.searchParams.get("redirect") || "/dev_docs/";
+---
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Staff Login — SattaSpace Docs</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --color-bg: #0d1117;
+      --color-surface: #161b22;
+      --color-border: #30363d;
+      --color-text: #e6edf3;
+      --color-text-muted: #8b949e;
+      --color-primary: #6366f1;
+      --color-primary-hover: #818cf8;
+      --color-error: #f85149;
+      --color-success: #3fb950;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+        sans-serif;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--color-bg);
+      color: var(--color-text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .login-card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .login-card h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .login-card .subtitle {
+      color: var(--color-text-muted);
+      font-size: 0.875rem;
+      margin-bottom: 1.75rem;
+      line-height: 1.5;
+    }
+
+    .login-card .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--color-primary);
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 0.25rem 0.6rem;
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 0.4rem;
+      color: var(--color-text);
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      color: var(--color-text);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+
+    .form-group input:focus {
+      border-color: var(--color-primary);
+    }
+
+    .form-group input::placeholder {
+      color: var(--color-text-muted);
+    }
+
+    .error-msg {
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid rgba(248, 81, 73, 0.3);
+      color: var(--color-error);
+      font-size: 0.825rem;
+      padding: 0.6rem 0.8rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      display: none;
+    }
+
+    .error-msg.visible {
+      display: block;
+    }
+
+    .submit-btn {
+      width: 100%;
+      padding: 0.65rem 1rem;
+      background: var(--color-primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+
+    .submit-btn:hover {
+      background: var(--color-primary-hover);
+    }
+
+    .submit-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .back-link {
+      display: block;
+      text-align: center;
+      margin-top: 1.25rem;
+      color: var(--color-text-muted);
+      font-size: 0.825rem;
+      text-decoration: none;
+    }
+
+    .back-link:hover {
+      color: var(--color-text);
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="badge">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0Zm1 11H7V7h2Zm0-6H7V3h2Z" />
+      </svg>
+      Staff Only
+    </div>
+    <h1>Access Dev Docs</h1>
+    <p class="subtitle">
+      Development documentation is restricted to staff members.
+      Sign in with your Sattabase account to continue.
+    </p>
+
+    <div class="error-msg" id="error-msg"></div>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" placeholder="you@sattaspace.com" required autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="Enter your password" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="submit-btn" id="submit-btn">Sign In</button>
+    </form>
+
+    <a href="/" class="back-link">&larr; Back to public docs</a>
+  </div>
+
+  <script define:vars={{ redirectTarget }}>
+    const form = document.getElementById("login-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const errorMsg = document.getElementById("error-msg");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      showError("");
+      setLoading(true);
+
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      try {
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          showError(data.error || "Login failed. Please try again.");
+          return;
+        }
+
+        // Redirect to the original page or dev_docs
+        window.location.href = redirectTarget;
+      } catch (err) {
+        showError("Network error. Please check your connection and try again.");
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    function showError(message) {
+      errorMsg.textContent = message;
+      errorMsg.classList.toggle("visible", !!message);
+    }
+
+    function setLoading(loading) {
+      submitBtn.disabled = loading;
+      submitBtn.innerHTML = loading
+        ? '<span class="spinner"></span>Signing in...'
+        : "Sign In";
+    }
+  </script>
+</body>
+</html>

@@ -6,6 +6,28 @@ import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
 
 import node from '@astrojs/node';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadEnv } from 'vite';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load environment variables from parent directory (sattabase root)
+// where the main .env file lives alongside backend and frontend configs.
+const env = loadEnv(
+  process.env.NODE_ENV || 'development',
+  path.resolve(__dirname, '../'),
+  '',
+);
+
+// Pass backend URL as a server-side env var so middleware and API
+// routes can reach the Sattabase Django Ninja API.
+// In production, override via a real .env or container env.
+process.env.SB_BACKEND_PUBLIC_API_URL =
+  env.SB_BACKEND_PUBLIC_API_URL ||
+  env.PUBLIC_API_BASE_URL ||
+  process.env.SB_BACKEND_PUBLIC_API_URL ||
+  'http://localhost:8000/api/v1';
 
 // https://astro.build/config
 export default defineConfig({
@@ -27,7 +49,7 @@ export default defineConfig({
           priority: 0.7,
           lastmod: new Date(),
           // Filter out 404 page from sitemap
-          filter: (page) => !page.includes('/404'),
+          filter: (page) => !page.includes('/404') && !page.includes('/dev_docs'),
           // Add custom pages if needed
           customPages: [],
           // i18n support for future localization
@@ -42,7 +64,11 @@ export default defineConfig({
       starlight({
           title: 'SattaSpace Docs',
           description: 'Official documentation for SattaSpace Ecosystem - SattaBase and more',
-        //   prerender: false,
+          // Server-render all pages so that the middleware can intercept
+          // /dev_docs/* requests for staff authentication.
+          // Without this, Starlight prerenders pages as static HTML at build time,
+          // bypassing the middleware entirely.
+          prerender: false,
           // Edit link for contributions
           editLink: {
               baseUrl: 'https://github.com/sattaspace/sattadocs/edit/main/docs/',
@@ -99,7 +125,7 @@ export default defineConfig({
 
           // Custom components for enhanced SEO
           components: {
-              Head: './src/components/Head.astro',
+              Head: './src/components/Head.astro',        
               TableOfContents: './src/components/TableOfContents.astro',
               MobileTableOfContents: './src/components/MobileTableOfContents.astro',
               LastUpdated: './src/components/LastUpdated.astro',  // Add this

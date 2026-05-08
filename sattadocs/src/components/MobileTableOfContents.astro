@@ -78,7 +78,7 @@ function buildTocItems(headings: Heading[]): TocItem[] {
 const { toc } = Astro.locals.starlightRoute;
 const props = Astro.props;
 const minHeadingLevel = toc?.minHeadingLevel || 2;
-const maxHeadingLevel = toc?.maxHeadingLevel || 3;
+const maxHeadingLevel = toc?.maxHeadingLevel || 4;
 const currentUrl = Astro.url.pathname;
 
 let externalTocItems: TocItem[] = [];
