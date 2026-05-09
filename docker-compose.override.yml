@@ -1,4 +1,4 @@
-# sattaledger/docker-compose.override.yml
+# sattabase/docker-compose.override.yml
 # This override file is used to set environment variables for production deployment.
 services:
   sb-backend:

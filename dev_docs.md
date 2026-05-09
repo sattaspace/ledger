@@ -200,7 +200,7 @@ Subscription activated ──→ Invoice generated ──→ Access granted
 ## 4. Project Structure
 
 ```
-sattaledger/
+sattabase/
 ├── backend/
 │   ├── api/                          # API configuration
 │   │   ├── views.py                  # NinjaExtraAPI instance, exception handlers
@@ -271,7 +271,7 @@ sattaledger/
 │   │   │           ├── invoice.py    # invoice.* events
 │   │   │           └── charge.py     # charge.* events (refunds, disputes)
 │   │   └── migrations/               # 18 billing migrations (0001–0018)
-│   ├── sattaledger/                  # Django project settings
+│   ├── base/                  # Django project settings
 │   │   ├── settings.py               # All configuration (includes FRONTEND_URL)
 │   │   ├── urls.py                   # Root URL configuration
 │   │   ├── asgi.py                   # ASGI entry (Daphne)
@@ -400,11 +400,11 @@ python manage.py migrate
 python manage.py createsuperuser
 
 # Start development server (Daphne ASGI)
-daphne -b 0.0.0.0 -p 8000 sattaledger.asgi:application
+daphne -b 0.0.0.0 -p 8000 base.asgi:application
 
 # In a separate terminal, start Celery worker + beat scheduler
-celery -A sattaledger worker -l info
-celery -A sattaledger beat -l info
+celery -A base worker -l info
+celery -A base beat -l info
 ```
 
 ### Frontend Setup

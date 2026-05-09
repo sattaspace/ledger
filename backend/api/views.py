@@ -117,7 +117,7 @@ api = NinjaExtraAPI(
         "- `PATCH /admin/api-keys/{id}/revoke` — Revoke key\n"
         "- `POST  /admin/api-keys/{id}/rotate` — Rotate key"
     ),
-    urls_namespace="sattaledger",
+    urls_namespace="sattabase",
     openapi_extra={
         "info": {
             "contact": {

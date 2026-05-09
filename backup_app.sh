@@ -1,11 +1,11 @@
 #!/bin/bash
-# sattaledger/backup_app.sh
+# base/backup_app.sh
 # Backup Script for sattabase Application
 # Run using crontab or manually to backup database and media files
 # Click Add Cron Job.
 # Label: sattabase Daily Backup
 # Schedule: Choose Daily (e.g., 0 3 * * * for 3:00 AM).
-# bash /path/to/your/sattaledger/backup_app.sh
+# bash /path/to/your/base/backup_app.sh
 # Ensure your project folder is owned by the user running the cron job.
 # The chown -R appuser:appuser /app inside your Dockerfile is perfect for internal operations, but on the Host, ensure the media folder has 755 permissions so the backup script can read it.
 
@@ -25,7 +25,7 @@ set -e
 
 # --- Configuration ---
 # Use absolute paths. Replace 'youruser' with the actual CloudPanel user.
-PROJECT_DIR="/home/youruser/sattaledger" 
+PROJECT_DIR="/home/youruser/base" 
 BACKUP_PATH="/home/youruser/backups/sattabase"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 RETENTION_DAYS=15

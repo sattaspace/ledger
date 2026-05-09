@@ -50,7 +50,7 @@ This document identifies every gap between what the SDK sends/expects and what t
 - [x] A9 — Create `ServiceCredential` schemas — `common/schemas.py` ✅
 - [x] A10 — Add `api_key_hash` index to migration ✅
 - [x] **A4b — Convert `validate_api_key()` to Django middleware** — `common/middleware.py` — `service_credential_middleware` validates `X-API-Key` on every request; uses ``@sync_and_async_middleware`` pattern for full ASGI compatibility (async path uses ``aget``/``aupdate``); cross-checks `X-Service-Domain` header against credential's domain; opt-in (only activates when header present) ✅
-- [x] **A5 — Register middleware in `settings.py`** — `sattaledger/settings.py` — Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF ✅
+- [x] **A5 — Register middleware in `settings.py`** — `base/settings.py` — Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF ✅
 - [x] **A11 — Update `dev_docs.md`** — Added new Section 11 (Service-to-Service API Key Authentication) with full documentation of model, middleware, endpoints, schemas, permissions, rate limiting, and key generation ✅
 
 ---
@@ -160,7 +160,7 @@ Validate the SDK works in a realistic consumer scenario. Not a production projec
 
 ### Phase E — Security Hardening
 
-- [x] **E1 — Set `API_KEY_ENFORCED=True` before production** — ✅ Setting exists in `sattaledger/settings.py` (env: `SB_API_KEY_ENFORCED`). Added production safety check: when `DEBUG=False` and `API_KEY_ENFORCED=False`, a `RuntimeWarning` is raised at startup to alert operators. Default remains `False` for development; must be set `True` via env var for production deployment.
+- [x] **E1 — Set `API_KEY_ENFORCED=True` before production** — ✅ Setting exists in `base/settings.py` (env: `SB_API_KEY_ENFORCED`). Added production safety check: when `DEBUG=False` and `API_KEY_ENFORCED=False`, a `RuntimeWarning` is raised at startup to alert operators. Default remains `False` for development; must be set `True` via env var for production deployment.
 - [x] **E2 — Apply `IsServiceAuthenticated` permission to protected endpoints** — ✅ Created `IsAuthenticatedOrService` permission in `common/permissions.py` (OR combinator: allows either JWT auth or service API key auth). Applied to `GET /billing/auth/me` endpoint in `billing/controllers.py`. The `auth/me` endpoint now accepts both frontend JWT Bearer tokens and SDK `X-API-Key` headers. `IsServiceAuthenticated` (strict, API-key-only) remains available for future endpoints that require service-only auth.
 - [x] **E3 — Verify no raw API key in logs/error responses** — ✅ Full audit completed across `common/middleware.py`, `common/api_key_auth.py`, `common/controllers.py`, `common/schemas.py`. All log statements use `api_key[:12]` truncation or `credential.api_key_prefix` (stored 12-char prefix). No raw key in any error message, exception, or log line. Raw key only exists in HTTP request header (in transit) and creation/rotation response body (shown once, documented with warning). Audit documented in `common/api_key_auth.py` module docstring.
 
@@ -605,14 +605,14 @@ return await BillingService.aget_auth_me_data(request.user, domain or None)
 | A2 | Generate migration | `billing/migrations/0014_*.py` | ✅ **DONE** | Migration exists. 17 total migrations (0001–0017) |
 | A3 | Create `ServiceCredentialAdmin` (read-only) | `billing/admin.py` | ✅ **DONE** | Read-only, no add/change, list filters, search, bulk revoke action |
 | A4 | Create `service_credential_middleware` | `common/middleware.py` | ✅ **DONE** | `service_credential_middleware` — global middleware using ``@sync_and_async_middleware`` pattern, validating `X-API-Key` on every request. Async path uses ``aget``/``aupdate`` for ASGI compatibility. Cross-checks `X-Service-Domain`, domain mismatch detection, enforcement mode. |
-| A5 | Register middleware in `settings.py` | `sattaledger/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth middleware |
+| A5 | Register middleware in `settings.py` | `base/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth middleware |
 | A6 | Create `POST /billing/admin/api-keys` endpoint | `common/controllers.py` | ✅ **DONE** | `AdminApiKeyController` with POST create, returns raw key once |
 | A7 | Create `PATCH /billing/admin/api-keys/{id}` (revoke/activate) | `common/controllers.py` | ✅ **DONE** | Revoke + Rotate endpoints implemented |
 | A8 | Create `GET /billing/admin/api-keys` (list) | `common/controllers.py` | ✅ **DONE** | Paginated, filterable by service_domain_id and is_active |
 | A9 | Create `ServiceCredential` schemas | `common/schemas.py` | ✅ **DONE** | 4 schemas: `ApiKeyCreateInputSchema`, `ApiKeyOutputSchema`, `ApiKeyCreateOutputSchema`, `ApiKeyRotateOutputSchema` |
 | A10 | Add `key_hash` index to migration | `billing/migrations/0014_*.py` | ✅ **DONE** | `api_key_hash` is unique and indexed |
 | A4b | Create `service_credential_middleware` | `common/middleware.py` | ✅ **DONE** | Global middleware using ``@sync_and_async_middleware`` pattern: validates `X-API-Key` on every request, cross-checks `X-Service-Domain`, domain mismatch detection, `sb_live_` prefix validation, enforcement mode support, async ORM in ASGI path |
-| A5 | Register middleware in `settings.py` | `sattaledger/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth |
+| A5 | Register middleware in `settings.py` | `base/settings.py` | ✅ **DONE** | Registered as `common.middleware.service_credential_middleware` after CORS, before CSRF and auth |
 | A11 | Update `dev_docs.md` with new endpoints | `dev_docs.md` | ✅ **DONE** | Added Section 11 (Service-to-Service API Key Auth), ServiceCredential model, middleware docs, endpoint docs, schemas, env vars, permissions |
 
 **Phase A Progress: 12/12 DONE** — Phase A is complete. Ready for Phase B integration testing.
@@ -766,7 +766,7 @@ Attacker blocked — cannot access any API endpoint
 | `billing/middleware.py` | **CREATE** → `common/middleware.py` | ✅ **DONE** | Middleware placed in `common/` instead (cross-app concern). `service_credential_middleware` — ``@sync_and_async_middleware`` pattern, async ORM in ASGI path |
 | `billing/schemas.py` | **MODIFY** | N/A | Schemas placed in `common/schemas.py` instead (not `billing/schemas.py`). 4 schemas defined ✅ |
 | `billing/controllers.py` | **MODIFY** | N/A | Endpoints placed in `common/controllers.py` instead (not `billing/controllers.py`). 6 endpoints defined ✅. `auth/me` in `billing/controllers.py` calls `validate_api_key()` ✅. **E2**: `IsAuthenticatedOrService` permission applied to `auth/me` |
-| `sattaledger/settings.py` | **MODIFY** | ✅ **DONE** | `API_KEY_ENFORCED` setting added (default `False`). `service_credential_middleware` registered in MIDDLEWARE after CORS, before CSRF and auth. CORS middleware for ServiceDomain also registered. **E1**: Added production safety `RuntimeWarning` when `DEBUG=False` and `API_KEY_ENFORCED=False`.
+| `base/settings.py` | **MODIFY** | ✅ **DONE** | `API_KEY_ENFORCED` setting added (default `False`). `service_credential_middleware` registered in MIDDLEWARE after CORS, before CSRF and auth. CORS middleware for ServiceDomain also registered. **E1**: Added production safety `RuntimeWarning` when `DEBUG=False` and `API_KEY_ENFORCED=False`.
 | `billing/migrations/0014_servicecredential.py` | **CREATE** | ✅ **DONE** | Migration exists |
 | `dev_docs.md` | **MODIFY** | ✅ **DONE** | Added Section 11 (Service-to-Service API Key Auth) — 150+ lines covering model, middleware, endpoints, schemas, permissions, rate limiting, key generation, env vars |
 | `common/api_key_auth.py` | — | ✅ **DONE** | (Not in original plan) API key validation function — 147 lines. **E3**: Security audit documented — no raw key in logs/error responses |
