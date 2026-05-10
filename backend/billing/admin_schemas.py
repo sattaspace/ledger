@@ -22,7 +22,6 @@ from .schemas import (
     ServiceDomainOutputSchema,
 )
 
-
 # =============================================================================
 # 9.1.2 — Product Schemas
 # =============================================================================
@@ -349,6 +348,64 @@ class AdminAccessMatrixSchema(Schema):
     rows: list[AdminAccessMatrixRowSchema] = Field(
         default_factory=list,
         description="Access key rows with per-plan values",
+    )
+
+
+class AdminAccessMatrixRowEntrySchema(Schema):
+    """Single plan entry in a matrix row save request."""
+
+    plan_id: int = Field(
+        ...,
+        description="Plan ID to set this entry on",
+    )
+    value: str = Field(
+        ...,
+        max_length=255,
+        description="Access value as a string, e.g. 'true', '5', 'unlimited'",
+    )
+    value_type: str = Field(
+        "string",
+        description="How the value is cast: string, boolean, or integer",
+    )
+
+
+class AdminAccessMatrixRowSaveSchema(Schema):
+    """Input schema for atomically saving a single access key across all plans.
+
+    Creates/updates entries for the listed plans and removes the key from
+    any plan of the same product that is NOT listed. If ``original_key`` is
+    provided and differs from ``key``, all entries with ``original_key`` are
+    renamed to ``key`` before the upsert.
+
+    All operations run inside a single database transaction, so the matrix
+    is never left in a partial state.
+    """
+
+    original_key: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        description=(
+            "Original key name when renaming. If omitted or equal to ``key``, "
+            "no rename occurs."
+        ),
+    )
+    key: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Access key identifier",
+    )
+    description: str = Field(
+        "",
+        description="Human-readable description of this access key",
+    )
+    entries: list[AdminAccessMatrixRowEntrySchema] = Field(
+        ...,
+        description=(
+            "Per-plan entries. Plans of this product NOT listed here will "
+            "have the key removed. Plans listed here will be created or updated."
+        ),
     )
 
 

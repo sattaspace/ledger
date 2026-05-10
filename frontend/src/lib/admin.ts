@@ -253,6 +253,31 @@ export interface AccessMatrixResponse {
   rows: AccessMatrixRow[];
 }
 
+// ─── Access Matrix Row Save Types (atomic multi-plan save) ─────────────────
+
+export interface AccessMatrixRowEntry {
+  plan_id: number;
+  value: string;
+  value_type: "boolean" | "integer" | "string";
+}
+
+export interface AccessMatrixRowSavePayload {
+  original_key?: string;
+  key: string;
+  description?: string;
+  entries: AccessMatrixRowEntry[];
+}
+
+export interface AccessMatrixRowSaveResponse {
+  product_id: number;
+  key: string;
+  original_key: string | null;
+  entries_created: number;
+  entries_updated: number;
+  entries_deleted: number;
+  entries: AccessEntryItem[];
+}
+
 // ─── Subscription Types ─────────────────────────────────────────────────────
 
 export interface SubscriptionItem {
@@ -718,6 +743,16 @@ export const adminApi = {
   async getAccessMatrix(productId: number): Promise<AccessMatrixResponse> {
     return apiClient.get<AccessMatrixResponse>(
       `/admin/products/${productId}/access-matrix`,
+    );
+  },
+
+  async saveAccessMatrixRow(
+    productId: number,
+    payload: AccessMatrixRowSavePayload,
+  ): Promise<AccessMatrixRowSaveResponse> {
+    return apiClient.put<AccessMatrixRowSaveResponse>(
+      `/admin/products/${productId}/access-matrix/row`,
+      payload,
     );
   },
 

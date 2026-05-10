@@ -1483,6 +1483,10 @@ Both SDKs are implemented in-repo under `sdk/`:
 - **Access entries missing IDs**: Backend `_serialize_plan_detail()` returned access entries without `id`, `value_type`, `plan_id`, `plan_name` — needed for the admin CRUD (edit/delete entries by ID). Fixed by including all fields in the serialization.
 - **Product detail domains key**: Frontend used `product.domains` but backend returns `service_domains`. Fixed `ProductDetailAdmin.vue` and `ProductDetail` type to use `service_domains`.
 
+**10.4 Bugfix (2026-05-10) — Access Matrix Save:**
+- **typed_value vs value inconsistency**: Backend `create_access_entry`, `update_access_entry`, and `get_access_matrix` returned `entry.typed_value` (cast to Python `bool`/`int`) instead of raw `entry.value` (always a string). Frontend TypeScript types expect `string`. The frontend worked at runtime due to `String()` coercion but this was a type contract violation. Fixed by returning `entry.value` in all three endpoints, consistent with `_serialize_plan_detail()`.
+- **Non-atomic multi-plan save**: The access matrix UI edits one key across multiple plans, but the backend only had per-plan CRUD endpoints (`POST /plans/{id}/access-entries`, `PUT /access-entries/{id}`, `DELETE /access-entries/{id}`). The frontend made N sequential API calls to save a single matrix row — if one failed midway, the matrix was left in a partial state. Fixed by adding a new atomic endpoint `PUT /admin/products/{product_id}/access-matrix/row` that creates/updates/deletes entries for one access key across all plans in a single database transaction. The frontend `handleAddEntry` and `handleEditEntrySubmit` now use this endpoint instead of multiple individual calls. Supports key renaming via `original_key` field.
+
 #### 10.5 Subscription Management Pages — PLACEHOLDER
 
 *Shell Astro page exists at `subscriptions/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*

@@ -34,6 +34,7 @@ Endpoints:
         DELETE /admin/access-entries/{id}                  — remove entry
         POST   /admin/plans/{plan_id}/access-entries/bulk  — bulk replace
         GET    /admin/products/{product_id}/access-matrix  — feature matrix
+        PUT    /admin/products/{product_id}/access-matrix/row — atomic row save
 
     Refunds (9.6):
         GET    /admin/refunds                   — list refunds (filterable)
@@ -52,7 +53,14 @@ from django.utils.text import slugify
 from asgiref.sync import sync_to_async
 
 from ninja import Query
-from ninja_extra import api_controller, http_get, http_post, http_put, http_patch, http_delete
+from ninja_extra import (
+    api_controller,
+    http_get,
+    http_post,
+    http_put,
+    http_patch,
+    http_delete,
+)
 
 from common.exceptions import (
     NotFoundException,
@@ -91,6 +99,7 @@ from .admin_schemas import (
     AdminAccessEntryUpdateSchema,
     AdminAccessEntryBulkSchema,
     AdminAccessMatrixSchema,
+    AdminAccessMatrixRowSaveSchema,
     AdminRefundListItemSchema,
     AdminRefundDetailSchema,
     AdminRefundApprovalSchema,
@@ -150,9 +159,7 @@ class AdminProductController:
             Product.objects.filter(Q(name=payload.name) | Q(slug=slug)).exists
         )()
         if exists:
-            raise ConflictException(
-                "A product with this name or slug already exists."
-            )
+            raise ConflictException("A product with this name or slug already exists.")
 
         product = await sync_to_async(Product.objects.create)(
             name=payload.name,
@@ -205,24 +212,19 @@ class AdminProductController:
         domain_count for each product. Supports filtering by active status
         and searching by name or slug.
         """
-        qs = (
-            Product.objects.annotate(
-                plan_count=Count("plans", distinct=True),
-                active_plan_count=Count(
-                    "plans", filter=Q(plans__is_active=True), distinct=True
-                ),
-                domain_count=Count("service_domains", distinct=True),
-            )
-            .order_by("name")
-        )
+        qs = Product.objects.annotate(
+            plan_count=Count("plans", distinct=True),
+            active_plan_count=Count(
+                "plans", filter=Q(plans__is_active=True), distinct=True
+            ),
+            domain_count=Count("service_domains", distinct=True),
+        ).order_by("name")
 
         if is_active is not None:
             qs = qs.filter(is_active=is_active)
 
         if search:
-            qs = qs.filter(
-                Q(name__icontains=search) | Q(slug__icontains=search)
-            )
+            qs = qs.filter(Q(name__icontains=search) | Q(slug__icontains=search))
 
         from common.utils import get_paginated_data_async
 
@@ -243,21 +245,23 @@ class AdminProductController:
                 ).count()
             )(product.id)
 
-            items.append({
-                "id": product.id,
-                "name": product.name,
-                "slug": product.slug,
-                "description": product.description,
-                "home_url": product.home_url,
-                "is_active": product.is_active,
-                "created_at": product.created_at,
-                "updated_at": product.updated_at,
-                "plan_count": product.plan_count,
-                "active_plan_count": product.active_plan_count,
-                "subscriber_count": subscriber_count,
-                "domain_count": product.domain_count,
-                "stripe_product_id": product.stripe_product_id,
-            })
+            items.append(
+                {
+                    "id": product.id,
+                    "name": product.name,
+                    "slug": product.slug,
+                    "description": product.description,
+                    "home_url": product.home_url,
+                    "is_active": product.is_active,
+                    "created_at": product.created_at,
+                    "updated_at": product.updated_at,
+                    "plan_count": product.plan_count,
+                    "active_plan_count": product.active_plan_count,
+                    "subscriber_count": subscriber_count,
+                    "domain_count": product.domain_count,
+                    "stripe_product_id": product.stripe_product_id,
+                }
+            )
 
         return {"meta": meta, "results": items}
 
@@ -311,27 +315,29 @@ class AdminProductController:
                 ).count()
             )(plan.id)
 
-            plan_data.append({
-                "id": plan.id,
-                "name": plan.name,
-                "slug": plan.slug,
-                "description": plan.description,
-                "price_cents": plan.price_cents,
-                "currency": plan.currency,
-                "billing_cycle": plan.billing_cycle,
-                "trial_days": plan.trial_days,
-                "features": plan.features,
-                "sort_order": plan.sort_order,
-                "is_active": plan.is_active,
-                "is_featured": plan.is_featured,
-                "display_price": plan.display_price,
-                "is_free": plan.is_free,
-                "product_id": product.id,
-                "product_name": product.name,
-                "subscriber_count": subscriber_count,
-                "stripe_price_id": plan.stripe_price_id,
-                "tax_inclusive": plan.tax_inclusive,
-            })
+            plan_data.append(
+                {
+                    "id": plan.id,
+                    "name": plan.name,
+                    "slug": plan.slug,
+                    "description": plan.description,
+                    "price_cents": plan.price_cents,
+                    "currency": plan.currency,
+                    "billing_cycle": plan.billing_cycle,
+                    "trial_days": plan.trial_days,
+                    "features": plan.features,
+                    "sort_order": plan.sort_order,
+                    "is_active": plan.is_active,
+                    "is_featured": plan.is_featured,
+                    "display_price": plan.display_price,
+                    "is_free": plan.is_free,
+                    "product_id": product.id,
+                    "product_name": product.name,
+                    "subscriber_count": subscriber_count,
+                    "stripe_price_id": plan.stripe_price_id,
+                    "tax_inclusive": plan.tax_inclusive,
+                }
+            )
 
         # Get service domains
         domains_qs = ServiceDomain.objects.filter(product=product).order_by(
@@ -414,9 +420,7 @@ class AdminProductController:
                     .exists
                 )()
                 if exists:
-                    raise ConflictException(
-                        "A product with this name already exists."
-                    )
+                    raise ConflictException("A product with this name already exists.")
             product.name = payload.name
             update_fields.append("name")
 
@@ -428,9 +432,7 @@ class AdminProductController:
                     .exists
                 )()
                 if exists:
-                    raise ConflictException(
-                        "A product with this slug already exists."
-                    )
+                    raise ConflictException("A product with this slug already exists.")
             product.slug = payload.slug
             update_fields.append("slug")
 
@@ -449,8 +451,7 @@ class AdminProductController:
         await sync_to_async(product.save)(update_fields=update_fields)
 
         logger.info(
-            "ADMIN_PRODUCT_UPDATED: product_id=%s, fields=%s, "
-            "updated_by=%s, ip=%s",
+            "ADMIN_PRODUCT_UPDATED: product_id=%s, fields=%s, " "updated_by=%s, ip=%s",
             product.id,
             update_fields,
             request.user.email,
@@ -561,9 +562,7 @@ class AdminProductController:
             raise NotFoundException("Product not found.")
 
         if not product.is_active:
-            raise BadRequestException(
-                f"Product '{product.name}' is already inactive."
-            )
+            raise BadRequestException(f"Product '{product.name}' is already inactive.")
 
         # Check for active subscriptions
         active_count = await sync_to_async(
@@ -648,9 +647,7 @@ class AdminProductController:
         # If setting as primary, unset any existing primary
         if is_primary:
             await sync_to_async(
-                ServiceDomain.objects.filter(
-                    product=product, is_primary=True
-                ).update
+                ServiceDomain.objects.filter(product=product, is_primary=True).update
             )(is_primary=False)
 
         domain = await sync_to_async(ServiceDomain.objects.create)(
@@ -734,7 +731,9 @@ class AdminProductController:
                 await sync_to_async(
                     ServiceDomain.objects.filter(
                         product=domain.product, is_primary=True
-                    ).exclude(pk=domain_id).update
+                    )
+                    .exclude(pk=domain_id)
+                    .update
                 )(is_primary=False)
             domain.is_primary = payload.is_primary
             update_fields.append("is_primary")
@@ -798,9 +797,7 @@ class AdminProductController:
         # Prevent deleting primary domain if other domains exist
         if domain.is_primary:
             other_count = await sync_to_async(
-                ServiceDomain.objects.filter(
-                    product=domain.product
-                )
+                ServiceDomain.objects.filter(product=domain.product)
                 .exclude(pk=domain_id)
                 .count
             )()
@@ -855,9 +852,9 @@ class AdminPlanController:
     async def _get_plan_or_404(self, plan_id: int) -> Plan:
         """Fetch a plan by ID or raise NotFoundException."""
         try:
-            return await sync_to_async(
-                Plan.objects.select_related("product").get
-            )(pk=plan_id)
+            return await sync_to_async(Plan.objects.select_related("product").get)(
+                pk=plan_id
+            )
         except Plan.DoesNotExist:
             raise NotFoundException("Plan not found.")
 
@@ -969,11 +966,15 @@ class AdminPlanController:
 
         # Default sort_order: max + 1
         max_sort = await sync_to_async(
-            lambda: Plan.objects.filter(product=product).aggregate(
-                m=Max("sort_order")
-            )["m"]
+            lambda: Plan.objects.filter(product=product).aggregate(m=Max("sort_order"))[
+                "m"
+            ]
         )()
-        sort_order = payload.sort_order if payload.sort_order > 0 else (max_sort + 1 if max_sort is not None else 0)
+        sort_order = (
+            payload.sort_order
+            if payload.sort_order > 0
+            else (max_sort + 1 if max_sort is not None else 0)
+        )
 
         plan = await sync_to_async(Plan.objects.create)(
             product=product,
@@ -1268,9 +1269,7 @@ class AdminPlanController:
             request.META.get("REMOTE_ADDR"),
         )
 
-        return MessageResponse(
-            message=f"Plan '{plan.name}' has been {state_label}."
-        )
+        return MessageResponse(message=f"Plan '{plan.name}' has been {state_label}.")
 
     @http_patch(
         "/plans/{plan_id}/feature",
@@ -1311,9 +1310,7 @@ class AdminPlanController:
             request.META.get("REMOTE_ADDR"),
         )
 
-        return MessageResponse(
-            message=f"Plan '{plan.name}' has been {state_label}."
-        )
+        return MessageResponse(message=f"Plan '{plan.name}' has been {state_label}.")
 
     @http_post(
         "/plans/{plan_id}/duplicate",
@@ -1342,9 +1339,7 @@ class AdminPlanController:
         plan = await self._get_plan_or_404(plan_id)
 
         # Determine name for the duplicate
-        new_name = (
-            payload.name if payload and payload.name else f"{plan.name} (Copy)"
-        )
+        new_name = payload.name if payload and payload.name else f"{plan.name} (Copy)"
 
         # Generate a unique slug
         base_slug = slugify(new_name)
@@ -1358,9 +1353,9 @@ class AdminPlanController:
 
         # Increment sort_order
         max_sort = await sync_to_async(
-            Plan.objects.filter(product=plan.product).aggregate(
-                m=Max("sort_order")
-            )["m"]
+            Plan.objects.filter(product=plan.product).aggregate(m=Max("sort_order"))[
+                "m"
+            ]
         )()
         new_sort = (max_sort or plan.sort_order) + 1
 
@@ -1460,9 +1455,7 @@ class AdminPlanController:
         plan = await self._get_plan_or_404(plan_id)
 
         # Check if any subscriptions reference this plan (before attempting delete)
-        sub_count = await sync_to_async(
-            Subscription.objects.filter(plan=plan).count
-        )()
+        sub_count = await sync_to_async(Subscription.objects.filter(plan=plan).count)()
         if sub_count > 0:
             raise BadRequestException(
                 f"Cannot delete plan '{plan.name}' — {sub_count} subscription(s) "
@@ -1482,9 +1475,7 @@ class AdminPlanController:
             request.META.get("REMOTE_ADDR"),
         )
 
-        return MessageResponse(
-            message=f"Plan '{plan_name}' has been deleted."
-        )
+        return MessageResponse(message=f"Plan '{plan_name}' has been deleted.")
 
     # =========================================================================
     # Access Matrix
@@ -1526,8 +1517,7 @@ class AdminPlanController:
         ]
 
         plan_headers = [
-            {"slug": p.slug, "name": p.name, "is_active": p.is_active}
-            for p in plans
+            {"slug": p.slug, "name": p.name, "is_active": p.is_active} for p in plans
         ]
 
         # Collect all access entries for all plans
@@ -1545,7 +1535,7 @@ class AdminPlanController:
                 # Only set description from the first plan that defines it
                 if not all_entries[key]["description"] and entry.description:
                     all_entries[key]["description"] = entry.description
-                all_entries[key]["values"][plan.slug] = entry.typed_value
+                all_entries[key]["values"][plan.slug] = entry.value
                 all_entries[key]["entry_ids"][plan.slug] = entry.id
 
         # Build rows sorted by key
@@ -1564,6 +1554,176 @@ class AdminPlanController:
             "product_name": product.name,
             "plans": plan_headers,
             "rows": rows,
+        }
+
+    @http_put(
+        "/products/{product_id}/access-matrix/row",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Save access matrix row",
+        description=(
+            "Atomically save a single access key across all plans of a product. "
+            "Creates or updates entries for the listed plans; removes the key "
+            "from any plan of the product that is NOT listed. If original_key "
+            "is provided and differs from key, all entries with original_key "
+            "are renamed first. All operations run in a single database "
+            "transaction so the matrix is never left in a partial state."
+        ),
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def save_access_matrix_row(
+        self,
+        request: HttpRequest,
+        product_id: int,
+        payload: AdminAccessMatrixRowSaveSchema,
+    ):
+        """Atomically save one access key row across all plans of a product.
+
+        This is the primary endpoint for the spreadsheet-like access matrix
+        UI.  Instead of making N separate per-plan API calls (which can leave
+        the matrix partially saved on failure), the frontend sends a single
+        request with the desired state for one key and the backend reconciles
+        the database in one transaction.
+
+        Steps (all inside ``transaction.atomic()``):
+          1. Validate product exists.
+          2. Resolve each ``plan_id`` to a Plan belonging to this product.
+          3. If ``original_key`` differs from ``key``, rename all entries.
+          4. For each plan listed in ``entries``:
+             - If an entry for (plan, key) exists → update it.
+             - If not → create it.
+          5. For each plan of the product NOT listed in ``entries``:
+             - Delete the entry for (plan, key) if it exists.
+        """
+        # 1. Validate product
+        try:
+            product = await sync_to_async(Product.objects.get)(pk=product_id)
+        except Product.DoesNotExist:
+            raise NotFoundException("Product not found.")
+
+        # 2. Validate all plan_ids belong to this product
+        plan_ids_in_payload = [e.plan_id for e in payload.entries]
+        product_plan_ids = {
+            p.id
+            async for p in Plan.objects.filter(product=product).only("id").aiterator()
+        }
+        for pid in plan_ids_in_payload:
+            if pid not in product_plan_ids:
+                raise BadRequestException(
+                    f"Plan id {pid} does not belong to product "
+                    f"'{product.name}' (id={product.id})."
+                )
+
+        # Validate value_types
+        valid_types = set(vt.value for vt in AccessValueType)
+        for item in payload.entries:
+            if item.value_type not in valid_types:
+                raise BadRequestException(
+                    f"Invalid value_type '{item.value_type}' for key "
+                    f"'{payload.key}'. Must be one of: {', '.join(sorted(valid_types))}."
+                )
+
+        target_key = payload.key
+        original_key = payload.original_key or target_key
+        is_rename = original_key != target_key
+
+        # 3-5. Execute inside a single transaction
+        def _do_save():
+            with transaction.atomic():
+                # 3. Rename if key changed
+                if is_rename:
+                    # Check new key doesn't collide with existing entries
+                    # (for plans that already have the new key)
+                    conflicting = AccessEntry.objects.filter(
+                        plan__product=product,
+                        key=target_key,
+                    ).exclude(key=original_key)
+                    if conflicting.exists():
+                        raise ConflictException(
+                            f"Cannot rename '{original_key}' to '{target_key}': "
+                            f"an entry with key '{target_key}' already exists "
+                            f"for one or more plans."
+                        )
+                    AccessEntry.objects.filter(
+                        plan__product=product, key=original_key
+                    ).update(key=target_key)
+
+                # Collect existing entries for this key across all product plans
+                existing_qs = AccessEntry.objects.filter(
+                    plan__product=product, key=target_key
+                ).select_related("plan")
+                existing_map = {}  # plan_id → entry
+                for entry in existing_qs:
+                    existing_map[entry.plan_id] = entry
+
+                # 4. Upsert listed plans
+                created_count = 0
+                updated_count = 0
+                result_entries = []
+                for item in payload.entries:
+                    entry = existing_map.pop(item.plan_id, None)
+                    if entry:
+                        # Update existing
+                        entry.value = item.value
+                        entry.value_type = item.value_type
+                        entry.description = payload.description
+                        entry.save(update_fields=["value", "value_type", "description"])
+                        updated_count += 1
+                    else:
+                        # Create new
+                        entry = AccessEntry(
+                            plan_id=item.plan_id,
+                            key=target_key,
+                            value=item.value,
+                            value_type=item.value_type,
+                            description=payload.description,
+                        )
+                        entry.save()
+                        created_count += 1
+                    result_entries.append(
+                        {
+                            "id": entry.id,
+                            "plan_id": entry.plan_id,
+                            "key": entry.key,
+                            "value": entry.value,
+                            "value_type": entry.value_type,
+                            "description": entry.description,
+                        }
+                    )
+
+                # 5. Delete entries for plans NOT listed in payload
+                deleted_count = 0
+                for plan_id, entry in existing_map.items():
+                    entry.delete()
+                    deleted_count += 1
+
+                return created_count, updated_count, deleted_count, result_entries
+
+        created, updated, deleted, result_entries = await sync_to_async(_do_save)()
+
+        logger.info(
+            "ADMIN_ACCESS_MATRIX_ROW_SAVED: product='%s' (id=%s), "
+            "key='%s'%s, created=%s, updated=%s, deleted=%s, "
+            "saved_by=%s, ip=%s",
+            product.name,
+            product.id,
+            target_key,
+            f" (renamed from '{original_key}')" if is_rename else "",
+            created,
+            updated,
+            deleted,
+            request.user.email,
+            request.META.get("REMOTE_ADDR"),
+        )
+
+        return {
+            "product_id": product.id,
+            "key": target_key,
+            "original_key": original_key if is_rename else None,
+            "entries_created": created,
+            "entries_updated": updated,
+            "entries_deleted": deleted,
+            "entries": result_entries,
         }
 
     # =========================================================================
@@ -1636,7 +1796,7 @@ class AdminPlanController:
             "id": entry.id,
             "plan_id": plan.id,
             "key": entry.key,
-            "value": entry.typed_value,
+            "value": entry.value,
             "value_type": entry.value_type,
             "description": entry.description,
         }
@@ -1664,9 +1824,9 @@ class AdminPlanController:
         being changed, validates uniqueness within the same plan.
         """
         try:
-            entry = await sync_to_async(
-                AccessEntry.objects.select_related("plan").get
-            )(pk=entry_id)
+            entry = await sync_to_async(AccessEntry.objects.select_related("plan").get)(
+                pk=entry_id
+            )
         except AccessEntry.DoesNotExist:
             raise NotFoundException("Access entry not found.")
 
@@ -1676,9 +1836,7 @@ class AdminPlanController:
             if payload.key != entry.key:
                 # Check uniqueness within the same plan
                 exists = await sync_to_async(
-                    AccessEntry.objects.filter(
-                        plan=entry.plan, key=payload.key
-                    )
+                    AccessEntry.objects.filter(plan=entry.plan, key=payload.key)
                     .exclude(pk=entry_id)
                     .exists
                 )()
@@ -1726,7 +1884,7 @@ class AdminPlanController:
             "id": entry.id,
             "plan_id": entry.plan_id,
             "key": entry.key,
-            "value": entry.typed_value,
+            "value": entry.value,
             "value_type": entry.value_type,
             "description": entry.description,
         }
@@ -1750,9 +1908,9 @@ class AdminPlanController:
         map returned by auth/me for all subscribers on this plan.
         """
         try:
-            entry = await sync_to_async(
-                AccessEntry.objects.select_related("plan").get
-            )(pk=entry_id)
+            entry = await sync_to_async(AccessEntry.objects.select_related("plan").get)(
+                pk=entry_id
+            )
         except AccessEntry.DoesNotExist:
             raise NotFoundException("Access entry not found.")
 
@@ -1813,13 +1971,11 @@ class AdminPlanController:
                     f"'{item.key}'. Must be one of: {', '.join(sorted(valid_types))}."
                 )
 
-        async def _do_bulk():
+        def _do_bulk():
             """Execute the bulk replace in a transaction."""
             with transaction.atomic():
                 # Delete all existing entries
-                deleted = await sync_to_async(
-                    AccessEntry.objects.filter(plan=plan).delete
-                )()
+                deleted = AccessEntry.objects.filter(plan=plan).delete()
                 deleted_count = deleted[0] if deleted else 0
 
                 # Create new entries
@@ -1834,11 +1990,11 @@ class AdminPlanController:
                     for item in payload.entries
                 ]
                 if new_entries:
-                    await sync_to_async(AccessEntry.objects.bulk_create)(new_entries)
+                    AccessEntry.objects.bulk_create(new_entries)
 
                 return deleted_count, len(new_entries)
 
-        deleted_count, created_count = await _do_bulk()
+        deleted_count, created_count = await sync_to_async(_do_bulk)()
 
         logger.info(
             "ADMIN_ACCESS_ENTRIES_BULK_SET: plan='%s' (id=%s), "
@@ -1911,14 +2067,10 @@ class AdminRefundController:
             "status": refund.status,
             "reason_category": refund.reason_category,
             "initiated_by_id": getattr(refund.initiated_by, "id", None),
-            "initiated_by_email": (
-                getattr(refund.initiated_by, "email", None)
-            ),
+            "initiated_by_email": (getattr(refund.initiated_by, "email", None)),
             "initiated_by_ip": refund.initiated_by_ip,
             "approved_by_id": getattr(refund.approved_by, "id", None),
-            "approved_by_email": (
-                getattr(refund.approved_by, "email", None)
-            ),
+            "approved_by_email": (getattr(refund.approved_by, "email", None)),
             "approved_at": refund.approved_at,
             "admin_notes": refund.admin_notes,
             "created_at": refund.created_at,
@@ -2055,10 +2207,7 @@ class AdminRefundController:
             )
 
         # Enforce two-person rule
-        if (
-            refund.initiated_by
-            and refund.initiated_by_id == request.user.id
-        ):
+        if refund.initiated_by and refund.initiated_by_id == request.user.id:
             raise BadRequestException(
                 "Two-person rule violation: the admin who approves a refund "
                 "cannot be the same person who initiated it. Another staff "
@@ -2073,9 +2222,13 @@ class AdminRefundController:
         # Append approval notes
         if payload.notes:
             if refund.admin_notes:
-                refund.admin_notes += f"\n\n[APPROVAL by {request.user.email}] {payload.notes}"
+                refund.admin_notes += (
+                    f"\n\n[APPROVAL by {request.user.email}] {payload.notes}"
+                )
             else:
-                refund.admin_notes = f"[APPROVAL by {request.user.email}] {payload.notes}"
+                refund.admin_notes = (
+                    f"[APPROVAL by {request.user.email}] {payload.notes}"
+                )
 
         await sync_to_async(refund.save)(
             update_fields=[

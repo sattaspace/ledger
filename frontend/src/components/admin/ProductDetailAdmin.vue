@@ -31,8 +31,7 @@ import type {
   PaginationMeta,
   AccessMatrixResponse,
   AccessMatrixRow,
-  AccessEntryCreatePayload,
-  AccessEntryUpdatePayload,
+  AccessMatrixRowSavePayload,
 } from "@/lib/admin";
 
 import AdminPageHeader from "@/components/admin/AdminPageHeader.vue";
@@ -190,14 +189,14 @@ const editingEntryIdsMap = ref<Record<string, number | null>>({});
 const editEntryForm = ref<{
   planIds: number[];
   key: string;
-  value: string;
-  value_type: "boolean" | "integer" | "string";
+  valuesByPlan: Record<number, string>;              // plan_id → value (per-plan)
+  valueTypesByPlan: Record<number, "boolean" | "integer" | "string">;  // plan_id → type (per-plan)
   description: string;
 }>({
   planIds: [],
   key: "",
-  value: "true",
-  value_type: "boolean",
+  valuesByPlan: {},
+  valueTypesByPlan: {},
   description: "",
 });
 
@@ -671,7 +670,7 @@ function openAddEntryModal() {
   showAddEntryModal.value = true;
 }
 
-/** Handle add-entry form submit — creates the entry for each selected plan */
+/** Handle add-entry form submit — atomically creates the entry for all selected plans */
 async function handleAddEntry() {
   if (!addEntryForm.value.planIds.length) {
     addEntryError.value = "Select at least one plan.";
@@ -680,40 +679,40 @@ async function handleAddEntry() {
   addEntryLoading.value = true;
   addEntryError.value = null;
   try {
-    const payload: AccessEntryCreatePayload = {
+    const payload: AccessMatrixRowSavePayload = {
       key: addEntryForm.value.key,
-      value: addEntryForm.value.value,
-      value_type: addEntryForm.value.value_type,
       description: addEntryForm.value.description || undefined,
+      entries: addEntryForm.value.planIds.map((planId) => ({
+        plan_id: planId,
+        value: addEntryForm.value.value,
+        value_type: addEntryForm.value.value_type,
+      })),
     };
-    // Create the same entry for each selected plan
-    let successCount = 0;
-    let firstError: string | null = null;
-    for (const planId of addEntryForm.value.planIds) {
-      try {
-        await adminApi.addAccessEntry(planId, payload);
-        successCount++;
-      } catch (err) {
-        if (!firstError) firstError = getErrorMessage(err);
-      }
-    }
-    if (successCount > 0) {
-      showToast(
-        `Feature added to ${successCount} plan${successCount > 1 ? "s" : ""}.`,
-        "success",
-      );
-      showAddEntryModal.value = false;
-      // await fetchMatrix();
-      // Refresh both product and matrix to keep data in sync
-      await Promise.all([fetchProduct(), fetchMatrix()]);
-    } else {
-      addEntryError.value = firstError || "Failed to add feature.";
-    }
+    const result = await adminApi.saveAccessMatrixRow(productId.value!, payload);
+    showToast(
+      `Feature added to ${result.entries_created} plan${result.entries_created !== 1 ? "s" : ""}.`,
+      "success",
+    );
+    showAddEntryModal.value = false;
+    // Refresh both product and matrix to keep data in sync
+    await Promise.all([fetchProduct(), fetchMatrix()]);
   } catch (err) {
     addEntryError.value = getErrorMessage(err);
   } finally {
     addEntryLoading.value = false;
   }
+}
+
+/** Infer value_type from a string value */
+function inferValueType(val: string | null | undefined): "boolean" | "integer" | "string" {
+  if (val == null) return "string";
+  const lower = String(val).toLowerCase();
+  if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
+    return "boolean";
+  } else if (/^-?\d+$/.test(String(val))) {
+    return "integer";
+  }
+  return "string";
 }
 
 /** Handle cell click — open the edit modal for a specific plan+key */
@@ -725,35 +724,34 @@ function handleEditCell(row: AccessMatrixRow, planSlug: string) {
 
   // Determine which plans currently have this key (entry_ids != null)
   const selectedPlanIds: number[] = [];
+  const valuesByPlan: Record<number, string> = {};
+  const valueTypesByPlan: Record<number, "boolean" | "integer" | "string"> = {};
+
   for (const plan of matrixData.value.plans) {
     if (row.entry_ids?.[plan.slug] != null) {
       const id = planSlugToId(plan.slug);
-      if (id) selectedPlanIds.push(id);
+      if (id) {
+        selectedPlanIds.push(id);
+        const cellValue = row.values[plan.slug] ?? "true";
+        valuesByPlan[id] = cellValue;
+        valueTypesByPlan[id] = inferValueType(cellValue);
+      }
     }
   }
   // Always include the clicked plan (even if it has no entry yet)
   const clickedPlanId = planSlugToId(planSlug);
   if (clickedPlanId && !selectedPlanIds.includes(clickedPlanId)) {
     selectedPlanIds.push(clickedPlanId);
-  }
-
-  // Infer value_type from the clicked cell's current value
-  const currentValue = row.values[planSlug] ?? null;
-  let inferredType: "boolean" | "integer" | "string" = "string";
-  if (currentValue !== null) {
-    const lower = String(currentValue).toLowerCase();
-    if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
-      inferredType = "boolean";
-    } else if (/^-?\d+$/.test(String(currentValue))) {
-      inferredType = "integer";
-    }
+    const cellValue = row.values[planSlug] ?? "true";
+    valuesByPlan[clickedPlanId] = cellValue;
+    valueTypesByPlan[clickedPlanId] = inferValueType(cellValue);
   }
 
   editEntryForm.value = {
     planIds: selectedPlanIds,
     key: row.key,
-    value: currentValue ?? "true",
-    value_type: inferredType,
+    valuesByPlan,
+    valueTypesByPlan,
     description: row.description || "",
   };
 
@@ -770,32 +768,38 @@ function handleEditRow(row: AccessMatrixRow) {
 
   // All plans that currently have this key
   const selectedPlanIds: number[] = [];
-  let firstValue: string | null = null;
-  let inferredType: "boolean" | "integer" | "string" = "string";
+  const valuesByPlan: Record<number, string> = {};
+  const valueTypesByPlan: Record<number, "boolean" | "integer" | "string"> = {};
 
   for (const plan of matrixData.value.plans) {
     const entryId = row.entry_ids?.[plan.slug];
-    if (entryId != null) {
-      const id = planSlugToId(plan.slug);
-      if (id) selectedPlanIds.push(id);
-      // Use the first found value as the form default
-      if (firstValue === null) {
-        firstValue = row.values[plan.slug] ?? "true";
-        const lower = String(firstValue).toLowerCase();
-        if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
-          inferredType = "boolean";
-        } else if (/^-?\d+$/.test(String(firstValue))) {
-          inferredType = "integer";
-        }
-      }
+    const id = planSlugToId(plan.slug);
+    if (entryId != null && id) {
+      selectedPlanIds.push(id);
+      const cellValue = row.values[plan.slug] ?? "true";
+      valuesByPlan[id] = cellValue;
+      valueTypesByPlan[id] = inferValueType(cellValue);
+    }
+  }
+
+  // If no plans have this key, default to all product plans
+  const fallbackPlanIds = selectedPlanIds.length > 0
+    ? selectedPlanIds
+    : (product.value?.plans.map((p) => p.id) ?? []);
+
+  // For plans without existing values, set sensible defaults
+  for (const planId of fallbackPlanIds) {
+    if (!(planId in valuesByPlan)) {
+      valuesByPlan[planId] = "true";
+      valueTypesByPlan[planId] = "boolean";
     }
   }
 
   editEntryForm.value = {
-    planIds: selectedPlanIds.length > 0 ? selectedPlanIds : (product.value?.plans.map((p) => p.id) ?? []),
+    planIds: fallbackPlanIds,
     key: row.key,
-    value: firstValue ?? "true",
-    value_type: inferredType,
+    valuesByPlan,
+    valueTypesByPlan,
     description: row.description || "",
   };
 
@@ -803,7 +807,7 @@ function handleEditRow(row: AccessMatrixRow) {
   showEditEntryModal.value = true;
 }
 
-/** Handle edit-entry form submit — sync across selected plans */
+/** Handle edit-entry form submit — atomically sync across selected plans */
 async function handleEditEntrySubmit() {
   if (!editEntryForm.value.planIds.length) {
     editEntryError.value = "Select at least one plan.";
@@ -817,74 +821,27 @@ async function handleEditEntrySubmit() {
   editEntryError.value = null;
 
   const row = editingEntryRow.value;
-  const originalEntryIds = { ...editingEntryIdsMap.value };
+  const { valuesByPlan, valueTypesByPlan } = editEntryForm.value;
 
   try {
-    // Build a set of selected plan slugs for quick lookup
-    const selectedPlanSlugs = new Set<string>();
-    for (const planId of editEntryForm.value.planIds) {
-      const plan = product.value?.plans.find((p) => p.id === planId);
-      if (plan) selectedPlanSlugs.add(plan.slug);
-    }
-
-    // 1. Delete entries for plans that were previously selected but are now unchecked
-    for (const [planSlug, entryId] of Object.entries(originalEntryIds)) {
-      if (entryId != null && !selectedPlanSlugs.has(planSlug)) {
-        try {
-          await adminApi.deleteAccessEntry(entryId);
-        } catch (err) {
-          console.warn(`Failed to delete entry ${entryId} for plan ${planSlug}:`, err);
-        }
-      }
-    }
-
-    // 2. For each selected plan, either update or create the entry
-    let successCount = 0;
-    for (const planSlug of selectedPlanSlugs) {
-      const planId = planSlugToId(planSlug);
-      if (!planId) continue;
-
-      const entryId = originalEntryIds[planSlug] ?? null;
-
-      if (entryId) {
-        // Update existing entry
-        const payload: AccessEntryUpdatePayload = {
-          key: editEntryForm.value.key,
-          value: editEntryForm.value.value,
-          value_type: editEntryForm.value.value_type,
-          description: editEntryForm.value.description || undefined,
-        };
-        try {
-          await adminApi.updateAccessEntry(entryId, payload);
-          successCount++;
-        } catch (err) {
-          console.warn(`Failed to update entry ${entryId}:`, err);
-        }
-      } else {
-        // Create new entry for this plan
-        const payload: AccessEntryCreatePayload = {
-          key: editEntryForm.value.key,
-          value: editEntryForm.value.value,
-          value_type: editEntryForm.value.value_type,
-          description: editEntryForm.value.description || undefined,
-        };
-        try {
-          await adminApi.addAccessEntry(planId, payload);
-          successCount++;
-        } catch (err) {
-          console.warn(`Failed to create entry for plan ${planSlug}:`, err);
-        }
-      }
-    }
-
-    if (successCount > 0) {
-      showToast(
-        `Feature synced across ${successCount} plan${successCount > 1 ? "s" : ""}.`,
-        "success",
-      );
-    }
+    const payload: AccessMatrixRowSavePayload = {
+      original_key: row.key !== editEntryForm.value.key ? row.key : undefined,
+      key: editEntryForm.value.key,
+      description: editEntryForm.value.description || undefined,
+      entries: editEntryForm.value.planIds.map((planId) => ({
+        plan_id: planId,
+        value: valuesByPlan[planId] ?? "true",
+        value_type: valueTypesByPlan[planId] ?? "string",
+      })),
+    };
+    const result = await adminApi.saveAccessMatrixRow(productId.value!, payload);
+    const total = result.entries_created + result.entries_updated;
+    showToast(
+      `Feature synced across ${total} plan${total !== 1 ? "s" : ""}` +
+        (result.entries_deleted ? ` (${result.entries_deleted} removed).` : "."),
+      "success",
+    );
     showEditEntryModal.value = false;
-    // await fetchMatrix();
     // Refresh both product and matrix to keep data in sync
     await Promise.all([fetchProduct(), fetchMatrix()]);
   } catch (err) {
@@ -932,7 +889,7 @@ async function confirmDeleteEntries() {
 }
 
 /** When value_type changes, auto-set a sensible default value */
-function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryForm) {
+function handleValueTypeChange(formRef: typeof addEntryForm) {
   switch (formRef.value.value_type) {
     case "boolean":
       formRef.value.value = "true";
@@ -946,8 +903,24 @@ function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryFo
   }
 }
 
+/** When value_type changes for a specific plan in the edit form */
+function handleEditValueTypeChange(planId: number, newType: "boolean" | "integer" | "string") {
+  editEntryForm.value.valueTypesByPlan[planId] = newType;
+  switch (newType) {
+    case "boolean":
+      editEntryForm.value.valuesByPlan[planId] = "true";
+      break;
+    case "integer":
+      editEntryForm.value.valuesByPlan[planId] = "0";
+      break;
+    case "string":
+      editEntryForm.value.valuesByPlan[planId] = "";
+      break;
+  }
+}
+
 /** Toggle a plan ID in a planIds array */
-function togglePlanId(formRef: typeof addEntryForm | typeof editEntryForm, planId: number) {
+function togglePlanId(formRef: typeof addEntryForm, planId: number) {
   const idx = formRef.value.planIds.indexOf(planId);
   if (idx >= 0) {
     formRef.value.planIds.splice(idx, 1);
@@ -956,12 +929,44 @@ function togglePlanId(formRef: typeof addEntryForm | typeof editEntryForm, planI
   }
 }
 
+/** Toggle a plan ID in the edit form, initializing value/type if newly selected */
+function toggleEditPlanId(planId: number) {
+  const idx = editEntryForm.value.planIds.indexOf(planId);
+  if (idx >= 0) {
+    editEntryForm.value.planIds.splice(idx, 1);
+  } else {
+    editEntryForm.value.planIds.push(planId);
+    // Initialize value/type for newly selected plan if not already set
+    if (!(planId in editEntryForm.value.valuesByPlan)) {
+      editEntryForm.value.valuesByPlan[planId] = "true";
+      editEntryForm.value.valueTypesByPlan[planId] = "boolean";
+    }
+  }
+}
+
 /** Select or deselect all plans */
-function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, selectAll: boolean) {
+function toggleAllPlans(formRef: typeof addEntryForm, selectAll: boolean) {
   if (selectAll && product.value) {
     formRef.value.planIds = product.value.plans.map((p) => p.id);
   } else {
     formRef.value.planIds = [];
+  }
+}
+
+/** Select or deselect all plans in the edit form */
+function toggleAllEditPlans(selectAll: boolean) {
+  if (selectAll && product.value) {
+    const allIds = product.value.plans.map((p) => p.id);
+    editEntryForm.value.planIds = allIds;
+    // Initialize value/type for any newly selected plans
+    for (const planId of allIds) {
+      if (!(planId in editEntryForm.value.valuesByPlan)) {
+        editEntryForm.value.valuesByPlan[planId] = "true";
+        editEntryForm.value.valueTypesByPlan[planId] = "boolean";
+      }
+    }
+  } else {
+    editEntryForm.value.planIds = [];
   }
 }
 </script>
@@ -1808,12 +1813,12 @@ function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, sel
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
       >
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showEditEntryModal = false" />
-        <div class="relative w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
+        <div class="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
           <h2 class="text-lg font-semibold text-foreground">
             Edit Feature
           </h2>
           <p class="mt-1 text-sm text-muted-foreground">
-            Edit <code class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ editEntryForm.key }}</code> — select which plans this feature applies to. Unchecking a plan will remove its entry.
+            Edit <code class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ editEntryForm.key }}</code> — select which plans this feature applies to and set per-plan values. Unchecking a plan will remove its entry.
           </p>
           <form class="mt-5 space-y-4" @submit.prevent="handleEditEntrySubmit">
             <div>
@@ -1822,7 +1827,7 @@ function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, sel
                 <button
                   type="button"
                   class="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
-                  @click="toggleAllPlans(editEntryForm, editEntryForm.planIds.length < (product?.plans.length ?? 0))"
+                  @click="toggleAllEditPlans(editEntryForm.planIds.length < (product?.plans.length ?? 0))"
                 >
                   {{ editEntryForm.planIds.length >= (product?.plans.length ?? 0) ? 'Deselect all' : 'Select all' }}
                 </button>
@@ -1837,7 +1842,7 @@ function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, sel
                     type="checkbox"
                     class="h-4 w-4 rounded border-border"
                     :checked="editEntryForm.planIds.includes(plan.id)"
-                    @change="togglePlanId(editEntryForm, plan.id)"
+                    @change="toggleEditPlanId(plan.id)"
                   />
                   <span class="text-sm text-foreground">{{ plan.name }}</span>
                   <span v-if="editingEntryIdsMap[plan.slug] != null" class="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-950 dark:text-green-400">has entry</span>
@@ -1851,54 +1856,79 @@ function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, sel
               <label class="mb-1.5 block text-sm font-medium text-foreground">Key <span class="text-destructive">*</span></label>
               <input v-model="editEntryForm.key" type="text" class="input-field" required />
             </div>
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="mb-1.5 block text-sm font-medium text-foreground">Value Type</label>
-                <select v-model="editEntryForm.value_type" class="input-field" @change="handleValueTypeChange(editEntryForm)">
-                  <option value="boolean">Boolean</option>
-                  <option value="integer">Integer</option>
-                  <option value="string">String</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1.5 block text-sm font-medium text-foreground">Value <span class="text-destructive">*</span></label>
-                <!-- Boolean toggle -->
-                <div v-if="editEntryForm.value_type === 'boolean'" class="flex items-center gap-3 h-[42px]">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors"
-                    :class="
-                      editEntryForm.value === 'true'
-                        ? 'border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
-                        : 'border-border text-muted-foreground hover:bg-muted'
-                    "
-                    @click="editEntryForm.value = 'true'"
+            <!-- Per-plan values -->
+            <div v-if="editEntryForm.planIds.length > 0">
+              <label class="mb-1.5 block text-sm font-medium text-foreground">Values per Plan</label>
+              <div class="rounded-lg border border-border divide-y divide-border">
+                <div
+                  v-for="planId in editEntryForm.planIds"
+                  :key="planId"
+                  class="flex items-center gap-3 px-3 py-2.5"
+                >
+                  <span class="text-sm font-medium text-foreground w-28 shrink-0 truncate">
+                    {{ product?.plans.find(p => p.id === planId)?.name ?? `Plan ${planId}` }}
+                  </span>
+                  <select
+                    :value="editEntryForm.valueTypesByPlan[planId] ?? 'string'"
+                    class="input-field w-28 shrink-0"
+                    @change="handleEditValueTypeChange(planId, ($event.target as HTMLSelectElement).value as 'boolean' | 'integer' | 'string')"
                   >
-                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                    </svg>
-                    True
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors"
-                    :class="
-                      editEntryForm.value === 'false'
-                        ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
-                        : 'border-border text-muted-foreground hover:bg-muted'
-                    "
-                    @click="editEntryForm.value = 'false'"
-                  >
-                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    False
-                  </button>
+                    <option value="boolean">Boolean</option>
+                    <option value="integer">Integer</option>
+                    <option value="string">String</option>
+                  </select>
+                  <div class="flex-1 min-w-0">
+                    <!-- Boolean toggle -->
+                    <div v-if="(editEntryForm.valueTypesByPlan[planId] ?? 'string') === 'boolean'" class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors"
+                        :class="
+                          editEntryForm.valuesByPlan[planId] === 'true'
+                            ? 'border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
+                            : 'border-border text-muted-foreground hover:bg-muted'
+                        "
+                        @click="editEntryForm.valuesByPlan[planId] = 'true'"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        True
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors"
+                        :class="
+                          editEntryForm.valuesByPlan[planId] === 'false'
+                            ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
+                            : 'border-border text-muted-foreground hover:bg-muted'
+                        "
+                        @click="editEntryForm.valuesByPlan[planId] = 'false'"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                        False
+                      </button>
+                    </div>
+                    <!-- Integer input -->
+                    <input
+                      v-else-if="(editEntryForm.valueTypesByPlan[planId] ?? 'string') === 'integer'"
+                      :value="editEntryForm.valuesByPlan[planId]"
+                      type="number"
+                      class="input-field"
+                      @input="editEntryForm.valuesByPlan[planId] = ($event.target as HTMLInputElement).value"
+                    />
+                    <!-- String input -->
+                    <input
+                      v-else
+                      :value="editEntryForm.valuesByPlan[planId]"
+                      type="text"
+                      class="input-field"
+                      @input="editEntryForm.valuesByPlan[planId] = ($event.target as HTMLInputElement).value"
+                    />
+                  </div>
                 </div>
-                <!-- Integer input -->
-                <input v-else-if="editEntryForm.value_type === 'integer'" v-model="editEntryForm.value" type="number" class="input-field" />
-                <!-- String input -->
-                <input v-else v-model="editEntryForm.value" type="text" class="input-field" />
               </div>
             </div>
             <div>
