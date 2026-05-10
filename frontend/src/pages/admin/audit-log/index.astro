@@ -1,0 +1,73 @@
+---
+/**
+ * Admin Audit Log — /admin/audit-log
+ *
+ * Track admin actions and changes.
+ * Full Vue component implementation pending.
+ */
+import AdminLayout from "@/layouts/AdminLayout.astro";
+---
+
+<AdminLayout
+  title="Audit Log — Admin — SattaBase"
+  description="Track admin actions and changes."
+>
+  <div id="admin-audit-log-root">
+    <!-- Page header -->
+    <div class="mb-8">
+      <h1 class="text-2xl font-bold text-foreground">Audit Log</h1>
+      <p class="mt-1 text-sm text-muted-foreground">
+        Track admin actions and system changes.
+      </p>
+    </div>
+
+    <!-- Placeholder card -->
+    <div class="card flex flex-col items-center gap-4 p-10 text-center">
+      <svg
+        class="h-12 w-12 text-muted-foreground/30"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="1.5"
+          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+        ></path>
+      </svg>
+      <div>
+        <p class="font-medium text-foreground">Audit Log</p>
+        <p class="mt-1 text-sm text-muted-foreground">
+          The full audit log interface is coming soon. Use the Django admin for
+          now.
+        </p>
+      </div>
+      <a
+        href="/admin/django/billing/adminauditlog/"
+        class="btn-secondary inline-flex items-center gap-2 mt-2"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <svg
+          class="h-4 w-4"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+          ></path>
+        </svg>
+        Open Django Admin
+      </a>
+    </div>
+  </div>
+</AdminLayout>
+
+<script>
+  import { useAdminGuard } from "@/composables/useAdminGuard";
+</script>

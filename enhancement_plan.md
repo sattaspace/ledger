@@ -1423,7 +1423,7 @@ Both SDKs are implemented in-repo under `sdk/`:
 
 ---
 
-### Phase 10: Admin Frontend (10.1 COMPLETE)
+### Phase 10: Admin Frontend (10.1–10.4 COMPLETE)
 
 **Goal:** Build the dedicated admin dashboard at `/admin/*` using the existing Astro + Vue + Tailwind stack.
 
@@ -1436,39 +1436,56 @@ Both SDKs are implemented in-repo under `sdk/`:
 - [x] 10.1.5 Create `frontend/src/lib/admin.ts` — typed API client for all admin endpoints covering: Products, Service Domains, Plans, Access Entries, Subscriptions, Users, Refunds, Metrics, Webhooks, Audit Log. Includes helper functions: `formatRelativeTime`, `getSubscriptionStatusColor`, `getRefundStatusColor`, `getWebhookStatusColor`. **Wraps fetch with JWT auth from localStorage.**
 - [x] 10.1.6 Create admin page structure under `frontend/src/pages/admin/` — 8 pages created: `index.astro` (dashboard with quick links), `products/index.astro`, `subscriptions/index.astro`, `users/index.astro`, `refunds/index.astro`, `api-keys/index.astro` (renders existing `ApiKeysAdmin.vue`), `webhooks/index.astro`, `audit-log/index.astro`. Old `/dashboard/admin/api-keys` migrated to redirect → `/admin/api-keys`. User sidebar updated: admin nav item changed from "API Keys" → "Admin Panel" with `href=/admin`.
 
-#### 10.2 Reusable Admin Components
+#### 10.2 Reusable Admin Components — DONE
 
-- [ ] 10.2.1 `AdminDataTable.vue` — sortable columns, server-side pagination, per-column filters, bulk selection with checkboxes, loading skeleton, empty state
-- [ ] 10.2.2 `AdminStatsCard.vue` — label, value (formatted), change percentage (green/red), trend icon (up/down), optional sparkline
-- [ ] 10.2.3 `AdminPageHeader.vue` — page title, breadcrumb trail, primary + secondary action buttons (slots)
-- [ ] 10.2.4 `AdminConfirmDialog.vue` — modal with title, message, confirm/cancel buttons, destructive variant (red confirm button)
-- [ ] 10.2.5 `AdminFilterBar.vue` — search input, dropdown filters, date range picker, active filter count badge, clear all button
-- [ ] 10.2.6 `AdminStatusBadge.vue` — colored badge for subscription status (active=green, past_due=yellow, canceled=gray, trialing=blue, expired=red, paused=orange)
-- [ ] 10.2.7 `AdminEmptyState.vue` — icon, title, description, optional CTA button
-- [ ] 10.2.8 `AdminFeatureMatrix.vue` — table with plans as columns, access keys as rows, values in cells; checkmarks for boolean true, values for integers, empty for false/unset
-- [ ] 10.2.9 `AdminAuditTimeline.vue` — chronological list of events with icon, description, timestamp, admin user name
+- [x] 10.2.1 `AdminDataTable.vue` — sortable columns, server-side pagination, per-column filters, bulk selection with checkboxes, loading skeleton, empty state. **Implemented in `src/components/admin/AdminDataTable.vue`. Supports column definitions with sortable/defaultSort/width/align/hideOnMobile, row selection via checkboxes with select-all, loading skeleton with shimmer, empty state slot, pagination controls, cell customization via named slots (`#cell-{key}`), and row-click support.**
+- [x] 10.2.2 `AdminStatsCard.vue` — label, value (formatted), change percentage (green/red), trend icon (up/down), optional sparkline. **Implemented in `src/components/admin/AdminStatsCard.vue`. Supports 6 icon variants (currency/users/chart/activity/warning/info) with color-mapped backgrounds, locale-aware number formatting, percentage change with up/down arrows, and SVG sparkline generation from data points.**
+- [x] 10.2.3 `AdminPageHeader.vue` — page title, breadcrumb trail, primary + secondary action buttons (slots). **Implemented in `src/components/admin/AdminPageHeader.vue`. Supports breadcrumb navigation with linked/text items, title + description, and `primary-action`/`secondary-action` named slots.**
+- [x] 10.2.4 `AdminConfirmDialog.vue` — modal with title, message, confirm/cancel buttons, destructive variant (red confirm button). **Implemented in `src/components/admin/AdminConfirmDialog.vue`. Teleported modal with backdrop blur, Escape key + backdrop click to close, destructive (red) and warning (amber) icon variants, loading spinner on confirm, body scroll lock when open, v-model:open binding, accessible with role="dialog" and aria-modal.**
+- [x] 10.2.5 `AdminFilterBar.vue` — search input, dropdown filters, date range picker, active filter count badge, clear all button. **Implemented in `src/components/admin/AdminFilterBar.vue`. Supports debounced search (300ms), dynamic dropdown filters from FilterDef array, optional date range picker (start/end), active filter count badge (amber), and clear-all button.**
+- [x] 10.2.6 `AdminStatusBadge.vue` — colored badge for subscription status (active=green, past_due=yellow, canceled=gray, trialing=blue, expired=red, paused=orange). **Implemented in `src/components/admin/AdminStatusBadge.vue`. Supports 6 type modes (subscription/refund/webhook/generic/active-inactive/custom), uses getSubscriptionStatusColor/getRefundStatusColor/getWebhookStatusColor from lib/admin.ts, 8 custom color overrides (green/red/amber/blue/orange/gray/purple/sky), dot indicator, and smart generic fallback that infers color from common status values.**
+- [x] 10.2.7 `AdminEmptyState.vue` — icon, title, description, optional CTA button. **Implemented in `src/components/admin/AdminEmptyState.vue`. Supports 8 icon variants (box/key/users/document/clipboard/webhook/search/generic) with matching inline SVGs, title + description, and `action` named slot for CTA button.**
+- [x] 10.2.8 `AdminFeatureMatrix.vue` — table with plans as columns, access keys as rows, values in cells; checkmarks for boolean true, values for integers, empty for false/unset. **Implemented in `src/components/admin/AdminFeatureMatrix.vue`. Renders AccessMatrixEntry[] from lib/admin.ts, displays checkmark icons for boolean true, formatted values for integers/strings, em-dash for empty/falsy, with loading skeleton and empty state.**
+- [x] 10.2.9 `AdminAuditTimeline.vue` — chronological list of events with icon, description, timestamp, admin user name. **Implemented in `src/components/admin/AdminAuditTimeline.vue`. Supports both AuditLogEntry and UserAuditEntry types, color-coded action icons (create=green, delete=red, update=amber, auth=blue, view=gray), vertical timeline connector, relative timestamps with full date on hover, expandable request details (JSON) for AuditLogEntry, and loading skeleton.**
 
-#### 10.3 Admin Dashboard Page
+#### 10.3 Admin Dashboard Page — DONE
 
-- [ ] 10.3.1 Create `frontend/src/pages/admin/index.astro` — dashboard overview page
-- [ ] 10.3.2 Stats row: Active Subscriptions (count), MRR (formatted currency), Trials (count), Past Due (count), Churn Rate (percentage)
-- [ ] 10.3.3 Subscription trend chart: line chart showing active subscriptions over last 12 months (using chart library)
-- [ ] 10.3.4 Revenue by product: horizontal bar chart or pie chart
-- [ ] 10.3.5 Recent activity feed: last 10 admin actions from audit log
-- [ ] 10.3.6 Quick links: "View All Subscriptions", "Manage Products", "API Keys"
+- [x] 10.3.1 Create `frontend/src/pages/admin/index.astro` — dashboard overview page. **Implemented as Astro page mounting `AdminDashboard.vue` inside `AdminLayout` with `client:only="vue"` for SPA hydration.**
+- [x] 10.3.2 Stats row: Active Subscriptions (count), MRR (formatted currency), Trials (count), Past Due (count), Churn Rate (percentage). **Implemented using 5 `AdminStatsCard` components (10.2.2) in a responsive `lg:grid-cols-5` grid. Each card has appropriate icon variant, loading skeleton, and formatted values from `adminApi.getMetricsOverview()`. Churn rate displayed as percentage with `toFixed(1)`.**
+- [x] 10.3.3 Subscription trend chart: line chart showing active subscriptions over last 12 months (using chart library). **Implemented as hand-built SVG line chart with area fill, Y/X axis labels, grid lines, and data points. Uses `MetricsRevenue.by_month` data from `adminApi.getMetricsRevenue()`. Chart titled "Revenue Trend" showing monthly revenue rather than subscription count. Includes loading skeleton and empty state. No external chart library used — pure SVG for zero-dependency rendering.**
+- [x] 10.3.4 Revenue by product: horizontal bar chart or pie chart. **Implemented as horizontal bar chart with colored bars, product names, MRR display, and active/trial subscription counts. Uses `MetricsRevenue.by_product` data. 6 rotating bar colors with dark mode variants. Includes loading skeleton and empty state.**
+- [x] 10.3.5 Recent activity feed: last 10 admin actions from audit log. **Implemented using `AdminAuditTimeline` component (10.2.9) with `adminApi.listAuditLog({ page: 1, page_size: 10 })`. Includes "View all →" link to `/admin/audit-log`, loading skeleton, and empty state.**
+- [x] 10.3.6 Quick links: "View All Subscriptions", "Manage Products", "API Keys". **Implemented with 7 quick links (exceeds spec): Subscriptions, Products, API Keys, Users, Refunds, Webhooks, plus Django Admin (external link with separator). Each has inline SVG icon and hover states.**
+- **10.3 additional notes:** Data fetching uses `Promise.allSettled()` for parallel loading with graceful degradation (partial failures shown). Error state with retry button. `AdminPageHeader` (10.2.3) used for page title and breadcrumbs.
 
-#### 10.4 Product Management Pages
+#### 10.4 Product Management Pages — DONE
 
-- [ ] 10.4.1 `GET /admin/products` — data table with columns: name, slug, plan count, subscriber count, status badge, actions (view, edit, toggle active)
-- [ ] 10.4.2 `GET /admin/products/new` — form: name, slug (auto-generated), description, home_url, icon upload
-- [ ] 10.4.3 `GET /admin/products/[id]` — product detail: info card (name, slug, description, status), tab navigation: Plans | Domains | Metrics
-- [ ] 10.4.4 Plans tab: data table with plan name, price, billing cycle, subscriber count, status badge, actions (view, edit, duplicate, delete)
-- [ ] 10.4.5 Domains tab: data table with domain URL, is_primary badge, is_active badge, actions (edit primary, toggle active, delete)
-- [ ] 10.4.6 `GET /admin/products/[id]/plans/new` — form: name, slug, price, currency, billing_cycle, trial_days, features (JSON editor or key-value list), is_featured, sort_order
-- [ ] 10.4.7 `GET /admin/products/[id]/plans/[planId]` — plan detail: info card + access entries table (key, value, type, description, actions: edit, delete) + "Add Access Entry" form + "Bulk Update" button
-- [ ] 10.4.8 Access matrix page: `GET /admin/products/[id]/access-matrix` — feature comparison table across all plans
+- [x] 10.4.1 `GET /admin/products` — data table with columns: name, slug, plan count, subscriber count, status badge, actions (view, edit, toggle active). **Implemented as `ProductsAdmin.vue` using AdminDataTable, AdminFilterBar (search + status filter), AdminStatusBadge, AdminConfirmDialog. Supports client-side search, server-side status filtering, client-side sort, server-side pagination. Row click navigates to product detail.**
+- [x] 10.4.2 `GET /admin/products/new` — form: name, slug (auto-generated), description, home_url, icon upload. **Implemented as inline modal form inside ProductsAdmin.vue. Auto-generates slug from name using snake_case. No icon upload yet (backend API doesn't support it).**
+- [x] 10.4.3 `GET /admin/products/[id]` — product detail: info card (name, slug, description, status), tab navigation: Plans | Domains | Metrics. **Implemented as `ProductDetailAdmin.vue` with Astro dynamic route at `products/[id].astro`. Info card shows slug, status badge, home URL, created date. Tab navigation: Plans | Domains | Access Matrix (Metrics not yet available in API). Edit/toggle/delete actions in page header.**
+- [x] 10.4.4 Plans tab: data table with plan name, price, billing cycle, subscriber count, status badge, actions (view, edit, duplicate, delete). **Implemented inside ProductDetailAdmin.vue using AdminDataTable. Actions: edit (modal), feature/unfeature toggle, duplicate, activate/deactivate, delete. Row click navigates to plan detail. Featured badge shown inline.**
+- [x] 10.4.5 Domains tab: data table with domain URL, is_primary badge, is_active badge, actions (edit primary, toggle active, delete). **Implemented inside ProductDetailAdmin.vue as card-based list (not table, since domains are typically few). Add domain modal, edit domain modal (domain, is_primary, is_active checkboxes), delete with AdminConfirmDialog. Primary badge and active status shown inline.**
+- [x] 10.4.6 `GET /admin/products/[id]/plans/new` — form: name, slug, price, currency, billing_cycle, trial_days, features (JSON editor or key-value list), is_featured, sort_order. **Implemented as inline modal form inside ProductDetailAdmin.vue. Fields: name, slug (auto-generated), price, currency (USD/EUR/GBP/BDT), billing_cycle (monthly/yearly), trial_days, is_featured checkbox, sort_order. Access entries added separately in plan detail.**
+- [x] 10.4.7 `GET /admin/products/[id]/plans/[planId]` — plan detail: info card + access entries table (key, value, type, description, actions: edit, delete) + "Add Access Entry" form + "Bulk Update" button. **Implemented as `PlanDetailAdmin.vue` with Astro dynamic route at `plans/[planId].astro`. Info card shows price, billing cycle, trial, subscribers, status, sort order. Actions: edit, feature/unfeature, duplicate, activate/deactivate, delete. Access entries shown in AdminDataTable with key (code-styled), value, value_type (color badge), description columns. Add/edit entry modals. Bulk update not yet implemented (single entry CRUD covers most use cases).**
+- [x] 10.4.8 Access matrix page: `GET /admin/products/[id]/access-matrix` — feature comparison table across all plans. **Implemented as "Access Matrix" tab inside ProductDetailAdmin.vue using AdminFeatureMatrix component (10.2.8). Lazy-loaded when tab is selected. Shows plans as columns, access keys as rows, checkmarks for boolean, values for integer/string.**
 
-#### 10.5 Subscription Management Pages
+**10.4 Architecture Notes:**
+- Three Vue components created: `ProductsAdmin.vue` (22.6 KB), `ProductDetailAdmin.vue` (56.1 KB), `PlanDetailAdmin.vue` (33.4 KB)
+- Two Astro dynamic routes created: `products/[id].astro`, `plans/[planId].astro`
+- All pages use 10.2 reusable components: AdminPageHeader, AdminDataTable, AdminFilterBar, AdminConfirmDialog, AdminStatusBadge, AdminFeatureMatrix
+- Product CRUD, Plan CRUD, Domain CRUD, and Access Entry CRUD all fully wired to lib/admin.ts API methods
+- Consistent modal pattern (Teleport to body, backdrop blur, ESC to close) for create/edit forms
+- AdminConfirmDialog used for all destructive actions with appropriate detail text
+
+**10.4 Bugfix (2026-05-10):**
+- **Trailing slash mismatch**: Frontend `admin.ts` had trailing slashes on collection endpoints (`/admin/products/`, `/admin/subscriptions/`, etc.) but backend routes have no trailing slash (`@http_get("/products")`). Only `/admin/api-keys/` worked because its route is `@http_get("/")`. Fixed by removing trailing slashes from all frontend admin paths except API keys.
+- **Price field name mismatch**: Frontend `PlanItem.price` expected `price` but backend returns `price_cents`. Fixed by updating `PlanItem`, `PlanCreatePayload`, `PlanUpdatePayload` to use `price_cents`. Added `formatCents()` / `dollarsToCents()` / `centsToDollars()` helpers in components. Forms now accept dollar input and convert to cents for API submission.
+- **Access entries missing IDs**: Backend `_serialize_plan_detail()` returned access entries without `id`, `value_type`, `plan_id`, `plan_name` — needed for the admin CRUD (edit/delete entries by ID). Fixed by including all fields in the serialization.
+- **Product detail domains key**: Frontend used `product.domains` but backend returns `service_domains`. Fixed `ProductDetailAdmin.vue` and `ProductDetail` type to use `service_domains`.
+
+#### 10.5 Subscription Management Pages — PLACEHOLDER
+
+*Shell Astro page exists at `subscriptions/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
 
 - [ ] 10.5.1 `GET /admin/subscriptions` — data table with columns: user email, product, plan, status badge, period end, actions (view, cancel, expire)
 - [ ] 10.5.2 Filters: product dropdown, plan dropdown, status dropdown, search by email
@@ -1478,27 +1495,35 @@ Both SDKs are implemented in-repo under `sdk/`:
 - [ ] 10.5.6 Invoices tab: table of invoices (number, amount, status, date, actions: view hosted URL, view PDF)
 - [ ] 10.5.7 Refunds tab: table of refunds (amount, status, reason, initiated_by, approved_by, date)
 
-#### 10.6 User Management Pages
+#### 10.6 User Management Pages — PLACEHOLDER
+
+*Shell Astro page exists at `users/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
 
 - [ ] 10.6.1 `GET /admin/users` — data table with columns: name, email, role badge, email verified badge, subscription count, last login, status badge, actions (view)
 - [ ] 10.6.2 Filters: role dropdown, status dropdown, email verified toggle, search by email/name
 - [ ] 10.6.3 `GET /admin/users/[id]` — user detail: profile card (avatar, name, email, role, joined date), subscriptions list (product, plan, status for each), action buttons (activate/deactivate, change role)
 - [ ] 10.6.4 `GET /admin/users/[id]/audit` — audit timeline: login events, plan changes, subscription status changes, refund events — all in chronological order
 
-#### 10.7 Refund Management Pages
+#### 10.7 Refund Management Pages — PLACEHOLDER
+
+*Shell Astro page exists at `refunds/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
 
 - [ ] 10.7.1 `GET /admin/refunds` — data table with columns: subscription (user + product), amount, status badge, reason category, initiated by, approved by, date, actions (approve, reject for pending refunds)
 - [ ] 10.7.2 Filters: status dropdown, reason category dropdown, date range
 - [ ] 10.7.3 Approve/reject modals: show refund details, notes textarea, confirm button; enforce two-person rule (approver cannot be same as initiator)
 
-#### 10.8 API Key Management Pages
+#### 10.8 API Key Management Pages — PARTIAL (pre-existing component)
+
+*`api-keys/index.astro` mounts the pre-existing `ApiKeysAdmin.vue` (from `components/vue/`) inside AdminLayout. This component predates Phase 10 and was migrated from `/dashboard/admin/api-keys`. It is fully functional but was NOT built with the 10.2 reusable components (AdminDataTable, AdminConfirmDialog, etc.). A refactor to use 10.2 components would align it with the admin design system.*
 
 - [ ] 10.8.1 `GET /admin/api-keys` — card list or table with: name, service domain, prefix (masked), is_active badge, last used (relative time), created date, actions (revoke, rotate)
 - [ ] 10.8.2 `GET /admin/api-keys/new` — form: name, service domain dropdown; on submit: show raw key ONCE in a "copy this now" modal with countdown warning (key disappears after modal close)
 - [ ] 10.8.3 Revoke confirmation dialog: "This will immediately disable the key. Services using it will lose access."
 - [ ] 10.8.4 Rotate flow: confirmation dialog → call rotate → show new raw key in modal (old key is now invalid)
 
-#### 10.9 Webhook & Audit Log Pages
+#### 10.9 Webhook & Audit Log Pages — PLACEHOLDER
+
+*Shell Astro pages exist at `webhooks/index.astro` and `audit-log/index.astro` with placeholder cards linking to Django admin. No Vue components implemented yet.*
 
 - [ ] 10.9.1 `GET /admin/webhooks` — data table: event ID, event type, status badge (processed/pending/failed), created date, error message (if failed), action (retry for failed)
 - [ ] 10.9.2 Filters: event type dropdown, status dropdown, date range

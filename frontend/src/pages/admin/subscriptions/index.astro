@@ -1,0 +1,73 @@
+---
+/**
+ * Admin Subscriptions — /admin/subscriptions
+ *
+ * View and manage all user subscriptions.
+ * Full Vue component implementation pending.
+ */
+import AdminLayout from "@/layouts/AdminLayout.astro";
+---
+
+<AdminLayout
+  title="Subscriptions — Admin — SattaBase"
+  description="View and manage all user subscriptions."
+>
+  <div id="admin-subscriptions-root">
+    <!-- Page header -->
+    <div class="mb-8">
+      <h1 class="text-2xl font-bold text-foreground">Subscriptions</h1>
+      <p class="mt-1 text-sm text-muted-foreground">
+        View and manage all user subscriptions across products and plans.
+      </p>
+    </div>
+
+    <!-- Placeholder card -->
+    <div class="card flex flex-col items-center gap-4 p-10 text-center">
+      <svg
+        class="h-12 w-12 text-muted-foreground/30"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="1.5"
+          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+        ></path>
+      </svg>
+      <div>
+        <p class="font-medium text-foreground">Subscriptions Management</p>
+        <p class="mt-1 text-sm text-muted-foreground">
+          The full subscription management interface is coming soon. Use the
+          Django admin for now.
+        </p>
+      </div>
+      <a
+        href="/admin/django/billing/subscription/"
+        class="btn-secondary inline-flex items-center gap-2 mt-2"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <svg
+          class="h-4 w-4"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+          ></path>
+        </svg>
+        Open Django Admin
+      </a>
+    </div>
+  </div>
+</AdminLayout>
+
+<script>
+  import { useAdminGuard } from "@/composables/useAdminGuard";
+</script>

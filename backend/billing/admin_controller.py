@@ -124,7 +124,7 @@ class AdminProductController:
 
     @http_post(
         "/products",
-        response={201: dict, 400: dict, 409: dict},
+        response={200: dict, 400: dict, 409: dict},
         summary="Create product",
         description=(
             "Create a new product with optional slug auto-generation. "
@@ -605,7 +605,7 @@ class AdminProductController:
 
     @http_post(
         "/products/{product_id}/domains",
-        response={201: dict, 400: dict, 404: dict, 409: dict},
+        response={200: dict, 400: dict, 404: dict, 409: dict},
         summary="Add service domain",
         description=(
             "Create a new service domain for a product. "
@@ -902,13 +902,17 @@ class AdminPlanController:
         """Serialize a plan for admin detail view with access entries."""
         data = await self._serialize_plan_list_item(plan)
 
-        # Prefetch access entries
+        # Prefetch access entries (include id and value_type for admin CRUD)
         entries_qs = AccessEntry.objects.filter(plan=plan).order_by("key")
         entries = [
             {
+                "id": e.id,
                 "key": e.key,
-                "value": e.typed_value,
+                "value": e.value,
+                "value_type": e.value_type,
                 "description": e.description,
+                "plan_id": e.plan_id,
+                "plan_name": plan.name,
             }
             async for e in entries_qs
         ]
@@ -922,7 +926,7 @@ class AdminPlanController:
 
     @http_post(
         "/products/{product_id}/plans",
-        response={201: dict, 400: dict, 404: dict, 409: dict},
+        response={200: dict, 400: dict, 404: dict, 409: dict},
         summary="Create plan",
         description=(
             "Create a new plan under a product. Auto-generates slug from name "
@@ -1313,7 +1317,7 @@ class AdminPlanController:
 
     @http_post(
         "/plans/{plan_id}/duplicate",
-        response={201: dict, 404: dict},
+        response={200: dict, 404: dict},
         summary="Duplicate plan",
         description=(
             "Deep copy a plan including all AccessEntry records. "
@@ -1536,11 +1540,13 @@ class AdminPlanController:
                     all_entries[key] = {
                         "description": entry.description,
                         "values": {},
+                        "entry_ids": {},
                     }
                 # Only set description from the first plan that defines it
                 if not all_entries[key]["description"] and entry.description:
                     all_entries[key]["description"] = entry.description
                 all_entries[key]["values"][plan.slug] = entry.typed_value
+                all_entries[key]["entry_ids"][plan.slug] = entry.id
 
         # Build rows sorted by key
         rows = [
@@ -1548,6 +1554,7 @@ class AdminPlanController:
                 "key": key,
                 "description": data["description"],
                 "values": data["values"],
+                "entry_ids": data["entry_ids"],
             }
             for key, data in sorted(all_entries.items())
         ]
@@ -1565,7 +1572,7 @@ class AdminPlanController:
 
     @http_post(
         "/plans/{plan_id}/access-entries",
-        response={201: dict, 400: dict, 404: dict, 409: dict},
+        response={200: dict, 400: dict, 404: dict, 409: dict},
         summary="Create access entry",
         description=(
             "Add a single access entry to a plan. "

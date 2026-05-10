@@ -326,6 +326,10 @@ class AdminAccessMatrixRowSchema(Schema):
         default_factory=dict,
         description="Map of plan slug to value for this key",
     )
+    entry_ids: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Map of plan slug to access entry ID (null if not defined for that plan)",
+    )
 
 
 class AdminAccessMatrixSchema(Schema):

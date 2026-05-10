@@ -101,17 +101,20 @@ export interface ProductItem {
   slug: string;
   description: string;
   home_url: string;
-  icon: string | null;
+  icon?: string | null;
   is_active: boolean;
   plan_count: number;
+  active_plan_count?: number;
   subscriber_count: number;
+  domain_count?: number;
+  stripe_product_id?: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface ProductDetail extends ProductItem {
   plans: PlanItem[];
-  domains: ServiceDomainDetail[];
+  service_domains: ServiceDomainDetail[];
 }
 
 export interface ProductCreatePayload {
@@ -160,7 +163,7 @@ export interface PlanItem {
   id: number;
   name: string;
   slug: string;
-  price: number;
+  price_cents: number;
   currency: string;
   billing_cycle: "monthly" | "yearly";
   trial_days: number;
@@ -171,17 +174,20 @@ export interface PlanItem {
   access_entry_count: number;
   product_id: number;
   product_name: string;
+  display_price?: string;
+  is_free?: boolean;
 }
 
 export interface PlanDetail extends PlanItem {
   access_entries: AccessEntryItem[];
   stripe_price_id: string | null;
+  description?: string;
 }
 
 export interface PlanCreatePayload {
   name: string;
   slug?: string;
-  price: number;
+  price_cents: number;
   currency?: string;
   billing_cycle: "monthly" | "yearly";
   trial_days?: number;
@@ -192,7 +198,7 @@ export interface PlanCreatePayload {
 export interface PlanUpdatePayload {
   name?: string;
   slug?: string;
-  price?: number;
+  price_cents?: number;
   currency?: string;
   billing_cycle?: "monthly" | "yearly";
   trial_days?: number;
@@ -233,18 +239,18 @@ export interface AccessEntryBulkPayload {
   entries: AccessEntryCreatePayload[];
 }
 
-export interface AccessMatrixEntry {
+export interface AccessMatrixRow {
   key: string;
-  description: string;
-  value_type: "boolean" | "integer" | "string";
-  plans: Record<string, string>; // plan_slug → value
+  description: string | null;
+  values: Record<string, string | null>; // plan_slug → value
+  entry_ids: Record<string, number | null>; // plan_slug → entry ID (for edit/delete)
 }
 
 export interface AccessMatrixResponse {
   product_id: number;
   product_name: string;
-  plans: { slug: string; name: string }[];
-  entries: AccessMatrixEntry[];
+  plans: { slug: string; name: string; is_active: boolean }[];
+  rows: AccessMatrixRow[];
 }
 
 // ─── Subscription Types ─────────────────────────────────────────────────────
@@ -375,42 +381,87 @@ export interface RefundApprovalPayload {
 export interface RefundListResponse extends PaginatedResponse<RefundItem> {}
 
 // ─── Metrics Types ──────────────────────────────────────────────────────────
+// Aligned with backend billing/admin_schemas.py (Phase 9)
 
 export interface MetricsOverview {
-  mrr: number;
-  mrr_currency: string;
+  mrr_cents: number;
+  mrr_display: string;
   active_subscriptions: number;
   trial_subscriptions: number;
   past_due_subscriptions: number;
-  churn_rate: number;
+  canceled_subscriptions: number;
   total_users: number;
+  churn_rate: number;
   trial_conversion_rate: number;
+  currency: string;
+}
+
+export interface MetricsRevenueByProduct {
+  product_id: number;
+  product_name: string;
+  product_slug: string;
+  mrr_cents: number;
+  active_subscriptions: number;
+  trial_subscriptions: number;
+}
+
+export interface MetricsRevenueByPlan {
+  plan_id: number;
+  plan_name: string;
+  plan_slug: string;
+  product_name: string;
+  price_cents: number;
+  subscriber_count: number;
+  mrr_contribution_cents: number;
+}
+
+export interface MetricsRevenueByMonth {
+  month: string;
+  revenue_cents: number;
+  new_subscriptions: number;
+  churned_subscriptions: number;
+  net_mrr_change_cents: number;
 }
 
 export interface MetricsRevenue {
-  period: string;
-  revenue_by_product: {
-    product_name: string;
-    revenue: number;
-    currency: string;
-  }[];
+  by_product: MetricsRevenueByProduct[];
+  by_plan: MetricsRevenueByPlan[];
+  by_month: MetricsRevenueByMonth[];
 }
 
 export interface MetricsSubscriptions {
-  period: string;
-  trials: number;
-  conversions: number;
-  cancellations: number;
-  active: number;
+  period_days: number;
+  new_registrations: number;
+  trial_starts: number;
+  trial_conversions: number;
+  trial_conversion_rate: number;
+  active_to_canceled: number;
+  active_to_past_due: number;
+  past_due_to_active: number;
+  by_product: {
+    product_id: number;
+    product_name: string;
+    product_slug: string;
+    trial_starts: number;
+    trial_conversions: number;
+    active_subscribers: number;
+    canceled: number;
+    past_due: number;
+  }[];
+}
+
+export interface MetricsProductItem {
+  id: number;
+  name: string;
+  slug: string;
+  total_subscribers: number;
+  active_subscribers: number;
+  mrr_cents: number;
+  plan_distribution: { plan_name: string; plan_slug: string; count: number }[];
 }
 
 export interface MetricsProducts {
-  products: {
-    id: number;
-    name: string;
-    subscriber_count: number;
-    plan_distribution: { plan_name: string; count: number }[];
-  }[];
+  products: MetricsProductItem[];
 }
 
 // ─── Webhook Types ──────────────────────────────────────────────────────────
@@ -431,12 +482,14 @@ export interface WebhookListResponse extends PaginatedResponse<WebhookEvent> {}
 
 export interface AuditLogEntry {
   id: number;
-  admin_user_email: string;
+  admin_user_id: number;
+  admin_email: string;
   action: string;
   method: string;
   path: string;
-  ip_address: string;
-  request_details: Record<string, unknown> | null;
+  ip_address: string | null;
+  status_code: number | null;
+  details: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -502,7 +555,7 @@ export const adminApi = {
     page_size?: number;
     is_active?: boolean;
   }): Promise<ProductListResponse> {
-    return apiClient.get<ProductListResponse>("/admin/products/", { params });
+    return apiClient.get<ProductListResponse>("/admin/products", { params });
   },
 
   async getProduct(productId: number): Promise<ProductDetail> {
@@ -510,7 +563,7 @@ export const adminApi = {
   },
 
   async createProduct(payload: ProductCreatePayload): Promise<ProductDetail> {
-    return apiClient.post<ProductDetail>("/admin/products/", payload);
+    return apiClient.post<ProductDetail>("/admin/products", payload);
   },
 
   async updateProduct(
@@ -680,7 +733,7 @@ export const adminApi = {
     status?: string;
     search?: string;
   }): Promise<SubscriptionListResponse> {
-    return apiClient.get<SubscriptionListResponse>("/admin/subscriptions/", {
+    return apiClient.get<SubscriptionListResponse>("/admin/subscriptions", {
       params,
     });
   },
@@ -761,7 +814,7 @@ export const adminApi = {
     email_verified?: boolean;
     search?: string;
   }): Promise<UserListResponse> {
-    return apiClient.get<UserListResponse>("/admin/users/", { params });
+    return apiClient.get<UserListResponse>("/admin/users", { params });
   },
 
   async getUser(userId: number): Promise<UserDetail> {
@@ -811,7 +864,7 @@ export const adminApi = {
     status?: string;
     reason_category?: string;
   }): Promise<RefundListResponse> {
-    return apiClient.get<RefundListResponse>("/admin/refunds/", { params });
+    return apiClient.get<RefundListResponse>("/admin/refunds", { params });
   },
 
   async approveRefund(
@@ -871,7 +924,7 @@ export const adminApi = {
     event_type?: string;
     status?: string;
   }): Promise<WebhookListResponse> {
-    return apiClient.get<WebhookListResponse>("/admin/webhooks/", { params });
+    return apiClient.get<WebhookListResponse>("/admin/webhooks", { params });
   },
 
   async retryWebhook(webhookId: number): Promise<{ message: string }> {
@@ -890,7 +943,7 @@ export const adminApi = {
     admin_user?: string;
     action?: string;
   }): Promise<AuditLogListResponse> {
-    return apiClient.get<AuditLogListResponse>("/admin/audit-log/", { params });
+    return apiClient.get<AuditLogListResponse>("/admin/audit-log", { params });
   },
 };
 

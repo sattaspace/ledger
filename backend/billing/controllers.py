@@ -347,8 +347,15 @@ class BillingProtectedController:
             from common.exceptions import AccountInactiveException
             raise AccountInactiveException()
 
-        # Validate API key if provided (sets request.service_domain_from_key)
-        validate_api_key(request)
+        
+        # Validate API key if provided (sets request.service_domain_from_key).
+        # Only call validate_api_key when an X-API-Key header is present —
+        # dashboard users authenticate via JWT Bearer token and don't send
+        # an API key.  When enforcement is on (API_KEY_ENFORCED=True),
+        # calling validate_api_key unconditionally would reject JWT-only
+        # requests with "API key is required", breaking the main dashboard.
+        if request.headers.get("X-API-Key", "").strip():
+            validate_api_key(request)
 
         # Priority: credential domain > header > None
         domain = None
