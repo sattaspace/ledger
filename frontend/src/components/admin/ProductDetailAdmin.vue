@@ -167,34 +167,34 @@ const showAddEntryModal = ref(false);
 const addEntryLoading = ref(false);
 const addEntryError = ref<string | null>(null);
 const addEntryForm = ref<{
-  planId: number | null;
+  planIds: number[];
   key: string;
   value: string;
   value_type: "boolean" | "integer" | "string";
   description: string;
 }>({
-  planId: null,
+  planIds: [],
   key: "",
   value: "true",
   value_type: "boolean",
   description: "",
 });
 
-// Edit access entry modal (cell-level edit)
+// Edit access entry modal (cell-level or row-level edit)
 const showEditEntryModal = ref(false);
 const editEntryLoading = ref(false);
 const editEntryError = ref<string | null>(null);
-const editingEntryId = ref<number | null>(null); // existing entry ID if updating
-const editingEntryPlanSlug = ref<string>("");
 const editingEntryRow = ref<AccessMatrixRow | null>(null);
+// Map: plan-slug → entry-id for the key being edited (used to track creates/updates/deletes)
+const editingEntryIdsMap = ref<Record<string, number | null>>({});
 const editEntryForm = ref<{
-  planId: number | null;
+  planIds: number[];
   key: string;
   value: string;
   value_type: "boolean" | "integer" | "string";
   description: string;
 }>({
-  planId: null,
+  planIds: [],
   key: "",
   value: "true",
   value_type: "boolean",
@@ -267,6 +267,14 @@ async function fetchMatrix() {
 onMounted(async () => {
   if (!requireAuth()) return;
   await fetchProduct();
+  // Check if URL has ?tab=matrix to auto-switch to the Access Matrix tab
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("tab") === "matrix") {
+    activeTab.value = "matrix";
+    // Clean up the URL parameter
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+
 });
 
 // Re-fetch when navigating between product detail pages via View Transitions.
@@ -279,6 +287,12 @@ function handlePageLoad() {
     matrixData.value = null;
     fetchProduct();
   }
+  // Also check for ?tab=matrix on client-side navigations
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("tab") === "matrix") {
+    activeTab.value = "matrix";
+    window.history.replaceState({}, "", window.location.pathname);
+  }
 }
 document.addEventListener("astro:page-load", handlePageLoad);
 onUnmounted(() => {
@@ -287,7 +301,7 @@ onUnmounted(() => {
 
 // Fetch matrix when tab is selected
 watch(activeTab, (tab) => {
-  if (tab === "matrix" && !matrixData.value) {
+  if (tab === "matrix") {
     fetchMatrix();
   }
 });
@@ -647,7 +661,7 @@ function openAddEntryModal() {
     return;
   }
   addEntryForm.value = {
-    planId: product.value.plans[0].id,
+    planIds: product.value.plans.map((p) => p.id),
     key: "",
     value: "true",
     value_type: "boolean",
@@ -657,10 +671,10 @@ function openAddEntryModal() {
   showAddEntryModal.value = true;
 }
 
-/** Handle add-entry form submit */
+/** Handle add-entry form submit — creates the entry for each selected plan */
 async function handleAddEntry() {
-  if (!addEntryForm.value.planId) {
-    addEntryError.value = "Select a plan.";
+  if (!addEntryForm.value.planIds.length) {
+    addEntryError.value = "Select at least one plan.";
     return;
   }
   addEntryLoading.value = true;
@@ -672,10 +686,29 @@ async function handleAddEntry() {
       value_type: addEntryForm.value.value_type,
       description: addEntryForm.value.description || undefined,
     };
-    await adminApi.addAccessEntry(addEntryForm.value.planId, payload);
-    showToast("Feature added.", "success");
-    showAddEntryModal.value = false;
-    await fetchMatrix();
+    // Create the same entry for each selected plan
+    let successCount = 0;
+    let firstError: string | null = null;
+    for (const planId of addEntryForm.value.planIds) {
+      try {
+        await adminApi.addAccessEntry(planId, payload);
+        successCount++;
+      } catch (err) {
+        if (!firstError) firstError = getErrorMessage(err);
+      }
+    }
+    if (successCount > 0) {
+      showToast(
+        `Feature added to ${successCount} plan${successCount > 1 ? "s" : ""}.`,
+        "success",
+      );
+      showAddEntryModal.value = false;
+      // await fetchMatrix();
+      // Refresh both product and matrix to keep data in sync
+      await Promise.all([fetchProduct(), fetchMatrix()]);
+    } else {
+      addEntryError.value = firstError || "Failed to add feature.";
+    }
   } catch (err) {
     addEntryError.value = getErrorMessage(err);
   } finally {
@@ -683,105 +716,177 @@ async function handleAddEntry() {
   }
 }
 
-/** Handle cell click — edit the value for a specific plan+key */
+/** Handle cell click — open the edit modal for a specific plan+key */
 function handleEditCell(row: AccessMatrixRow, planSlug: string) {
-  const planId = planSlugToId(planSlug);
-  if (!planId) {
-    showToast("Could not resolve plan.", "error");
-    return;
-  }
-
-  // Use entry_ids from the matrix row — no extra API call needed
-  const entryId = row.entry_ids?.[planSlug] ?? null;
-  const currentValue = row.values[planSlug] ?? null;
+  if (!matrixData.value?.plans.length) return;
 
   editingEntryRow.value = row;
-  editingEntryPlanSlug.value = planSlug;
-  editingEntryId.value = entryId;
+  editingEntryIdsMap.value = { ...row.entry_ids };
 
-  if (entryId) {
-    // ── Update existing entry ──
-    // Infer value_type from the current value
-    let inferredType: "boolean" | "integer" | "string" = "string";
-    if (currentValue !== null) {
-      const lower = String(currentValue).toLowerCase();
-      if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
-        inferredType = "boolean";
-      } else if (/^-?\d+$/.test(String(currentValue))) {
-        inferredType = "integer";
-      }
+  // Determine which plans currently have this key (entry_ids != null)
+  const selectedPlanIds: number[] = [];
+  for (const plan of matrixData.value.plans) {
+    if (row.entry_ids?.[plan.slug] != null) {
+      const id = planSlugToId(plan.slug);
+      if (id) selectedPlanIds.push(id);
     }
-    editEntryForm.value = {
-      planId,
-      key: row.key,
-      value: currentValue ?? "true",
-      value_type: inferredType,
-      description: row.description || "",
-    };
-  } else {
-    // ── Create new entry for this plan+key ──
-    editEntryForm.value = {
-      planId,
-      key: row.key,
-      value: "true",
-      value_type: "boolean",
-      description: row.description || "",
-    };
   }
+  // Always include the clicked plan (even if it has no entry yet)
+  const clickedPlanId = planSlugToId(planSlug);
+  if (clickedPlanId && !selectedPlanIds.includes(clickedPlanId)) {
+    selectedPlanIds.push(clickedPlanId);
+  }
+
+  // Infer value_type from the clicked cell's current value
+  const currentValue = row.values[planSlug] ?? null;
+  let inferredType: "boolean" | "integer" | "string" = "string";
+  if (currentValue !== null) {
+    const lower = String(currentValue).toLowerCase();
+    if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
+      inferredType = "boolean";
+    } else if (/^-?\d+$/.test(String(currentValue))) {
+      inferredType = "integer";
+    }
+  }
+
+  editEntryForm.value = {
+    planIds: selectedPlanIds,
+    key: row.key,
+    value: currentValue ?? "true",
+    value_type: inferredType,
+    description: row.description || "",
+  };
 
   editEntryError.value = null;
   showEditEntryModal.value = true;
 }
 
-/** Handle "edit row" — edit the key/description for a feature row */
+/** Handle "edit row" — open the edit modal showing all plans for this key */
 function handleEditRow(row: AccessMatrixRow) {
   if (!matrixData.value?.plans.length) return;
 
-  // Pick the first plan that has an entry ID for this key
-  let targetSlug = matrixData.value.plans[0].slug;
+  editingEntryRow.value = row;
+  editingEntryIdsMap.value = { ...row.entry_ids };
+
+  // All plans that currently have this key
+  const selectedPlanIds: number[] = [];
+  let firstValue: string | null = null;
+  let inferredType: "boolean" | "integer" | "string" = "string";
 
   for (const plan of matrixData.value.plans) {
-    if (row.entry_ids?.[plan.slug]) {
-      targetSlug = plan.slug;
-      break;
+    const entryId = row.entry_ids?.[plan.slug];
+    if (entryId != null) {
+      const id = planSlugToId(plan.slug);
+      if (id) selectedPlanIds.push(id);
+      // Use the first found value as the form default
+      if (firstValue === null) {
+        firstValue = row.values[plan.slug] ?? "true";
+        const lower = String(firstValue).toLowerCase();
+        if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
+          inferredType = "boolean";
+        } else if (/^-?\d+$/.test(String(firstValue))) {
+          inferredType = "integer";
+        }
+      }
     }
   }
 
-  handleEditCell(row, targetSlug);
+  editEntryForm.value = {
+    planIds: selectedPlanIds.length > 0 ? selectedPlanIds : (product.value?.plans.map((p) => p.id) ?? []),
+    key: row.key,
+    value: firstValue ?? "true",
+    value_type: inferredType,
+    description: row.description || "",
+  };
+
+  editEntryError.value = null;
+  showEditEntryModal.value = true;
 }
 
-/** Handle edit-entry form submit */
+/** Handle edit-entry form submit — sync across selected plans */
 async function handleEditEntrySubmit() {
-  if (!editEntryForm.value.planId) {
-    editEntryError.value = "Plan not resolved.";
+  if (!editEntryForm.value.planIds.length) {
+    editEntryError.value = "Select at least one plan.";
+    return;
+  }
+  if (!editingEntryRow.value || !matrixData.value) {
+    editEntryError.value = "No feature row selected.";
     return;
   }
   editEntryLoading.value = true;
   editEntryError.value = null;
+
+  const row = editingEntryRow.value;
+  const originalEntryIds = { ...editingEntryIdsMap.value };
+
   try {
-    if (editingEntryId.value) {
-      // Update existing entry (PUT /admin/access-entries/{id})
-      const payload: AccessEntryUpdatePayload = {
-        key: editEntryForm.value.key,
-        value: editEntryForm.value.value,
-        value_type: editEntryForm.value.value_type,
-        description: editEntryForm.value.description || undefined,
-      };
-      await adminApi.updateAccessEntry(editingEntryId.value, payload);
-      showToast("Feature updated.", "success");
-    } else {
-      // Create new entry (POST /admin/plans/{id}/access-entries)
-      const payload: AccessEntryCreatePayload = {
-        key: editEntryForm.value.key,
-        value: editEntryForm.value.value,
-        value_type: editEntryForm.value.value_type,
-        description: editEntryForm.value.description || undefined,
-      };
-      await adminApi.addAccessEntry(editEntryForm.value.planId, payload);
-      showToast("Feature added.", "success");
+    // Build a set of selected plan slugs for quick lookup
+    const selectedPlanSlugs = new Set<string>();
+    for (const planId of editEntryForm.value.planIds) {
+      const plan = product.value?.plans.find((p) => p.id === planId);
+      if (plan) selectedPlanSlugs.add(plan.slug);
+    }
+
+    // 1. Delete entries for plans that were previously selected but are now unchecked
+    for (const [planSlug, entryId] of Object.entries(originalEntryIds)) {
+      if (entryId != null && !selectedPlanSlugs.has(planSlug)) {
+        try {
+          await adminApi.deleteAccessEntry(entryId);
+        } catch (err) {
+          console.warn(`Failed to delete entry ${entryId} for plan ${planSlug}:`, err);
+        }
+      }
+    }
+
+    // 2. For each selected plan, either update or create the entry
+    let successCount = 0;
+    for (const planSlug of selectedPlanSlugs) {
+      const planId = planSlugToId(planSlug);
+      if (!planId) continue;
+
+      const entryId = originalEntryIds[planSlug] ?? null;
+
+      if (entryId) {
+        // Update existing entry
+        const payload: AccessEntryUpdatePayload = {
+          key: editEntryForm.value.key,
+          value: editEntryForm.value.value,
+          value_type: editEntryForm.value.value_type,
+          description: editEntryForm.value.description || undefined,
+        };
+        try {
+          await adminApi.updateAccessEntry(entryId, payload);
+          successCount++;
+        } catch (err) {
+          console.warn(`Failed to update entry ${entryId}:`, err);
+        }
+      } else {
+        // Create new entry for this plan
+        const payload: AccessEntryCreatePayload = {
+          key: editEntryForm.value.key,
+          value: editEntryForm.value.value,
+          value_type: editEntryForm.value.value_type,
+          description: editEntryForm.value.description || undefined,
+        };
+        try {
+          await adminApi.addAccessEntry(planId, payload);
+          successCount++;
+        } catch (err) {
+          console.warn(`Failed to create entry for plan ${planSlug}:`, err);
+        }
+      }
+    }
+
+    if (successCount > 0) {
+      showToast(
+        `Feature synced across ${successCount} plan${successCount > 1 ? "s" : ""}.`,
+        "success",
+      );
     }
     showEditEntryModal.value = false;
-    await fetchMatrix();
+    // await fetchMatrix();
+    // Refresh both product and matrix to keep data in sync
+    await Promise.all([fetchProduct(), fetchMatrix()]);
   } catch (err) {
     editEntryError.value = getErrorMessage(err);
   } finally {
@@ -838,6 +943,25 @@ function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryFo
     case "string":
       formRef.value.value = "";
       break;
+  }
+}
+
+/** Toggle a plan ID in a planIds array */
+function togglePlanId(formRef: typeof addEntryForm | typeof editEntryForm, planId: number) {
+  const idx = formRef.value.planIds.indexOf(planId);
+  if (idx >= 0) {
+    formRef.value.planIds.splice(idx, 1);
+  } else {
+    formRef.value.planIds.push(planId);
+  }
+}
+
+/** Select or deselect all plans */
+function toggleAllPlans(formRef: typeof addEntryForm | typeof editEntryForm, selectAll: boolean) {
+  if (selectAll && product.value) {
+    formRef.value.planIds = product.value.plans.map((p) => p.id);
+  } else {
+    formRef.value.planIds = [];
   }
 }
 </script>
@@ -1568,20 +1692,41 @@ function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryFo
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showAddEntryModal = false" />
         <div class="relative w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
           <h2 class="text-lg font-semibold text-foreground">Add Feature</h2>
-          <p class="mt-1 text-sm text-muted-foreground">Add a new access entry to a plan. You can add the same key to other plans later.</p>
+          <p class="mt-1 text-sm text-muted-foreground">Add a new access entry and select which plans it applies to.</p>
           <form class="mt-5 space-y-4" @submit.prevent="handleAddEntry">
             <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Plan <span class="text-destructive">*</span></label>
-              <select v-model="addEntryForm.planId" class="input-field" required>
-                <option v-for="plan in product?.plans" :key="plan.id" :value="plan.id">
-                  {{ plan.name }}
-                </option>
-              </select>
+              <div class="mb-1.5 flex items-center justify-between">
+                <label class="text-sm font-medium text-foreground">Plans <span class="text-destructive">*</span></label>
+                <button
+                  type="button"
+                  class="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+                  @click="toggleAllPlans(addEntryForm, addEntryForm.planIds.length < (product?.plans.length ?? 0))"
+                >
+                  {{ addEntryForm.planIds.length >= (product?.plans.length ?? 0) ? 'Deselect all' : 'Select all' }}
+                </button>
+              </div>
+              <div class="rounded-lg border border-border p-3 space-y-2 max-h-40 overflow-y-auto">
+                <label
+                  v-for="plan in product?.plans"
+                  :key="plan.id"
+                  class="flex items-center gap-2.5 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-border"
+                    :checked="addEntryForm.planIds.includes(plan.id)"
+                    @change="togglePlanId(addEntryForm, plan.id)"
+                  />
+                  <span class="text-sm text-foreground">{{ plan.name }}</span>
+                  <span v-if="!plan.is_active" class="text-[10px] text-muted-foreground">(inactive)</span>
+                </label>
+              </div>
+              <p class="mt-1 text-xs text-muted-foreground">{{ addEntryForm.planIds.length }} plan{{ addEntryForm.planIds.length !== 1 ? 's' : '' }} selected.</p>
             </div>
             <div>
               <label class="mb-1.5 block text-sm font-medium text-foreground">Key <span class="text-destructive">*</span></label>
               <input v-model="addEntryForm.key" type="text" class="input-field" placeholder="e.g. reports, max_accounts" required />
-              <p class="mt-1 text-xs text-muted-foreground">A unique identifier for this feature within the plan.</p>
+              <p class="mt-1 text-xs text-muted-foreground">A unique identifier for this feature within each plan.</p>
             </div>
             <div class="grid grid-cols-2 gap-4">
               <div>
@@ -1665,25 +1810,46 @@ function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryFo
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showEditEntryModal = false" />
         <div class="relative w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
           <h2 class="text-lg font-semibold text-foreground">
-            {{ editingEntryId ? 'Edit Feature' : 'Add Feature to Plan' }}
+            Edit Feature
           </h2>
           <p class="mt-1 text-sm text-muted-foreground">
-            {{ editingEntryId
-              ? `Editing '${editEntryForm.key}' for ${planSlugToName(editingEntryPlanSlug)}`
-              : `Adding '${editEntryForm.key}' to ${planSlugToName(editingEntryPlanSlug)}`
-            }}
+            Edit <code class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ editEntryForm.key }}</code> — select which plans this feature applies to. Unchecking a plan will remove its entry.
           </p>
           <form class="mt-5 space-y-4" @submit.prevent="handleEditEntrySubmit">
             <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Plan</label>
-              <div class="input-field bg-muted/50 cursor-not-allowed opacity-70">
-                {{ planSlugToName(editingEntryPlanSlug) }}
+              <div class="mb-1.5 flex items-center justify-between">
+                <label class="text-sm font-medium text-foreground">Plans <span class="text-destructive">*</span></label>
+                <button
+                  type="button"
+                  class="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+                  @click="toggleAllPlans(editEntryForm, editEntryForm.planIds.length < (product?.plans.length ?? 0))"
+                >
+                  {{ editEntryForm.planIds.length >= (product?.plans.length ?? 0) ? 'Deselect all' : 'Select all' }}
+                </button>
               </div>
+              <div class="rounded-lg border border-border p-3 space-y-2 max-h-40 overflow-y-auto">
+                <label
+                  v-for="plan in product?.plans"
+                  :key="plan.id"
+                  class="flex items-center gap-2.5 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-border"
+                    :checked="editEntryForm.planIds.includes(plan.id)"
+                    @change="togglePlanId(editEntryForm, plan.id)"
+                  />
+                  <span class="text-sm text-foreground">{{ plan.name }}</span>
+                  <span v-if="editingEntryIdsMap[plan.slug] != null" class="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-950 dark:text-green-400">has entry</span>
+                  <span v-else-if="editEntryForm.planIds.includes(plan.id)" class="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-400">new</span>
+                  <span v-if="!plan.is_active" class="text-[10px] text-muted-foreground">(inactive)</span>
+                </label>
+              </div>
+              <p class="mt-1 text-xs text-muted-foreground">{{ editEntryForm.planIds.length }} plan{{ editEntryForm.planIds.length !== 1 ? 's' : '' }} selected.</p>
             </div>
             <div>
               <label class="mb-1.5 block text-sm font-medium text-foreground">Key <span class="text-destructive">*</span></label>
-              <input v-model="editEntryForm.key" type="text" class="input-field" :disabled="!!editingEntryId" required />
-              <p v-if="editingEntryId" class="mt-1 text-xs text-muted-foreground">Key cannot be changed for existing entries.</p>
+              <input v-model="editEntryForm.key" type="text" class="input-field" required />
             </div>
             <div class="grid grid-cols-2 gap-4">
               <div>
@@ -1747,7 +1913,7 @@ function handleValueTypeChange(formRef: typeof addEntryForm | typeof editEntryFo
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                {{ editingEntryId ? 'Update' : 'Add' }}
+                {{ editEntryForm.planIds.length > 0 ? 'Sync Feature' : 'Update' }}
               </button>
             </div>
           </form>

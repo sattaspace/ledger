@@ -4,16 +4,14 @@
  *
  * Features:
  *   - Plan info card with edit/toggle/feature/duplicate/delete actions
- *   - Access entries data table with add/edit/delete
- *   - Add access entry modal
- *   - Edit access entry modal
- *   - Bulk update button
+ *   - Access entries read-only table (CRUD is done via product's Access Matrix tab)
+ *   - Link to product's Access Matrix for managing entries
  *
  * Uses 10.2 components: AdminPageHeader, AdminDataTable, AdminConfirmDialog,
  * AdminStatusBadge, AdminEmptyState.
  */
 
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
@@ -21,8 +19,6 @@ import type {
   PlanDetail,
   PlanUpdatePayload,
   AccessEntryItem,
-  AccessEntryCreatePayload,
-  AccessEntryUpdatePayload,
 } from "@/lib/admin";
 
 import AdminPageHeader from "@/components/admin/AdminPageHeader.vue";
@@ -31,11 +27,30 @@ import type { ColumnDef } from "@/components/admin/AdminDataTable.vue";
 import AdminConfirmDialog from "@/components/admin/AdminConfirmDialog.vue";
 import AdminStatusBadge from "@/components/admin/AdminStatusBadge.vue";
 
-// ─── Props ───────────────────────────────────────────────────────────────────
+// ─── Props & Route ID ────────────────────────────────────────────────────────
+//
+// With Astro ClientRouter (View Transitions) + client:only="vue", the Astro
+// prop can become undefined during client-side page swaps.  We therefore read
+// the plan ID from the URL path as the primary source, with the Astro prop
+// as a fallback for direct (full-page) loads.
 
 const props = defineProps<{
-  planId: number;
+  planId?: number;
 }>();
+
+/** Extract plan ID from /admin/plans/:planId URL path. */
+function getPlanIdFromUrl(): number | undefined {
+  const match = window.location.pathname.match(/\/admin\/plans\/(\d+)/);
+  return match ? Number(match[1]) : undefined;
+}
+
+const planId = computed(() => {
+  // URL is the most reliable source during View Transition navigations
+  const fromUrl = getPlanIdFromUrl();
+  if (fromUrl) return fromUrl;
+  // Fallback to Astro prop (works on direct full-page loads)
+  return props.planId;
+});
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -60,51 +75,31 @@ const editForm = ref({
   sort_order: 0,
 });
 
-// Add access entry modal
-const showAddEntryModal = ref(false);
-const addEntryLoading = ref(false);
-const addEntryError = ref<string | null>(null);
-const addEntryForm = ref({
-  key: "",
-  value: "",
-  value_type: "boolean" as "boolean" | "integer" | "string",
-  description: "",
-});
-
-// Edit access entry modal
-const showEditEntryModal = ref(false);
-const editEntryLoading = ref(false);
-const editEntryError = ref<string | null>(null);
-const editingEntry = ref<AccessEntryItem | null>(null);
-const editEntryForm = ref({
-  key: "",
-  value: "",
-  value_type: "boolean" as "boolean" | "integer" | "string",
-  description: "",
-});
-
 // Delete confirmation
 const showDeletePlanDialog = ref(false);
-const showDeleteEntryDialog = ref(false);
-const deletingEntry = ref<AccessEntryItem | null>(null);
 
-// ─── Column definitions: Access Entries ──────────────────────────────────────
+// ─── Column definitions: Access Entries (read-only) ──────────────────────────
 
 const entryColumns = computed<ColumnDef[]>(() => [
   { key: "key", label: "Key", sortable: true, defaultSort: "asc" },
   { key: "value", label: "Value", width: "120px" },
   { key: "value_type", label: "Type", align: "center", width: "90px", hideOnMobile: true },
   { key: "description", label: "Description", hideOnMobile: true },
-  { key: "actions", label: "", align: "right", width: "90px" },
 ]);
 
 // ─── Data fetching ───────────────────────────────────────────────────────────
 
 async function fetchPlan() {
+  const id = planId.value;
+  if (!id) {
+    loadError.value = "Invalid plan ID.";
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   loadError.value = null;
   try {
-    plan.value = await adminApi.getPlan(props.planId);
+    plan.value = await adminApi.getPlan(id);
   } catch (err) {
     loadError.value = getErrorMessage(err);
   } finally {
@@ -115,6 +110,19 @@ async function fetchPlan() {
 onMounted(async () => {
   if (!requireAuth()) return;
   await fetchPlan();
+});
+
+// Re-fetch when navigating between plan detail pages via View Transitions.
+// astro:page-load fires on every navigation (initial + client-side swaps).
+function handlePageLoad() {
+  const newId = getPlanIdFromUrl();
+  if (newId && newId !== plan.value?.id) {
+    fetchPlan();
+  }
+}
+document.addEventListener("astro:page-load", handlePageLoad);
+onUnmounted(() => {
+  document.removeEventListener("astro:page-load", handlePageLoad);
 });
 
 // ─── Format price ────────────────────────────────────────────────────────────
@@ -168,7 +176,7 @@ async function handleEditSubmit() {
       is_featured: editForm.value.is_featured,
       sort_order: editForm.value.sort_order,
     };
-    await adminApi.updatePlan(props.planId, payload);
+    await adminApi.updatePlan(planId.value!, payload);
     showToast("Plan updated.", "success");
     showEditModal.value = false;
     await fetchPlan();
@@ -185,7 +193,7 @@ async function handleToggle() {
   if (!plan.value) return;
   actionLoading.value = "toggle";
   try {
-    await adminApi.togglePlan(props.planId);
+    await adminApi.togglePlan(planId.value!);
     showToast(`Plan ${plan.value.is_active ? "deactivated" : "activated"}.`, "success");
     await fetchPlan();
   } catch (err) {
@@ -199,7 +207,7 @@ async function handleToggleFeature() {
   if (!plan.value) return;
   actionLoading.value = "feature";
   try {
-    await adminApi.togglePlanFeature(props.planId);
+    await adminApi.togglePlanFeature(planId.value!);
     showToast(`Plan ${plan.value.is_featured ? "unfeatured" : "featured"}.`, "success");
     await fetchPlan();
   } catch (err) {
@@ -212,7 +220,7 @@ async function handleToggleFeature() {
 async function handleDuplicate() {
   actionLoading.value = "duplicate";
   try {
-    await adminApi.duplicatePlan(props.planId);
+    await adminApi.duplicatePlan(planId.value!);
     showToast("Plan duplicated.", "success");
     await fetchPlan();
   } catch (err) {
@@ -225,7 +233,7 @@ async function handleDuplicate() {
 async function confirmDeletePlan() {
   actionLoading.value = "delete-plan";
   try {
-    await adminApi.deletePlan(props.planId);
+    await adminApi.deletePlan(planId.value!);
     showToast("Plan deleted.", "success");
     showDeletePlanDialog.value = false;
     // Navigate back to product detail
@@ -234,94 +242,6 @@ async function confirmDeletePlan() {
     } else {
       window.location.href = "/admin/products";
     }
-  } catch (err) {
-    showToast(getErrorMessage(err), "error");
-  } finally {
-    actionLoading.value = null;
-  }
-}
-
-// ─── Add Access Entry ────────────────────────────────────────────────────────
-
-function openAddEntryModal() {
-  addEntryForm.value = { key: "", value: "true", value_type: "boolean", description: "" };
-  addEntryError.value = null;
-  showAddEntryModal.value = true;
-}
-
-async function handleAddEntry() {
-  addEntryLoading.value = true;
-  addEntryError.value = null;
-  try {
-    const payload: AccessEntryCreatePayload = {
-      key: addEntryForm.value.key,
-      value: addEntryForm.value.value,
-      value_type: addEntryForm.value.value_type,
-      description: addEntryForm.value.description || undefined,
-    };
-    await adminApi.addAccessEntry(props.planId, payload);
-    showToast("Access entry added.", "success");
-    showAddEntryModal.value = false;
-    await fetchPlan();
-  } catch (err) {
-    addEntryError.value = getErrorMessage(err);
-  } finally {
-    addEntryLoading.value = false;
-  }
-}
-
-// ─── Edit Access Entry ───────────────────────────────────────────────────────
-
-function openEditEntryModal(entry: AccessEntryItem) {
-  editingEntry.value = entry;
-  editEntryForm.value = {
-    key: entry.key,
-    value: entry.value,
-    value_type: entry.value_type,
-    description: entry.description,
-  };
-  editEntryError.value = null;
-  showEditEntryModal.value = true;
-}
-
-async function handleEditEntrySubmit() {
-  if (!editingEntry.value) return;
-  editEntryLoading.value = true;
-  editEntryError.value = null;
-  try {
-    const payload: AccessEntryUpdatePayload = {
-      key: editEntryForm.value.key,
-      value: editEntryForm.value.value,
-      value_type: editEntryForm.value.value_type,
-      description: editEntryForm.value.description || undefined,
-    };
-    await adminApi.updateAccessEntry(editingEntry.value.id, payload);
-    showToast("Access entry updated.", "success");
-    showEditEntryModal.value = false;
-    await fetchPlan();
-  } catch (err) {
-    editEntryError.value = getErrorMessage(err);
-  } finally {
-    editEntryLoading.value = false;
-  }
-}
-
-// ─── Delete Access Entry ─────────────────────────────────────────────────────
-
-function openDeleteEntryDialog(entry: AccessEntryItem) {
-  deletingEntry.value = entry;
-  showDeleteEntryDialog.value = true;
-}
-
-async function confirmDeleteEntry() {
-  if (!deletingEntry.value) return;
-  actionLoading.value = `delete-entry-${deletingEntry.value.id}`;
-  try {
-    await adminApi.deleteAccessEntry(deletingEntry.value.id);
-    showToast("Access entry removed.", "success");
-    showDeleteEntryDialog.value = false;
-    deletingEntry.value = null;
-    await fetchPlan();
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -340,6 +260,15 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
     const cmp = String(aVal).localeCompare(String(bVal), undefined, { numeric: true });
     return direction === "asc" ? cmp : -cmp;
   });
+}
+
+// ─── Navigate to product's Access Matrix tab ────────────────────────────────
+
+function goToAccessMatrix() {
+  if (plan.value) {
+    // Use Astro's client-side navigation for smooth transition
+    window.location.href = `/admin/products/${plan.value.product_id}?tab=matrix`;
+  }
 }
 </script>
 
@@ -477,22 +406,47 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════════════ -->
-      <!--  Access Entries (10.4.7)                                               -->
+      <!--  Access Entries (Read-Only) — CRUD via Product's Access Matrix tab     -->
       <!-- ═══════════════════════════════════════════════════════════════════════ -->
 
       <div class="mb-4 flex items-center justify-between">
         <div>
           <h3 class="text-sm font-semibold text-foreground">Access Entries</h3>
           <p class="text-xs text-muted-foreground">
-            Define feature keys and values for this plan. {{ plan.access_entries.length }} entries.
+            {{ plan.access_entries.length }} entries defined for this plan.
           </p>
         </div>
-        <button type="button" class="btn-primary inline-flex items-center gap-2 text-sm" @click="openAddEntryModal">
+        <button
+          type="button"
+          class="btn-primary inline-flex items-center gap-2 text-sm"
+          @click="goToAccessMatrix"
+        >
           <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
           </svg>
-          Add Entry
+          Manage in Access Matrix
         </button>
+      </div>
+
+      <!-- Info banner about Access Matrix -->
+      <div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 dark:border-blue-900 dark:bg-blue-950/50">
+        <div class="flex items-start gap-3">
+          <svg class="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div class="text-sm">
+            <p class="text-blue-800 dark:text-blue-300">
+              Access entries are managed through the
+              <a
+                :href="`/admin/products/${plan.product_id}?tab=matrix`"
+                class="font-medium underline underline-offset-2 hover:text-blue-600 dark:hover:text-blue-200"
+              >
+                {{ plan.product_name }} Access Matrix
+              </a>.
+              The matrix lets you add, edit, and sync features across all plans at once.
+            </p>
+          </div>
+        </div>
       </div>
 
       <AdminDataTable
@@ -503,7 +457,7 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
         :clickable="false"
         row-key="id"
         empty-message="No access entries"
-        empty-description="Add access entries to define what features this plan provides."
+        empty-description="Access entries for this plan are managed through the product's Access Matrix tab."
         @sort="handleEntrySort"
       >
         <!-- Key cell -->
@@ -535,32 +489,6 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
         <!-- Description cell -->
         <template #cell-description="{ row }">
           <span class="text-sm text-muted-foreground">{{ row.description || "—" }}</span>
-        </template>
-
-        <!-- Actions cell -->
-        <template #cell-actions="{ row }">
-          <div class="flex items-center justify-end gap-1">
-            <button
-              type="button"
-              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="Edit"
-              @click="openEditEntryModal(row)"
-            >
-              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
-              title="Delete"
-              @click="openDeleteEntryDialog(row)"
-            >
-              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
         </template>
       </AdminDataTable>
     </template>
@@ -635,94 +563,6 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
     </Teleport>
 
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
-    <!--  Add Access Entry Modal                                                 -->
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-
-    <Teleport to="body">
-      <div
-        v-if="showAddEntryModal"
-        class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      >
-        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showAddEntryModal = false" />
-        <div class="relative w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
-          <h2 class="text-lg font-semibold text-foreground">Add Access Entry</h2>
-          <p class="mt-1 text-sm text-muted-foreground">Define a feature key and its value for this plan.</p>
-          <form class="mt-5 space-y-4" @submit.prevent="handleAddEntry">
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Key <span class="text-destructive">*</span></label>
-              <input v-model="addEntryForm.key" type="text" class="input-field" placeholder="e.g. max_projects" required />
-              <p class="mt-1 text-xs text-muted-foreground">Use snake_case for consistency (e.g. max_projects, reports_enabled).</p>
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Value <span class="text-destructive">*</span></label>
-              <input v-model="addEntryForm.value" type="text" class="input-field" placeholder="e.g. true, 10, unlimited" required />
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Value Type</label>
-              <select v-model="addEntryForm.value_type" class="input-field">
-                <option value="boolean">Boolean</option>
-                <option value="integer">Integer</option>
-                <option value="string">String</option>
-              </select>
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Description</label>
-              <input v-model="addEntryForm.description" type="text" class="input-field" placeholder="What this access key controls" />
-            </div>
-            <div v-if="addEntryError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">{{ addEntryError }}</div>
-            <div class="flex items-center justify-end gap-3 pt-2">
-              <button type="button" class="btn-secondary" :disabled="addEntryLoading" @click="showAddEntryModal = false">Cancel</button>
-              <button type="submit" class="btn-primary" :disabled="addEntryLoading">Add Entry</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-    <!--  Edit Access Entry Modal                                                -->
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-
-    <Teleport to="body">
-      <div
-        v-if="showEditEntryModal"
-        class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      >
-        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showEditEntryModal = false" />
-        <div class="relative w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-xl" role="dialog" aria-modal="true">
-          <h2 class="text-lg font-semibold text-foreground">Edit Access Entry</h2>
-          <form class="mt-5 space-y-4" @submit.prevent="handleEditEntrySubmit">
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Key</label>
-              <input v-model="editEntryForm.key" type="text" class="input-field" />
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Value</label>
-              <input v-model="editEntryForm.value" type="text" class="input-field" />
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Value Type</label>
-              <select v-model="editEntryForm.value_type" class="input-field">
-                <option value="boolean">Boolean</option>
-                <option value="integer">Integer</option>
-                <option value="string">String</option>
-              </select>
-            </div>
-            <div>
-              <label class="mb-1.5 block text-sm font-medium text-foreground">Description</label>
-              <input v-model="editEntryForm.description" type="text" class="input-field" />
-            </div>
-            <div v-if="editEntryError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">{{ editEntryError }}</div>
-            <div class="flex items-center justify-end gap-3 pt-2">
-              <button type="button" class="btn-secondary" :disabled="editEntryLoading" @click="showEditEntryModal = false">Cancel</button>
-              <button type="submit" class="btn-primary" :disabled="editEntryLoading">Update Entry</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!--  Confirmation Dialogs                                                   -->
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
 
@@ -735,17 +575,6 @@ function handleEntrySort({ key, direction }: { key: string; direction: "asc" | "
       :destructive="true"
       :loading="actionLoading === 'delete-plan'"
       @confirm="confirmDeletePlan"
-    />
-
-    <AdminConfirmDialog
-      v-model:open="showDeleteEntryDialog"
-      title="Remove Access Entry"
-      :message="'Remove access key \'' + (deletingEntry?.key ?? '') + '\'?'"
-      detail="This will immediately affect the access map returned by auth/me for subscribers on this plan."
-      confirm-label="Remove"
-      :destructive="true"
-      :loading="actionLoading?.startsWith('delete-entry-')"
-      @confirm="confirmDeleteEntry"
     />
   </div>
 </template>
