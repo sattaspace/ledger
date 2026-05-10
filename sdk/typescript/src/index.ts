@@ -2,8 +2,9 @@
  * @sattabase/sdk — TypeScript SDK for Sattabase.
  *
  * Central auth, subscription, and access control for multi-tenant service domains.
+ * Supports both server mode (with API key) and browser mode (JWT-only).
  *
- * Usage:
+ * @example Server mode (Node.js backend)
  * ```ts
  * import { SattabaseClient, SattabaseConfig } from "@sattabase/sdk";
  *
@@ -14,12 +15,23 @@
  * });
  *
  * const client = new SattabaseClient(config);
- *
- * const tokens = await client.auth.login("user@example.com", "password");
  * const authMe = await client.auth.me(tokens.access);
- * if (authMe.hasAccess("reports")) {
- *   console.log("User has reports access");
- * }
+ * ```
+ *
+ * @example Browser mode (frontend SPA)
+ * ```ts
+ * import { SattabaseClient, SattabaseConfig, LocalStorageTokenStore } from "@sattabase/sdk";
+ *
+ * const config = new SattabaseConfig({
+ *   baseUrl: "https://sattabase.tld/api/v1",
+ *   serviceDomain: "finance.sattabase.tld",
+ *   // apiKey omitted — no secret in browser code!
+ *   debug: true,
+ * });
+ *
+ * const store = new LocalStorageTokenStore();
+ * const client = new SattabaseClient(config, store);
+ * const tokens = await client.auth.login("user@example.com", "password");
  * ```
  */
 

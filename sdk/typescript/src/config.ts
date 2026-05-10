@@ -13,9 +13,23 @@ export interface SattabaseConfigOptions {
   serviceDomain: string;
   /**
    * Service credential raw key (format: `sb_live_{token_urlsafe(32)}`).
-   * Stored in memory only — never persisted to disk.
+   *
+   * **Server mode** (Node.js/Express/NestJS): Provide the API key for
+   * service-to-service authentication. The `X-API-Key` header is sent
+   * on every request, enabling server-side SDK access.
+   *
+   * **Browser mode** (Astro/Vue/React SPA): Omit the API key. The SDK
+   * operates in browser mode — only `Authorization: Bearer {jwt}` and
+   * `X-Service-Domain` headers are sent. The Sattabase backend accepts
+   * JWT-only requests on public endpoints (`IsAuthenticatedOrService`
+   * permission), so no secret credential is needed in the browser.
+   *
+   * ⚠️ **Security warning**: Never put an `sb_live_...` API key in
+   * frontend/browser code. Anyone can read it from DevTools.
+   *
+   * @optional — omit for browser mode
    */
-  apiKey: string;
+  apiKey?: string;
   /** HTTP request timeout in milliseconds. @default 10_000 */
   timeout?: number;
   /** Enable automatic token refresh on 401. @default true */
@@ -48,14 +62,19 @@ export interface SattabaseConfigOptions {
 export class SattabaseConfig {
   readonly baseUrl: string;
   readonly serviceDomain: string;
-  readonly apiKey: string;
+  readonly apiKey: string | undefined;
   readonly timeout: number;
   readonly autoRefresh: boolean;
   readonly maxRetries: number;
   readonly debug: boolean;
 
+  /** Whether the SDK is running in browser mode (no API key). */
+  readonly browserMode: boolean;
+
   constructor(opts: SattabaseConfigOptions) {
-    if (!opts.apiKey.startsWith("sb_live_")) {
+    // API key is optional — when omitted, the SDK operates in browser mode
+    // without sending the X-API-Key header (JWT-only auth).
+    if (opts.apiKey !== undefined && !opts.apiKey.startsWith("sb_live_")) {
       throw new Error(
         `Invalid API key format: must start with 'sb_live_', got '${opts.apiKey.slice(0, 12)}...'`,
       );
@@ -70,6 +89,7 @@ export class SattabaseConfig {
     this.baseUrl = opts.baseUrl;
     this.serviceDomain = opts.serviceDomain;
     this.apiKey = opts.apiKey;
+    this.browserMode = opts.apiKey === undefined;
     this.timeout = opts.timeout ?? 10_000;
     this.autoRefresh = opts.autoRefresh ?? true;
     this.maxRetries = opts.maxRetries ?? 1;

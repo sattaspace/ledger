@@ -209,13 +209,14 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = "UTC"
 
 
-CACH_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/2'
+
+CACHE_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/2'
 CACHE_MIDDLEWARE_SECONDS = 3600
 
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": CACH_URL,
+        "LOCATION": CACHE_URL,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
@@ -272,7 +273,7 @@ if not DEBUG:
     FILE_UPLOAD_DIRECTORY_PERMISSIONS = 0o777
     FILE_UPLOAD_PERMISSIONS = 0o644
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SECURE_SSL_HOST = True
+    SECURE_SSL_HOST = None  # Set to hostname string in production, not True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_NAME = env("SB_SESSION_COOKIE_NAME", default="sessionid")
 

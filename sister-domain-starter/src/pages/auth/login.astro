@@ -1,0 +1,31 @@
+---
+/**
+ * Login page — sister domain login screen.
+ *
+ * Sister domains only have LOGIN and LOGOUT screens.
+ * All other auth flows (register, forgot password, etc.) redirect
+ * to the Sattabase base domain.
+ */
+
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import LoginForm from "@/components/vue/LoginForm.vue";
+---
+
+<BaseLayout title="Sign In — SattaBase" description="Sign in to your account">
+  <div class="flex min-h-full flex-col items-center justify-center px-4 py-12">
+    <!-- Auth card -->
+    <div class="w-full max-w-md card p-8">
+      <LoginForm client:only="vue" />
+    </div>
+
+    <!-- Powered by Sattabase -->
+    <p
+      class="mt-8 text-center text-xs text-[var(--color-muted-foreground)] opacity-60"
+    >
+      Powered by
+      <span class="font-semibold text-brand-600 dark:text-brand-400"
+        >SattaBase</span
+      >
+    </p>
+  </div>
+</BaseLayout>

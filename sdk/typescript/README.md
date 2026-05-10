@@ -14,13 +14,15 @@ npm install @sattabase/sdk
 
 ## Quick Start
 
+### Server Mode (Node.js backend)
+
 ```ts
 import { SattabaseClient, SattabaseConfig } from "@sattabase/sdk";
 
 const config = new SattabaseConfig({
   baseUrl: "https://sattabase.tld/api/v1",
   serviceDomain: "finance.sattabase.tld",
-  apiKey: "sb_live_...",
+  apiKey: "sb_live_...",  // Required for server-to-server auth
 });
 
 const client = new SattabaseClient(config);
@@ -43,6 +45,41 @@ const maxAccounts = authMe.getAccess("max_bank_accounts", 1);
 console.log(`Max bank accounts: ${maxAccounts}`);
 ```
 
+### Browser Mode (frontend SPA)
+
+```ts
+import {
+  SattabaseClient,
+  SattabaseConfig,
+  LocalStorageTokenStore,
+} from "@sattabase/sdk";
+
+const config = new SattabaseConfig({
+  baseUrl: "https://sattabase.tld/api/v1",
+  serviceDomain: "finance.sattabase.tld",
+  // apiKey is OMITTED — no secret in browser code!
+  debug: true, // for localhost development
+});
+
+const store = new LocalStorageTokenStore("finance:");
+const client = new SattabaseClient(config, store);
+
+// Login
+const tokens = await client.auth.login("user@example.com", "password");
+
+// Get domain-scoped user info + access map (JWT-only, no API key)
+const authMe = await client.auth.me(tokens.access);
+console.log(`User: ${authMe.user.display_name}`);
+
+// Billing redirect (zero API calls)
+const url = client.billing.manageSubscription(
+  "finance",
+  "https://finance.sattabase.tld/settings",
+);
+```
+
+> **Security warning:** Never put an `sb_live_...` API key in frontend/browser code. Anyone can read it from DevTools. In browser mode, the SDK sends only `Authorization: Bearer {jwt}` and `X-Service-Domain` headers. The Sattabase backend accepts JWT-only requests on endpoints with the `IsAuthenticatedOrService` permission.
+
 ## Configuration
 
 `SattabaseConfig` validates configuration at construction time. All properties are readonly after creation.
@@ -51,26 +88,39 @@ console.log(`Max bank accounts: ${maxAccounts}`);
 |---|---|---|---|
 | `baseUrl` | `string` | *required* | Sattabase API base URL (e.g. `https://sattabase.tld/api/v1`) |
 | `serviceDomain` | `string` | *required* | Identifies this service domain (e.g. `finance.sattabase.tld`) |
-| `apiKey` | `string` | *required* | Service credential raw key (format: `sb_live_{token_urlsafe(32)}`) |
+| `apiKey` | `string` | *optional* | Service credential raw key (format: `sb_live_{token_urlsafe(32)}`). Omit for browser mode. |
 | `timeout` | `number` | `10_000` | HTTP request timeout in milliseconds |
 | `autoRefresh` | `boolean` | `true` | Automatically refresh tokens on 401 responses |
 | `maxRetries` | `number` | `1` | Max retries after token refresh (total attempts = 1 + maxRetries) |
 | `debug` | `boolean` | `false` | Allow `http://` base URLs and relax validation |
 
 **Validation rules:**
-- API key **must** start with `sb_live_`
+- If provided, API key **must** start with `sb_live_`
 - Base URL **must** use HTTPS unless `debug=true`
+- When `apiKey` is omitted, the SDK operates in **browser mode** — no `X-API-Key` header is sent
 
 ```ts
+// Server mode — include API key for service-to-service auth
 const config = new SattabaseConfig({
   baseUrl: "https://sattabase.tld/api/v1",
   serviceDomain: "finance.sattabase.tld",
   apiKey: "sb_live_abcd1234efgh5678ijkl9012mnop3456",
   timeout: 15_000,
-  debug: false, // Set true for local development with http://
+  debug: false,
+});
+
+// Browser mode — omit API key for JWT-only auth
+const browserConfig = new SattabaseConfig({
+  baseUrl: "https://sattabase.tld/api/v1",
+  serviceDomain: "finance.sattabase.tld",
+  // apiKey is OMITTED — no secret in browser code
+  timeout: 15_000,
+  debug: true, // for localhost development
 });
 
 console.log(config.appBaseUrl); // "https://sattabase.tld"
+console.log(config.browserMode); // false
+console.log(browserConfig.browserMode); // true
 ```
 
 ## Modules
@@ -85,7 +135,7 @@ client.billing   // Billing redirect URL constructors (no API calls)
 
 ### Auth (`client.auth`)
 
-All auth methods automatically include `X-API-Key` and `X-Service-Domain` headers. They map 1:1 to the backend `AuthController` endpoints.
+In **server mode** (apiKey provided), auth methods send `X-API-Key` + `X-Service-Domain` + `Authorization: Bearer` headers. In **browser mode** (apiKey omitted), only `X-Service-Domain` + `Authorization: Bearer` headers are sent — the backend accepts JWT-only requests via the `IsAuthenticatedOrService` permission. All methods map 1:1 to the backend `AuthController` endpoints.
 
 #### `login(email, password)`
 
@@ -502,7 +552,7 @@ npm run build
 |  Sister Domain    | <========================> |    Sattabase      |
 |  (finance app)    |                            |   (this platform) |
 |                   |                            |                   |
-|  - Django/FastAPI |   X-API-Key               |  - Django Ninja   |
+|  - Django/FastAPI |   X-API-Key (server only) |  - Django Ninja   |
 |  - Vue/React/Next |   X-Service-Domain        |  - Stripe         |
 |  - Own database   |   Authorization: Bearer    |  - User records   |
 |    Uses user.id   |                            |  - Subscriptions  |
@@ -516,6 +566,7 @@ npm run build
 
 **Key principles:**
 
+- **Dual mode** — server mode (API key for service-to-service auth) and browser mode (JWT-only, no secret in frontend code). When `apiKey` is omitted, the SDK sends only `Authorization` and `X-Service-Domain` headers.
 - **Zero dependencies** — uses native `fetch`, works in browser and Node.js 18+
 - **Type-safe** — full TypeScript strict mode with exported declaration files
 - **SDK surface is small and stable** — auth schemas rarely change, while billing schemas change often

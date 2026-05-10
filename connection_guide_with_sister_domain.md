@@ -44,7 +44,12 @@ Sattabase (user.id = 42)  ─── FK ───→  sister_domain.account.user_
                                          sister_domain.category.user_id = 42
 ```
 
-The backend **re-validates on every request** — it never trusts the frontend's claim about who the user is. Every API call from the sister domain backend includes `Authorization: Bearer <jwt>` (user token) and `X-API-Key` + `X-Service-Domain` (service credentials). Sattabase resolves both and returns the user's identity and access map scoped to the sister domain's product.
+The backend **re-validates on every request** — it never trusts the frontend's claim about who the user is. API calls use two authentication paths depending on where they originate:
+
+- **Server-to-server** (backend → Sattabase): `X-API-Key` + `X-Service-Domain` + `Authorization: Bearer <jwt>`. The API key cryptographically proves which domain is calling, preventing domain spoofing.
+- **Browser-to-Sattabase** (frontend → Sattabase directly): `X-Service-Domain` + `Authorization: Bearer <jwt>` only. No API key — it must never be exposed in browser code. The backend accepts JWT-only requests via the `IsAuthenticatedOrService` permission.
+
+Sattabase resolves both credential types and returns the user's identity and access map scoped to the sister domain's product.
 
 ### What the SDK Handles
 
@@ -685,7 +690,9 @@ router.get("/dashboards/:id", requireAuth, async (req, res) => {
 });
 ```
 
-### Frontend SDK Usage
+### Frontend SDK Usage (Browser Mode)
+
+> **Important:** In browser/frontend code, **never include the API key**. The `apiKey` parameter is optional in the TypeScript SDK. When omitted, the SDK operates in browser mode — sending only `Authorization: Bearer` and `X-Service-Domain` headers. The Sattabase backend accepts JWT-only requests on endpoints with the `IsAuthenticatedOrService` permission.
 
 ```typescript
 // src/lib/sattabase.ts
@@ -695,7 +702,7 @@ const store = new LocalStorageTokenStore("analytics:");
 const config = new SattabaseConfig({
   baseUrl: "https://sattabase.tld/api/v1",
   serviceDomain: "analytics.sattaspace.com",
-  apiKey: "sb_live_...",
+  // apiKey is OMITTED — no secret in browser code!
   debug: false,
 });
 
@@ -717,9 +724,9 @@ export const sattabase = new SattabaseClient(config, store);
 ```
 +---------------------------+         SDK (TypeScript)     +-------------------+
 |  Sister Domain             |                              |                   |
-|  (e.g., Notes SPA)         |   X-API-Key: sb_live_...    |    Sattabase      |
-|                            |   X-Service-Domain          |                   |
-|  Frontend (Vue/React SPA)  |   Authorization: Bearer     |  Django Ninja API |
+|  (e.g., Notes SPA)         |   X-Service-Domain          |    Sattabase      |
+|                            |   Authorization: Bearer     |                   |
+|  Frontend (Vue/React SPA)  |   (no API key in browser!)  |  Django Ninja API |
 |    Login → SDK auth.login  |                              |  Stripe           |
 |    auth.me() → user.id     |   GET /billing/auth/me       |                   |
 |    Data in localStorage    |   → user.id, access map      |                   |
@@ -736,7 +743,9 @@ localStorage key pattern:  "notesapp:{user_id}:settings"
 IndexedDB database name:   "notesapp_user_{user_id}"
 ```
 
-### SDK Setup
+### SDK Setup (Browser Mode)
+
+> **Important:** Pattern C has no backend — the SDK runs entirely in the browser. **Never include the API key** in browser code. When `apiKey` is omitted, the SDK sends only JWT and `X-Service-Domain` headers. The Sattabase backend accepts JWT-only requests via the `IsAuthenticatedOrService` permission.
 
 ```typescript
 // src/lib/sattabase.ts
@@ -745,7 +754,8 @@ import { SattabaseClient, SattabaseConfig, LocalStorageTokenStore } from "@satta
 export const config = new SattabaseConfig({
   baseUrl: "https://sattabase.tld/api/v1",
   serviceDomain: "notes.sattaspace.com",
-  apiKey: "sb_live_...",
+  // apiKey is OMITTED — no secret in browser code!
+  debug: true, // for localhost development
 });
 
 const store = new LocalStorageTokenStore("notes:");
@@ -1088,6 +1098,18 @@ The Sattabase API key (`sb_live_...`) must only exist on the **sister domain bac
 - Store it in environment variables, never in source code
 - Use `.env` files (excluded from git via `.gitignore`)
 - The SDK stores it in memory only — it is never persisted to disk
+- **In the TypeScript SDK, `apiKey` is optional** — omit it in browser/frontend code. The SDK automatically operates in browser mode, sending only `Authorization: Bearer` and `X-Service-Domain` headers
+- The backend accepts JWT-only requests via the `IsAuthenticatedOrService` permission — no API key needed for browser-originated requests
+
+### Why the API Key Still Matters for Backend
+
+The API key serves a **different purpose** than JWT. While JWT proves *who the user is*, the API key proves *which domain is calling*. This is critical for:
+
+1. **Server-to-server calls**: When a backend calls Sattabase without a user's JWT, the API key is the only way to authenticate and resolve the domain
+2. **Domain spoofing prevention**: The API key is cryptographically bound to a `ServiceDomain` in the database. The middleware cross-checks the `X-Service-Domain` header against the key's bound domain, preventing a compromised server from impersonating another domain
+3. **Trusted domain resolution**: On `GET /billing/auth/me`, the backend uses the API key's bound domain as the **priority** source for domain resolution (over the untrusted `X-Service-Domain` header)
+
+In short: JWT = *user identity*, API key = *domain identity*. Both are needed for secure server-to-server communication, but only JWT is needed for browser-to-server communication.
 
 ### Handle Account Lifecycle Events
 
@@ -1217,8 +1239,8 @@ def my_view(request):
 ### Sister Domain Side (application code)
 
 - [ ] Install the appropriate SDK (`pip install sattabase-sdk` or `npm install @sattabase/sdk`)
-- [ ] Configure `SattabaseConfig` / `SattabaseConfig` with `base_url`, `service_domain`, `api_key`
-- [ ] Store API key in environment variables (never in source code)
+- [ ] Configure `SattabaseConfig` with `base_url`, `service_domain`, and `api_key` (server) or omit `api_key` (browser)
+- [ ] Store API key in environment variables (never in source code or browser code)
 - [ ] Set up auth middleware (Django middleware or Express middleware)
 - [ ] Design all database models with `user_id` (NOT NULL, indexed) on every table
 - [ ] Implement ownership validation on all foreign key lookups

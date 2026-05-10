@@ -146,6 +146,19 @@ class TokenBlacklistInputSchema(Schema):
     refresh: str = Field(..., description="Refresh token to blacklist")
 
 
+class AuthorizeOutputSchema(Schema):
+    """Schema for authorization code response (cross-domain SSO)."""
+
+    code: str = Field(..., description="One-time authorization code (expires in 30 seconds)")
+    expires_in: int = Field(..., description="Code validity in seconds")
+
+
+class TokenExchangeInputSchema(Schema):
+    """Schema for exchanging an authorization code for JWT tokens."""
+
+    code: str = Field(..., description="One-time authorization code received from /auth/authorize")
+
+
 # =============================================================================
 # Password Reset Schemas
 # =============================================================================

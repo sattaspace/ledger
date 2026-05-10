@@ -2,9 +2,17 @@
  * Sattabase SDK client — main entry point.
  *
  * Async client for the Sattabase API with auto-refresh, typed errors,
- * and token store integration.
+ * and token store integration. Supports two modes:
  *
- * @example
+ * **Server mode** (Node.js/Express/NestJS): Provide an `apiKey` in the config
+ * to send the `X-API-Key` header on every request for service-to-service auth.
+ *
+ * **Browser mode** (Astro/Vue/React SPA): Omit the `apiKey` to operate without
+ * exposing secrets. Only `Authorization: Bearer {jwt}` and `X-Service-Domain`
+ * headers are sent. The Sattabase backend accepts JWT-only requests on endpoints
+ * with `IsAuthenticatedOrService` permission.
+ *
+ * @example Server mode (Node.js backend)
  * ```ts
  * import { SattabaseClient, SattabaseConfig } from "@sattabase/sdk";
  *
@@ -15,11 +23,24 @@
  * });
  *
  * const client = new SattabaseClient(config);
+ * const authMe = await client.auth.me(tokens.access);
+ * ```
  *
- * // Login
+ * @example Browser mode (frontend SPA)
+ * ```ts
+ * import { SattabaseClient, SattabaseConfig, LocalStorageTokenStore } from "@sattabase/sdk";
+ *
+ * const config = new SattabaseConfig({
+ *   baseUrl: "https://sattabase.tld/api/v1",
+ *   serviceDomain: "finance.sattabase.tld",
+ *   // apiKey is OMITTED — no secret in browser code!
+ *   debug: true,  // for localhost development
+ * });
+ *
+ * const store = new LocalStorageTokenStore();
+ * const client = new SattabaseClient(config, store);
+ *
  * const tokens = await client.auth.login("user@example.com", "password");
- *
- * // Get domain-scoped user info + access map
  * const authMe = await client.auth.me(tokens.access);
  * if (authMe.hasAccess("reports")) {
  *   console.log("User has reports access");
@@ -96,9 +117,15 @@ export class SattabaseClient {
   ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "X-API-Key": this.config.apiKey,
       "X-Service-Domain": this.config.serviceDomain,
     };
+
+    // Only send X-API-Key in server mode (when an API key is configured).
+    // In browser mode, the backend accepts JWT-only requests on endpoints
+    // with IsAuthenticatedOrService permission — no secret credential needed.
+    if (this.config.apiKey) {
+      headers["X-API-Key"] = this.config.apiKey;
+    }
 
     if (opts?.token) {
       headers["Authorization"] = `Bearer ${opts.token}`;
@@ -208,15 +235,20 @@ export class SattabaseClient {
       if (!refreshToken) return null;
 
       try {
+        const refreshHeaders: Record<string, string> = {
+          "Content-Type": "application/json",
+          "X-Service-Domain": this.config.serviceDomain,
+        };
+        // Only send X-API-Key in server mode
+        if (this.config.apiKey) {
+          refreshHeaders["X-API-Key"] = this.config.apiKey;
+        }
+
         const response = await fetch(
           `${this.config.baseUrl}/auth/token/refresh`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-API-Key": this.config.apiKey,
-              "X-Service-Domain": this.config.serviceDomain,
-            },
+            headers: refreshHeaders,
             body: JSON.stringify({ refresh: refreshToken }),
             signal: AbortSignal.timeout(this.config.timeout),
           },

@@ -197,8 +197,10 @@ export async function changePassword(
  * Rate-limited: 10 attempts per hour window.
  * Returns success if password is correct.
  */
-export async function confirmIdentity(current_password: string): Promise<{ message: string }> {
-  return apiClient.post<{ message: string }>('/users/me/confirm-identity', {
+export async function confirmIdentity(
+  current_password: string,
+): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }>("/users/me/confirm-identity", {
     current_password,
   });
 }
@@ -265,7 +267,17 @@ export async function getCurrentUser(): Promise<UserProfile> {
  * Update user profile — PUT /users/me
  */
 export async function updateProfile(
-  data: Partial<Pick<UserProfile, "first_name" | "last_name" | "phone" | "timezone" | "currency" | "language">>,
+  data: Partial<
+    Pick<
+      UserProfile,
+      | "first_name"
+      | "last_name"
+      | "phone"
+      | "timezone"
+      | "currency"
+      | "language"
+    >
+  >,
 ): Promise<UserProfile> {
   return apiClient.put<UserProfile>("/users/me", data);
 }
@@ -287,7 +299,8 @@ export async function updateAvatar(file: File): Promise<UserProfile> {
   if (!ALLOWED_TYPES.includes(file.type)) {
     throw {
       status: 400,
-      message: "Invalid file type. Please upload a JPEG, PNG, GIF, or WebP image.",
+      message:
+        "Invalid file type. Please upload a JPEG, PNG, GIF, or WebP image.",
     } as ApiError;
   }
 
@@ -312,6 +325,26 @@ export async function deleteAvatar(): Promise<UserProfile> {
   return apiClient.delete<UserProfile>("/users/me/avatar");
 }
 
+// ─── Cross-Domain SSO ──────────────────────────────────────────────────────
+
+/**
+ * Exchange a one-time authorization code for JWT tokens.
+ *
+ * Called by the /auth/callback page when a sister domain redirects
+ * the user to the Sattabase base domain with an authorization code.
+ * The code is consumed upon use and cannot be reused.
+ *
+ * POST /auth/token/exchange
+ */
+export async function exchangeAuthCode(code: string): Promise<AuthTokens> {
+  const data = await apiClient.post<AuthTokens>("/auth/token/exchange", {
+    code,
+  });
+  // Store the tokens (use sessionStorage by default for SSO callbacks;
+  // the user can upgrade to localStorage on next explicit login)
+  authHelpers.setTokens(data.access, data.refresh, false);
+  return data;
+}
 
 // ─── Convenience ────────────────────────────────────────────────────────────
 
@@ -350,7 +383,6 @@ export function getErrorMessage(error: unknown): string {
   return "An unexpected error occurred. Please try again.";
 }
 
-
 // ─── Helper: Detect user preferences ────────────────────────────────────────
 
 /**
@@ -378,7 +410,9 @@ export function detectUserTimezone(choices?: ChoiceOption[]): string {
 export function detectUserLanguage(choices?: ChoiceOption[]): string {
   if (typeof window === "undefined") return "en";
   try {
-    const browserLang = (navigator.language || "en").split("-")[0].toLowerCase();
+    const browserLang = (navigator.language || "en")
+      .split("-")[0]
+      .toLowerCase();
     if (choices) {
       const known = choices.some((opt) => opt.value === browserLang);
       return known ? browserLang : "en";

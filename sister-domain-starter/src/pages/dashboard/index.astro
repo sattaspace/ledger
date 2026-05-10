@@ -1,0 +1,307 @@
+---
+/**
+ * Dashboard index page — example protected page.
+ *
+ * Demonstrates how to use the DashboardLayout with auth checks,
+ * billing redirect detection, and feature gating in a sister domain.
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import LoadingSpinner from "@/components/astro/LoadingSpinner.astro";
+---
+
+<DashboardLayout title="Dashboard — SattaBase">
+  <!-- Auth check + profile loader (client-side) -->
+  <div id="dashboard-root">
+    <!-- Loading state (shown while auth check runs) -->
+    <div id="dashboard-loading">
+      <LoadingSpinner size="lg" message="Loading your dashboard..." />
+    </div>
+
+    <!-- Main content (shown after auth check passes) -->
+    <div id="dashboard-content" style="display:none">
+      <!-- Welcome section -->
+      <div class="mb-8">
+        <h2 class="text-2xl font-bold tracking-tight" id="welcome-heading">
+          Welcome back
+        </h2>
+        <p class="mt-1 text-muted-foreground">
+          Here's an overview of your account.
+        </p>
+      </div>
+
+      <!-- Quick stats cards -->
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8">
+        <!-- Subscription card -->
+        <div class="card p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div
+              class="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-950"
+            >
+              <svg
+                class="h-5 w-5 text-brand-600 dark:text-brand-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                  d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+                ></path>
+              </svg>
+            </div>
+            <div>
+              <p
+                class="text-xs text-muted-foreground uppercase tracking-wider font-medium"
+              >
+                Plan
+              </p>
+              <p class="text-sm font-semibold" id="plan-name">Free</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="h-2 w-2 rounded-full bg-brand-500" id="plan-status-dot">
+            </div>
+            <span class="text-xs text-muted-foreground" id="plan-status-text"
+              >Active</span
+            >
+          </div>
+        </div>
+
+        <!-- Access card -->
+        <div class="card p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div
+              class="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-950"
+            >
+              <svg
+                class="h-5 w-5 text-brand-600 dark:text-brand-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                ></path>
+              </svg>
+            </div>
+            <div>
+              <p
+                class="text-xs text-muted-foreground uppercase tracking-wider font-medium"
+              >
+                Features
+              </p>
+              <p class="text-sm font-semibold" id="feature-count">0 enabled</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Billing card -->
+        <div class="card p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div
+              class="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-950"
+            >
+              <svg
+                class="h-5 w-5 text-brand-600 dark:text-brand-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                ></path>
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+              </svg>
+            </div>
+            <div>
+              <p
+                class="text-xs text-muted-foreground uppercase tracking-wider font-medium"
+              >
+                Billing
+              </p>
+              <p class="text-sm font-semibold">Manage</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="btn-secondary text-xs w-full mt-1"
+            id="manage-billing-btn"
+          >
+            Manage on SattaBase
+          </button>
+        </div>
+      </div>
+
+      <!-- Access map debug (for development) -->
+      <div class="card p-6" id="access-debug" style="display:none">
+        <h3 class="text-sm font-semibold mb-3">Your Access Map</h3>
+        <div
+          id="access-map-content"
+          class="text-xs font-mono bg-muted rounded-lg p-4 overflow-x-auto"
+        >
+          <p class="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Not authenticated state -->
+    <div id="dashboard-unauth" style="display:none">
+      <div class="flex flex-col items-center justify-center py-16 text-center">
+        <div
+          class="flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-950 mb-4"
+        >
+          <svg
+            class="h-8 w-8 text-red-600 dark:text-red-400"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            ></path>
+          </svg>
+        </div>
+        <h3 class="text-lg font-semibold mb-2">Authentication Required</h3>
+        <p class="text-sm text-muted-foreground mb-4">
+          You need to be signed in to access the dashboard.
+        </p>
+        <a href="/auth/login" class="btn-primary">Sign in</a>
+      </div>
+    </div>
+  </div>
+</DashboardLayout>
+
+<script>
+  import { isAuthenticated, clearTokens } from "@/lib/api";
+  import { billingRedirect } from "@/lib/billing";
+
+  async function initDashboard() {
+    const loading = document.getElementById("dashboard-loading");
+    const content = document.getElementById("dashboard-content");
+    const unauth = document.getElementById("dashboard-unauth");
+
+    if (!isAuthenticated()) {
+      loading!.style.display = "none";
+      unauth!.style.display = "block";
+      return;
+    }
+
+    try {
+      const { apiClient } = await import("@/lib/api");
+      const data = await apiClient.get<{
+        user: any;
+        subscription: any;
+        access: Record<string, any>;
+      }>("/billing/auth/me");
+
+      // Populate dashboard
+      const welcomeHeading = document.getElementById("welcome-heading");
+      if (welcomeHeading && data.user) {
+        const name =
+          data.user.full_name ||
+          data.user.display_name ||
+          data.user.email?.split("@")[0] ||
+          "User";
+        welcomeHeading.textContent = `Welcome back, ${name}`;
+      }
+
+      // Plan name
+      const planName = document.getElementById("plan-name");
+      const planStatusText = document.getElementById("plan-status-text");
+      const planStatusDot = document.getElementById("plan-status-dot");
+      if (data.subscription) {
+        if (planName) planName.textContent = data.subscription.plan_name;
+        if (planStatusText)
+          planStatusText.textContent =
+            data.subscription.status === "active"
+              ? "Active"
+              : data.subscription.status;
+        if (planStatusDot && data.subscription.status === "active") {
+          planStatusDot.className = "h-2 w-2 rounded-full bg-brand-500";
+        } else if (planStatusDot) {
+          planStatusDot.className =
+            "h-2 w-2 rounded-full bg-yellow-500 animate-pulse";
+        }
+      } else {
+        if (planName) planName.textContent = "Free Plan";
+        if (planStatusDot)
+          planStatusDot.className =
+            "h-2 w-2 rounded-full bg-muted-foreground/40";
+      }
+
+      // Feature count
+      const featureCount = document.getElementById("feature-count");
+      if (featureCount && data.access) {
+        const enabledCount = Object.values(data.access).filter((v) => {
+          if (typeof v === "boolean") return v;
+          if (typeof v === "number") return v > 0;
+          if (typeof v === "string")
+            return v !== "" && v !== "false" && v !== "0";
+          return false;
+        }).length;
+        featureCount.textContent = `${enabledCount} enabled`;
+      }
+
+      // Access map debug
+      const accessDebug = document.getElementById("access-debug");
+      const accessMapContent = document.getElementById("access-map-content");
+      if (accessDebug && accessMapContent && data.access) {
+        accessDebug.style.display = "block";
+        accessMapContent.innerHTML = Object.entries(data.access)
+          .map(
+            ([key, value]) =>
+              `<div><span class="text-brand-600 dark:text-brand-400">${key}</span>: <span class="text-foreground">${JSON.stringify(value)}</span></div>`,
+          )
+          .join("");
+      }
+
+      // Show content
+      loading!.style.display = "none";
+      content!.style.display = "block";
+    } catch (err) {
+      console.error("Failed to load dashboard:", err);
+      loading!.style.display = "none";
+      unauth!.style.display = "block";
+    }
+
+    // ── Billing redirect detection ──
+    const billingStatus = billingRedirect.detectBillingUpdate();
+    if (billingStatus.updated && billingStatus.success === 1) {
+      // Optionally show a toast or notification
+      console.log("Billing updated successfully — access refreshed");
+    }
+  }
+
+  // ── Manage billing button ──
+  const manageBillingBtn = document.getElementById("manage-billing-btn");
+  manageBillingBtn?.addEventListener("click", async () => {
+    try {
+      const { redirectToBaseWithAuthCode } = await import("@/lib/auth");
+      await redirectToBaseWithAuthCode("/dashboard/billing");
+    } catch {
+      // Fallback to simple redirect
+      const { redirectToBase } = await import("@/lib/auth");
+      redirectToBase("/dashboard/billing");
+    }
+  });
+
+  // Initialize
+  initDashboard();
+  document.addEventListener("astro:page-load", initDashboard);
+</script>

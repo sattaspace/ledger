@@ -101,7 +101,7 @@ class InMemoryTokenStore:
     Not suitable for production — tokens are lost on process restart
     and not shared across workers.
 
-    Implements :class:`TokenStoreWithLookup`.
+    Implements :class:`TokenStore` and :class:`TokenStoreWithLookup` protocols.
     """
 
     def __init__(self) -> None:
@@ -198,7 +198,7 @@ class RedisTokenStore:
     async def set_tokens(self, user_id: str, tokens: TokenPair) -> None:
         """Store tokens for a user in Redis as JSON."""
         data = tokens.model_dump_json()
-        await self._redis.set(self._key(user_id), data)
+        await self._redis.set(self._key(user_id), data, ex=604800)
 
     async def delete_tokens(self, user_id: str) -> None:
         """Delete tokens for a user from Redis."""

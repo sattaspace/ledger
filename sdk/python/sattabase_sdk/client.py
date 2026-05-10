@@ -233,31 +233,31 @@ class SattabaseClient:
         finally:
             self._refresh_promise = None
 
-    async def _find_refresh_token(self) -> str | None:
-        """Find a refresh token from the token store.
+    # async def _find_refresh_token(self) -> str | None:
+    #     """Find a refresh token from the token store.
 
-        Uses the TokenStoreWithLookup protocol instead of accessing
-        private ``_store`` attribute directly.
+    #     Uses the TokenStoreWithLookup protocol instead of accessing
+    #     private ``_store`` attribute directly.
 
-        Returns None if the token store doesn't support lookup.
-        """
-        store = self._token_store
-        if store is None:
-            return None
-        if isinstance(store, TokenStoreWithLookup):
-            tokens = await store.get_first_token_pair()
-            return tokens.refresh if tokens else None
-        return None
+    #     Returns None if the token store doesn't support lookup.
+    #     """
+    #     store = self._token_store
+    #     if store is None:
+    #         return None
+    #     if isinstance(store, TokenStoreWithLookup):
+    #         tokens = await store.get_first_token_pair()
+    #         return tokens.refresh if tokens else None
+    #     return None
 
-    async def _find_user_id_by_refresh(self, refresh_token: str) -> str | None:
-        """Find user_id by matching refresh token in the store.
+    # async def _find_user_id_by_refresh(self, refresh_token: str) -> str | None:
+    #     """Find user_id by matching refresh token in the store.
 
-        Uses the TokenStoreWithLookup protocol instead of accessing
-        private ``_store`` attribute directly.
-        """
-        store = self._token_store
-        if store is None:
-            return None
-        if isinstance(store, TokenStoreWithLookup):
-            return await store.get_user_id_by_refresh(refresh_token)
-        return None
+    #     Uses the TokenStoreWithLookup protocol instead of accessing
+    #     private ``_store`` attribute directly.
+    #     """
+    #     store = self._token_store
+    #     if store is None:
+    #         return None
+    #     if isinstance(store, TokenStoreWithLookup):
+    #         return await store.get_user_id_by_refresh(refresh_token)
+    #     return None

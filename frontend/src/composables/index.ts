@@ -16,6 +16,7 @@
  *   useFormErrors()       — Field-level + general error management
  *   useAsyncAction()      — Loading/error state for async operations
  *   useMediaQuery()       — Reactive CSS media query matching
+ *   useAdminGuard()       — Client-side admin route protection (is_staff check)
  */
 
 export { useAuth } from "./useAuth";
@@ -23,10 +24,14 @@ export { useSubscription } from "./useSubscription";
 export { useAccess } from "./useAccess";
 export { useBillingRedirect } from "./useBillingRedirect";
 export { usePasswordStrength } from "./usePasswordStrength";
-export type { PasswordChecks, PasswordStrengthResult } from "./usePasswordStrength";
+export type {
+  PasswordChecks,
+  PasswordStrengthResult,
+} from "./usePasswordStrength";
 export { useCooldownTimer } from "./useCooldownTimer";
 export { useOtpInput } from "./useOtpInput";
 export { useFormErrors } from "./useFormErrors";
 export { useAsyncAction } from "./useAsyncAction";
 export type { AsyncActionOptions } from "./useAsyncAction";
-export { useMediaQuery } from "./useMediaQuery"; 
+export { useMediaQuery } from "./useMediaQuery";
+export { useAdminGuard } from "./useAdminGuard";

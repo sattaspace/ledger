@@ -355,11 +355,6 @@ class AuthService:
     EMAIL_CHANGE_OTP_EXPIRY = 600  # 10 minutes
     MAX_EMAIL_CHANGE_ATTEMPTS = 5
 
-    EMAIL_CHANGE_CACHE_PREFIX = "email_change_data"
-    EMAIL_CHANGE_ATTEMPTS_PREFIX = "email_change_attempts"
-    EMAIL_CHANGE_OTP_EXPIRY = 600  # 10 minutes
-    MAX_EMAIL_CHANGE_ATTEMPTS = 5
-
     @staticmethod
     async def aactivate_user(user: User) -> None:
         """Async version of activate_user()."""
@@ -803,6 +798,65 @@ class AuthService:
         await sync_to_async(cache.delete)(attempts_key)
 
         logger.info(f"Email verified (async): user={user.email}")
+
+    # =========================================================================
+    # Cross-Domain SSO (Authorization Code Flow)
+    # =========================================================================
+
+    AUTH_CODE_CACHE_PREFIX = "sso_auth_code"
+    AUTH_CODE_TTL = 30  # seconds
+    AUTH_CODE_LENGTH = 48  # bytes of randomness
+
+    @staticmethod
+    async def agenerate_auth_code(user: "User") -> str:
+        """Generate a one-time authorization code for cross-domain SSO.
+        
+        The code is stored in Redis with a 30-second TTL, mapped to the user's ID.
+        The code can only be used once — it is deleted upon exchange.
+        """
+        import secrets
+        from django.core.cache import cache
+        
+        code = secrets.token_urlsafe(AuthService.AUTH_CODE_LENGTH)
+        cache_key = f"{AuthService.AUTH_CODE_CACHE_PREFIX}:{code}"
+        # Store user_id and a hash of the user's current state for validation
+        cache.set(cache_key, {"user_id": user.id, "is_active": user.is_active}, AuthService.AUTH_CODE_TTL)
+        return code
+
+    @staticmethod
+    async def aexchange_auth_code(code: str) -> "User":
+        """Exchange a one-time authorization code for the associated user.
+        
+        Validates the code exists in Redis, retrieves the user, and deletes the code
+        (one-time use). Raises ValueError if code is invalid, expired, or user is inactive.
+        """
+        from django.core.cache import cache
+        from .models import User
+        
+        cache_key = f"{AuthService.AUTH_CODE_CACHE_PREFIX}:{code}"
+        code_data = cache.get(cache_key)
+        
+        if code_data is None:
+            raise ValueError("Invalid or expired authorization code.")
+        
+        # Delete the code immediately (one-time use)
+        cache.delete(cache_key)
+        
+        user_id = code_data.get("user_id")
+        if not user_id:
+            raise ValueError("Malformed authorization code.")
+        
+        user = await User.objects.filter(
+            id=user_id, is_active=True, is_deleted=False
+        ).afirst()
+        
+        if not user:
+            raise ValueError("User not found or inactive.")
+        
+        if not user.is_email_verified:
+            raise ValueError("Email not verified. Please verify your email first.")
+        
+        return user
 
     # =========================================================================
     # Account Deletion (Soft Delete)

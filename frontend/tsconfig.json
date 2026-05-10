@@ -12,6 +12,7 @@
       "@astro/*": ["src/components/astro/*"],
       "@styles/*": ["src/styles/*"],
       "@utils/*": ["src/utils/*"],
+      "@lib/*": ["src/lib/*"],
       "@composables/*": ["src/composables/*"]
     }
   }

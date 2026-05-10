@@ -1,0 +1,45 @@
+---
+/**
+ * LoadingSpinner — simple loading spinner component.
+ *
+ * Props:
+ *   size: "sm" | "md" | "lg"  (default: "md")
+ *   variant: "brand" | "muted" (default: "brand")
+ *   message: string | undefined (default: "Loading...")
+ */
+
+interface Props {
+  size?: "sm" | "md" | "lg";
+  variant?: "brand" | "muted";
+  message?: string;
+}
+
+const { size = "md", variant = "brand", message = "Loading..." } = Astro.props;
+
+const sizeMap = {
+  sm: { container: "h-6 w-6", border: "border-2", text: "text-xs" },
+  md: { container: "h-10 w-10", border: "border-2", text: "text-sm" },
+  lg: { container: "h-14 w-14", border: "border-[3px]", text: "text-base" },
+};
+
+const s = sizeMap[size];
+---
+
+<div class="flex flex-col items-center justify-center gap-3 py-16">
+  <div class={`relative ${s.container}`}>
+    <!-- Track background -->
+    <div class={`absolute inset-0 rounded-full ${s.border} border-border`}>
+    </div>
+    <!-- Spinning ring -->
+    <div
+      class:list={[
+        "absolute inset-0 rounded-full animate-spin",
+        s.border,
+        "border-t-transparent",
+      ]}
+      style={`border-color: transparent; border-top-color: ${variant === "brand" ? "var(--color-brand-500)" : "var(--color-muted-fg)"};`}
+    >
+    </div>
+  </div>
+  {message && <p class={`${s.text} text-muted-foreground`}>{message}</p>}
+</div>

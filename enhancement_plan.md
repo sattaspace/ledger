@@ -1423,18 +1423,18 @@ Both SDKs are implemented in-repo under `sdk/`:
 
 ---
 
-### Phase 10: Admin Frontend
+### Phase 10: Admin Frontend (10.1 COMPLETE)
 
 **Goal:** Build the dedicated admin dashboard at `/admin/*` using the existing Astro + Vue + Tailwind stack.
 
-#### 10.1 Admin Layout & Infrastructure
+#### 10.1 Admin Layout & Infrastructure — DONE
 
-- [ ] 10.1.1 Create `AdminLayout.astro` — separate from `DashboardLayout.astro`; uses same frozen shell pattern (h-dvh, overflow-hidden) but with admin-specific sidebar and navbar
-- [ ] 10.1.2 Create `AdminNavbar.vue` — shows "Sattabase Admin" branding, staff user badge (name + role), link to user-facing dashboard, link to Django admin (`/admin/django/`)
-- [ ] 10.1.3 Create `AdminSidebar.vue` — navigation items: Dashboard, Products, Subscriptions, Users, Refunds, API Keys, Webhooks, Audit Log; collapsible on mobile
-- [ ] 10.1.4 Create admin route guard in `frontend/src/middleware/` or layout script: on `/admin/*` routes, check `user.is_staff` via stored auth state; redirect to `/dashboard` if not staff
-- [ ] 10.1.5 Create `frontend/src/lib/admin-api.ts` — typed API client for all admin endpoints (wraps fetch with JWT auth)
-- [ ] 10.1.6 Create admin page structure under `frontend/src/pages/admin/`
+- [x] 10.1.1 Create `AdminLayout.astro` — separate from `DashboardLayout.astro`; uses same frozen shell pattern (h-dvh, overflow-hidden) but with admin-specific sidebar and navbar. **Implemented as Astro component with `transition:persist` keys (`admin-sidebar`, `admin-navbar`) to avoid DOM reuse conflicts with user dashboard.**
+- [x] 10.1.2 Create `AdminNavbar.astro` — shows "Sattabase Admin" breadcrumb branding, staff user badge (name + role label), link to user-facing dashboard, link to Django admin (`/admin/django/`), dark mode toggle, user dropdown with sign out. **Built as Astro component (not Vue) matching existing Navbar pattern.**
+- [x] 10.1.3 Create `AdminSidebar.astro` — amber-accented admin navigation with 3 sections: Overview (Dashboard), Management (Products, Subscriptions, Users, Refunds), System (API Keys, Webhooks, Audit Log). Includes "Back to Dashboard" and "Django Admin" links. Collapsible on mobile. **Distinct amber color theme differentiates from green user dashboard.**
+- [x] 10.1.4 Create admin route guard — `src/middleware.ts` (Astro server middleware skeleton for `/admin/*` route protection) + `src/composables/useAdminGuard.ts` (Vue composable for client-side admin auth verification checking `is_staff` or owner/admin role). **True SSR guard noted as requiring httpOnly cookie; current implementation relies on client-side check.**
+- [x] 10.1.5 Create `frontend/src/lib/admin.ts` — typed API client for all admin endpoints covering: Products, Service Domains, Plans, Access Entries, Subscriptions, Users, Refunds, Metrics, Webhooks, Audit Log. Includes helper functions: `formatRelativeTime`, `getSubscriptionStatusColor`, `getRefundStatusColor`, `getWebhookStatusColor`. **Wraps fetch with JWT auth from localStorage.**
+- [x] 10.1.6 Create admin page structure under `frontend/src/pages/admin/` — 8 pages created: `index.astro` (dashboard with quick links), `products/index.astro`, `subscriptions/index.astro`, `users/index.astro`, `refunds/index.astro`, `api-keys/index.astro` (renders existing `ApiKeysAdmin.vue`), `webhooks/index.astro`, `audit-log/index.astro`. Old `/dashboard/admin/api-keys` migrated to redirect → `/admin/api-keys`. User sidebar updated: admin nav item changed from "API Keys" → "Admin Panel" with `href=/admin`.
 
 #### 10.2 Reusable Admin Components
 

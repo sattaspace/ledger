@@ -37,8 +37,23 @@ function makeConfig(): SattabaseConfig {
   });
 }
 
+/** Create a browser-mode config (no API key). */
+function makeBrowserConfig(): SattabaseConfig {
+  return new SattabaseConfig({
+    baseUrl: TEST_BASE_URL,
+    serviceDomain: TEST_SERVICE_DOMAIN,
+    // apiKey intentionally omitted — browser mode
+    debug: true,
+  });
+}
+
 function makeClient(): SattabaseClient {
   return new SattabaseClient(makeConfig());
+}
+
+/** Create a browser-mode client (no API key). */
+function makeBrowserClient(): SattabaseClient {
+  return new SattabaseClient(makeBrowserConfig());
 }
 
 const tokenResponse = {
@@ -123,9 +138,18 @@ function mockFetchSequential(
 // ─── Config Tests ──────────────────────────────────────────────────────────────
 
 describe("SattabaseConfig", () => {
-  it("creates valid config", () => {
+  it("creates valid config with API key (server mode)", () => {
     const config = makeConfig();
     expect(config.apiKey).toBe(TEST_API_KEY);
+    expect(config.browserMode).toBe(false);
+    expect(config.appBaseUrl).toBe("https://sattabase.tld");
+  });
+
+  it("creates valid config without API key (browser mode)", () => {
+    const config = makeBrowserConfig();
+    expect(config.apiKey).toBeUndefined();
+    expect(config.browserMode).toBe(true);
+    expect(config.serviceDomain).toBe(TEST_SERVICE_DOMAIN);
     expect(config.appBaseUrl).toBe("https://sattabase.tld");
   });
 
@@ -141,6 +165,10 @@ describe("SattabaseConfig", () => {
     ).toThrow("must start with 'sb_live_'");
   });
 
+  it("allows undefined API key (browser mode)", () => {
+    expect(() => makeBrowserConfig()).not.toThrow();
+  });
+
   it("rejects HTTP in production", () => {
     expect(
       () =>
@@ -148,6 +176,16 @@ describe("SattabaseConfig", () => {
           baseUrl: "http://sattabase.tld/api/v1",
           serviceDomain: TEST_SERVICE_DOMAIN,
           apiKey: TEST_API_KEY,
+        }),
+    ).toThrow("HTTPS");
+  });
+
+  it("rejects HTTP in production without API key", () => {
+    expect(
+      () =>
+        new SattabaseConfig({
+          baseUrl: "http://sattabase.tld/api/v1",
+          serviceDomain: TEST_SERVICE_DOMAIN,
         }),
     ).toThrow("HTTPS");
   });
@@ -162,12 +200,32 @@ describe("SattabaseConfig", () => {
     expect(config.appBaseUrl).toBe("http://localhost:8000");
   });
 
+  it("allows HTTP in debug mode without API key (browser)", () => {
+    const config = new SattabaseConfig({
+      baseUrl: "http://localhost:8000/api/v1",
+      serviceDomain: TEST_SERVICE_DOMAIN,
+      debug: true,
+    });
+    expect(config.browserMode).toBe(true);
+    expect(config.appBaseUrl).toBe("http://localhost:8000");
+  });
+
   it("strips /api/v1 for appBaseUrl", () => {
     const config = new SattabaseConfig({
       baseUrl: "https://sattabase.tld/api/v1",
       serviceDomain: TEST_SERVICE_DOMAIN,
       apiKey: TEST_API_KEY,
     });
+    expect(config.appBaseUrl).toBe("https://sattabase.tld");
+  });
+
+  it("strips /api/v1 for appBaseUrl in browser mode", () => {
+    const config = new SattabaseConfig({
+      baseUrl: "https://sattabase.tld/api/v1",
+      serviceDomain: TEST_SERVICE_DOMAIN,
+      debug: true,
+    });
+    expect(config.browserMode).toBe(true);
     expect(config.appBaseUrl).toBe("https://sattabase.tld");
   });
 });
@@ -551,17 +609,80 @@ describe("InMemoryTokenStore", () => {
 describe("SattabaseClient.request", () => {
   afterEach(restoreFetch);
 
-  it("injects X-API-Key and X-Service-Domain headers", async () => {
+  it("injects X-API-Key and X-Service-Domain headers in server mode", async () => {
     mockFetch({ status: 200, body: { ok: true } });
     const client = makeClient();
     await client.request("GET", "/test");
 
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      `${TEST_BASE_URL}/test`,
-      expect.objectContaining({
-        method: "GET",
-      }),
-    );
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers["X-API-Key"]).toBe(TEST_API_KEY);
+    expect(headers["X-Service-Domain"]).toBe(TEST_SERVICE_DOMAIN);
+  });
+
+  it("does NOT send X-API-Key in browser mode", async () => {
+    mockFetch({ status: 200, body: { ok: true } });
+    const client = makeBrowserClient();
+    await client.request("GET", "/test", { token: "user_jwt_token" });
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers["X-API-Key"]).toBeUndefined();
+    expect(headers["X-Service-Domain"]).toBe(TEST_SERVICE_DOMAIN);
+    expect(headers["Authorization"]).toBe("Bearer user_jwt_token");
+  });
+
+  it("browser mode login works without API key", async () => {
+    mockFetch({ status: 200, body: tokenResponse });
+    const client = makeBrowserClient();
+    const tokens = await client.auth.login("user@example.com", "password");
+
+    expect(tokens.access).toBe(tokenResponse.access);
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers["X-API-Key"]).toBeUndefined();
+    expect(headers["X-Service-Domain"]).toBe(TEST_SERVICE_DOMAIN);
+  });
+
+  it("browser mode auth.me works with JWT only", async () => {
+    mockFetch({ status: 200, body: authMeResponse });
+    const client = makeBrowserClient();
+    const result = await client.auth.me(tokenResponse.access);
+
+    expect(result.user.email).toBe("user@example.com");
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers["X-API-Key"]).toBeUndefined();
+    expect(headers["Authorization"]).toBe(`Bearer ${tokenResponse.access}`);
+  });
+
+  it("browser mode auto-refresh does not send X-API-Key", async () => {
+    const store = new InMemoryTokenStore();
+    store.setTokens("default", {
+      access: "old_access",
+      refresh: "old_refresh",
+    });
+    const client = new SattabaseClient(makeBrowserConfig(), store);
+
+    mockFetchSequential([
+      { status: 401, body: { detail: "Token expired" } },
+      { status: 200, body: { access: "new_access", refresh: "new_refresh" } },
+      { status: 200, body: { data: "success" } },
+    ]);
+
+    const result = await client.request<{ data: string }>("GET", "/test", {
+      token: "old_access",
+    });
+    expect(result.data).toBe("success");
+
+    // Check the refresh call (2nd call) does NOT include X-API-Key
+    const refreshCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+      .calls[1];
+    const refreshHeaders = refreshCall[1].headers as Record<string, string>;
+    expect(refreshHeaders["X-API-Key"]).toBeUndefined();
+    expect(refreshHeaders["X-Service-Domain"]).toBe(TEST_SERVICE_DOMAIN);
   });
 
   it("401 raises AuthenticationError", async () => {
@@ -573,8 +694,6 @@ describe("SattabaseClient.request", () => {
   });
 
   it("429 raises RateLimitError", async () => {
-    // retry_after: 0 so the SDK's built-in retry delay is instant (0ms).
-    // The SDK will: receive 429 → wait 0s → retry → get 429 again → throw RateLimitError.
     mockFetchSequential([
       { status: 429, body: { detail: "Too many requests", retry_after: 0 } },
       { status: 429, body: { detail: "Too many requests", retry_after: 0 } },

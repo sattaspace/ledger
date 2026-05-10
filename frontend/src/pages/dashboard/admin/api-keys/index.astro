@@ -1,11 +1,9 @@
 ---
-import DashboardLayout from "@/layouts/DashboardLayout.astro";
-import ApiKeysAdmin from "@/components/vue/ApiKeysAdmin.vue";
+/**
+ * Redirect: /dashboard/admin/api-keys → /admin/api-keys
+ *
+ * The API Keys admin page has been moved to the dedicated admin section.
+ * This page exists solely to redirect users who may have bookmarked the old URL.
+ */
+return Astro.redirect("/admin/api-keys");
 ---
-
-<DashboardLayout
-  title="API Keys — Admin — SattaBase"
-  description="Manage service credentials for sister domain authentication."
->
-  <ApiKeysAdmin client:only="vue" />
-</DashboardLayout>

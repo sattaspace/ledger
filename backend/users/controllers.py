@@ -53,6 +53,8 @@ from .schemas import (
     TokenRefreshInputSchema,
     TokenVerifyInputSchema,
     TokenBlacklistInputSchema,
+    AuthorizeOutputSchema,
+    TokenExchangeInputSchema,
     PasswordResetRequestSchema,
     PasswordResetConfirmSchema,
     PasswordConfirmSchema,
@@ -426,6 +428,64 @@ class AuthController:
             )
         except ValueError as e:
             raise BadRequestException(str(e))
+
+    # =========================================================================
+    # Cross-Domain SSO (Authorization Code Flow)
+    # =========================================================================
+
+    @http_post(
+        "/authorize",
+        response={200: AuthorizeOutputSchema, 401: dict},
+        auth=JWTAuth(),
+        permissions=[IsAuthenticated],
+        summary="Generate SSO authorization code",
+        description=(
+            "Generate a one-time authorization code for cross-domain single sign-on. "
+            "Requires a valid JWT access token. The code expires in 30 seconds and "
+            "can only be used once. Sister domains use this to redirect authenticated "
+            "users to the Sattabase base domain without requiring a second login."
+        ),
+    )
+    async def authorize(self, request: HttpRequest):
+        """Generate a one-time authorization code for cross-domain SSO.
+        
+        Called by a sister domain's frontend when the user needs to access
+        the base Sattabase domain (e.g., for billing management). The code
+        is passed as a URL parameter in the redirect.
+        """
+        code = await AuthService.agenerate_auth_code(request.user)
+        return AuthorizeOutputSchema(code=code, expires_in=30)
+
+    @http_post(
+        "/token/exchange",
+        response={200: TokenOutputSchema, 400: dict, 401: dict},
+        summary="Exchange authorization code for tokens",
+        description=(
+            "Exchange a one-time authorization code for JWT access and refresh tokens. "
+            "The code is consumed upon use and cannot be reused. Called by the "
+            "Sattabase base domain's callback page after a sister domain redirects "
+            "the user with an authorization code."
+        ),
+    )
+    async def exchange_token(self, payload: TokenExchangeInputSchema):
+        """Exchange an authorization code for a JWT token pair.
+        
+        Called by the base Sattabase domain's /auth/callback page to
+        complete the cross-domain SSO flow. Returns the same response
+        format as /auth/login.
+        """
+        try:
+            user = await AuthService.aexchange_auth_code(payload.code)
+            access = await async_token_for_user(user)
+            refresh = await async_refresh_for_user(user)
+            return TokenOutputSchema(access=str(access), refresh=str(refresh))
+        except ValueError as e:
+            msg = str(e)
+            if "not verified" in msg:
+                raise ForbiddenException(msg)
+            if "Invalid" in msg or "expired" in msg:
+                raise BadRequestException(msg)
+            raise UnauthorizedException(msg)
 
 
 # =============================================================================
