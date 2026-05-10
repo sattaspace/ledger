@@ -50,10 +50,26 @@ function toggleExpand(id: number) {
   }
 }
 
+function getEntryId(entry: TimelineEntry, index: number): number {
+  if (isAuditLogEntry(entry)) return entry.id;
+  // UserAuditEntry doesn't have id — use index
+  return index;
+}
+
 // ─── Entry type guards ───────────────────────────────────────────────────────
 
 function isAuditLogEntry(entry: TimelineEntry): entry is AuditLogEntry {
   return "admin_email" in entry && "method" in entry && "path" in entry;
+}
+
+function isUserAuditEntry(entry: TimelineEntry): entry is UserAuditEntry {
+  return "event_type" in entry && "description" in entry && "metadata" in entry;
+}
+
+function getEntryTimestamp(entry: TimelineEntry): string {
+  if (isUserAuditEntry(entry)) return entry.timestamp || "";
+  // AuditLogEntry uses created_at
+  return (entry as AuditLogEntry).created_at || "";
 }
 
 // ─── Action icon ─────────────────────────────────────────────────────────────
@@ -67,11 +83,12 @@ function getActionIcon(entry: TimelineEntry): string {
     return "view";
   }
   // UserAuditEntry
-  const action = entry.action?.toLowerCase() || "";
-  if (action.includes("login") || action.includes("auth")) return "auth";
-  if (action.includes("create") || action.includes("add")) return "create";
-  if (action.includes("delete") || action.includes("remove")) return "delete";
-  if (action.includes("update") || action.includes("change") || action.includes("edit")) return "update";
+  const eventType = (entry as UserAuditEntry).event_type?.toLowerCase() || "";
+  const description = (entry as UserAuditEntry).description?.toLowerCase() || "";
+  if (eventType === "login" || description.includes("login") || description.includes("auth")) return "auth";
+  if (eventType === "refund" || description.includes("refund")) return "update";
+  if (eventType === "plan_change" || description.includes("change") || description.includes("update")) return "update";
+  if (eventType === "subscription_status" || description.includes("cancel") || description.includes("expire")) return "delete";
   return "view";
 }
 
@@ -128,7 +145,7 @@ function getIconColors(iconType: string): { bg: string; text: string } {
     <div v-else class="relative">
       <div
         v-for="(entry, index) in entries"
-        :key="entry.id"
+        :key="index"
         class="flex gap-3"
       >
         <!-- Timeline connector -->
@@ -213,8 +230,8 @@ function getIconColors(iconType: string): { bg: string; text: string } {
                 <template v-if="isAuditLogEntry(entry)">
                   {{ entry.method }} {{ entry.path }}
                 </template>
-                <template v-else>
-                  {{ entry.action }}
+                <template v-else-if="isUserAuditEntry(entry)">
+                  {{ entry.description }}
                 </template>
               </p>
               <!-- User info -->
@@ -223,8 +240,8 @@ function getIconColors(iconType: string): { bg: string; text: string } {
                   {{ entry.admin_email }}
                   <span v-if="entry.ip_address" class="ml-1">&middot; {{ entry.ip_address }}</span>
                 </template>
-                <template v-else>
-                  {{ entry.details }}
+                <template v-else-if="isUserAuditEntry(entry)">
+                  <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase bg-muted text-muted-foreground">{{ entry.event_type }}</span>
                   <span v-if="entry.ip_address" class="ml-1">&middot; {{ entry.ip_address }}</span>
                 </template>
               </p>
@@ -233,9 +250,9 @@ function getIconColors(iconType: string): { bg: string; text: string } {
             <!-- Timestamp -->
             <span
               class="shrink-0 text-xs text-muted-foreground"
-              :title="formatDateTime(entry.created_at)"
+              :title="formatDateTime(getEntryTimestamp(entry))"
             >
-              {{ formatRelativeTime(entry.created_at) }}
+              {{ formatRelativeTime(getEntryTimestamp(entry)) }}
             </span>
           </div>
 
@@ -244,12 +261,12 @@ function getIconColors(iconType: string): { bg: string; text: string } {
             <button
               type="button"
               class="mt-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
-              @click="toggleExpand(entry.id)"
+              @click="toggleExpand(getEntryId(entry, index))"
             >
-              {{ expandedIds.has(entry.id) ? 'Hide details' : 'Show details' }}
+              {{ expandedIds.has(getEntryId(entry, index)) ? 'Hide details' : 'Show details' }}
               <svg
                 class="inline h-3 w-3 ml-0.5 transition-transform"
-                :class="{ 'rotate-180': expandedIds.has(entry.id) }"
+                :class="{ 'rotate-180': expandedIds.has(getEntryId(entry, index)) }"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -258,7 +275,7 @@ function getIconColors(iconType: string): { bg: string; text: string } {
               </svg>
             </button>
             <div
-              v-if="expandedIds.has(entry.id)"
+              v-if="expandedIds.has(getEntryId(entry, index))"
               class="mt-2 rounded-lg bg-muted/50 border border-border p-3 text-xs font-mono text-muted-foreground overflow-x-auto"
             >
               <pre class="whitespace-pre-wrap break-words">{{ JSON.stringify(entry.details, null, 2) }}</pre>

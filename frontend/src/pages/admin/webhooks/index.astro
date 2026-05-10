@@ -2,70 +2,18 @@
 /**
  * Admin Webhooks — /admin/webhooks
  *
- * Monitor and retry webhook events.
- * Full Vue component implementation pending.
+ * Monitor and retry Stripe webhook delivery events.
+ * Mounts WebhooksAdmin Vue component.
  */
 import AdminLayout from "@/layouts/AdminLayout.astro";
+import WebhooksAdmin from "@/components/admin/WebhooksAdmin.vue";
 ---
 
 <AdminLayout
   title="Webhooks — Admin — SattaBase"
-  description="Monitor and retry webhook events."
+  description="Monitor and retry webhook delivery events."
 >
-  <div id="admin-webhooks-root">
-    <!-- Page header -->
-    <div class="mb-8">
-      <h1 class="text-2xl font-bold text-foreground">Webhooks</h1>
-      <p class="mt-1 text-sm text-muted-foreground">
-        Monitor and retry webhook delivery events.
-      </p>
-    </div>
-
-    <!-- Placeholder card -->
-    <div class="card flex flex-col items-center gap-4 p-10 text-center">
-      <svg
-        class="h-12 w-12 text-muted-foreground/30"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="1.5"
-          d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-        ></path>
-      </svg>
-      <div>
-        <p class="font-medium text-foreground">Webhook Events</p>
-        <p class="mt-1 text-sm text-muted-foreground">
-          The full webhook monitoring interface is coming soon. Use the Django
-          admin for now.
-        </p>
-      </div>
-      <a
-        href="/admin/django/billing/webhookeventlog/"
-        class="btn-secondary inline-flex items-center gap-2 mt-2"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <svg
-          class="h-4 w-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-          ></path>
-        </svg>
-        Open Django Admin
-      </a>
-    </div>
-  </div>
+  <WebhooksAdmin client:only="vue" />
 </AdminLayout>
 
 <script>

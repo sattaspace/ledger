@@ -2,70 +2,18 @@
 /**
  * Admin Users — /admin/users
  *
- * Search users, view profiles, and manage roles.
- * Full Vue component implementation pending.
+ * User list management page.
+ * Mounts UsersAdmin Vue component.
  */
 import AdminLayout from "@/layouts/AdminLayout.astro";
+import UsersAdmin from "@/components/admin/UsersAdmin.vue";
 ---
 
 <AdminLayout
   title="Users — Admin — SattaBase"
   description="Search users, view profiles, and manage roles."
 >
-  <div id="admin-users-root">
-    <!-- Page header -->
-    <div class="mb-8">
-      <h1 class="text-2xl font-bold text-foreground">Users</h1>
-      <p class="mt-1 text-sm text-muted-foreground">
-        Search users, view profiles, and manage roles.
-      </p>
-    </div>
-
-    <!-- Placeholder card -->
-    <div class="card flex flex-col items-center gap-4 p-10 text-center">
-      <svg
-        class="h-12 w-12 text-muted-foreground/30"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="1.5"
-          d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-        ></path>
-      </svg>
-      <div>
-        <p class="font-medium text-foreground">User Management</p>
-        <p class="mt-1 text-sm text-muted-foreground">
-          The full user management interface is coming soon. Use the Django
-          admin for now.
-        </p>
-      </div>
-      <a
-        href="/admin/django/users/user/"
-        class="btn-secondary inline-flex items-center gap-2 mt-2"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <svg
-          class="h-4 w-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-          ></path>
-        </svg>
-        Open Django Admin
-      </a>
-    </div>
-  </div>
+  <UsersAdmin client:only="vue" />
 </AdminLayout>
 
 <script>

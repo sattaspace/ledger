@@ -1423,7 +1423,7 @@ Both SDKs are implemented in-repo under `sdk/`:
 
 ---
 
-### Phase 10: Admin Frontend (10.1–10.4 COMPLETE)
+### Phase 10: Admin Frontend (10.1–10.9 COMPLETE)
 
 **Goal:** Build the dedicated admin dashboard at `/admin/*` using the existing Astro + Vue + Tailwind stack.
 
@@ -1487,66 +1487,468 @@ Both SDKs are implemented in-repo under `sdk/`:
 - **typed_value vs value inconsistency**: Backend `create_access_entry`, `update_access_entry`, and `get_access_matrix` returned `entry.typed_value` (cast to Python `bool`/`int`) instead of raw `entry.value` (always a string). Frontend TypeScript types expect `string`. The frontend worked at runtime due to `String()` coercion but this was a type contract violation. Fixed by returning `entry.value` in all three endpoints, consistent with `_serialize_plan_detail()`.
 - **Non-atomic multi-plan save**: The access matrix UI edits one key across multiple plans, but the backend only had per-plan CRUD endpoints (`POST /plans/{id}/access-entries`, `PUT /access-entries/{id}`, `DELETE /access-entries/{id}`). The frontend made N sequential API calls to save a single matrix row — if one failed midway, the matrix was left in a partial state. Fixed by adding a new atomic endpoint `PUT /admin/products/{product_id}/access-matrix/row` that creates/updates/deletes entries for one access key across all plans in a single database transaction. The frontend `handleAddEntry` and `handleEditEntrySubmit` now use this endpoint instead of multiple individual calls. Supports key renaming via `original_key` field.
 
-#### 10.5 Subscription Management Pages — PLACEHOLDER
+#### 10.5 Subscription Management Pages — DONE
 
-*Shell Astro page exists at `subscriptions/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
+*Two Vue components + two Astro pages. All 9 subscription admin endpoints wired.*
 
-- [ ] 10.5.1 `GET /admin/subscriptions` — data table with columns: user email, product, plan, status badge, period end, actions (view, cancel, expire)
-- [ ] 10.5.2 Filters: product dropdown, plan dropdown, status dropdown, search by email
-- [ ] 10.5.3 `GET /admin/subscriptions/[id]` — subscription detail: info card (user, plan, product, status, period), tab navigation: Overview | Plan Changes | Invoices | Refunds
-- [ ] 10.5.4 Overview tab: subscription info, override form (change plan, change status, extend period), cancel/expire buttons with confirmation dialogs
-- [ ] 10.5.5 Plan Changes tab: chronological table of plan changes (from_plan, to_plan, proration amount, date, initiated_by)
-- [ ] 10.5.6 Invoices tab: table of invoices (number, amount, status, date, actions: view hosted URL, view PDF)
-- [ ] 10.5.7 Refunds tab: table of refunds (amount, status, reason, initiated_by, approved_by, date)
+- [x] 10.5.1 `GET /admin/subscriptions` — data table with columns: user email, product, plan, status badge, period end, actions (view, cancel, expire). **Implemented as `SubscriptionsAdmin.vue` using AdminDataTable, AdminFilterBar, AdminStatusBadge, AdminConfirmDialog. Supports server-side pagination, search by email, filter by product/plan/status. Cancel/expire actions with confirmation dialogs. Row click navigates to detail.**
+- [x] 10.5.2 Filters: product dropdown, plan dropdown, status dropdown, search by email. **Implemented using AdminFilterBar with 3 dropdown filters (product, plan, status) + search. Product dropdown populated from API. Plan dropdown cascades from product selection (refreshed via watch). Status options: Active, Trialing, Past Due, Canceled, Expired, Paused.**
+- [x] 10.5.3 `GET /admin/subscriptions/[id]` — subscription detail: info card (user, plan, product, status, period), tab navigation: Overview | Plan Changes | Invoices | Refunds. **Implemented as `SubscriptionDetailAdmin.vue` with Astro dynamic route at `subscriptions/[id].astro`. Info card shows user, product/plan, status badge, current period, trial info, Stripe subscription ID. Tab navigation with count badges on Plan Changes, Invoices, Refunds tabs.**
+- [x] 10.5.4 Overview tab: subscription info, override form (change plan, change status, extend period), cancel/expire buttons with confirmation dialogs. **Two-column layout: subscription details (dl list with all fields) + quick actions card + Stripe integration card. Override modal with plan dropdown (populated from listPlans API), status dropdown (6 statuses), period end date input. Extend modal with days input and live preview of new end date. Cancel/expire via AdminConfirmDialog with destructive variant.**
+- [x] 10.5.5 Plan Changes tab: chronological table of plan changes (from_plan, to_plan, proration amount, date, initiated_by). **Implemented using AdminDataTable with custom cell renderers. Proration amounts: green for negative (credit), normal for positive. Date formatting with formatDateTime. AdminEmptyState when no plan changes. Lazy-loaded on tab selection.**
+- [x] 10.5.6 Invoices tab: table of invoices (number, amount, status, date, actions: view hosted URL). **Implemented using AdminDataTable. Invoice number in monospace font. Amount formatted as currency via formatCents. Status with AdminStatusBadge type="generic". "View" link button to hosted_url (external). AdminEmptyState when no invoices. Lazy-loaded on tab selection.**
+- [x] 10.5.7 Refunds tab: table of refunds (amount, status, reason, initiated_by, approved_by, date). **Implemented using AdminDataTable. Amount formatted as currency. Status with AdminStatusBadge type="refund". Reason, initiated_by, approved_by columns. AdminEmptyState when no refunds. Lazy-loaded on tab selection.**
 
-#### 10.6 User Management Pages — PLACEHOLDER
+**10.5 Architecture Notes:**
+- Two Vue components created: `SubscriptionsAdmin.vue` (~471 lines), `SubscriptionDetailAdmin.vue` (~1,163 lines)
+- Two Astro routes: `subscriptions/index.astro` (replaced placeholder), `subscriptions/[id].astro` (new)
+- All pages use 10.2 reusable components: AdminPageHeader, AdminDataTable, AdminFilterBar, AdminConfirmDialog, AdminStatusBadge, AdminEmptyState
+- Consistent modal pattern (Teleport to body, backdrop blur, ESC to close) for override and extend forms
+- AdminConfirmDialog used for cancel/expire destructive actions with appropriate detail text
+- Lazy-loaded tab data: plan changes, invoices, and refunds fetched only when their tab is selected
+- Tab data invalidated (re-fetched) after override/cancel/expire/extend actions
+- View Transitions support via astro:page-load event listener (same pattern as ProductDetailAdmin)
+- URL-based subscription ID extraction with prop fallback (same pattern as ProductDetailAdmin)
 
-*Shell Astro page exists at `users/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
+#### 10.6 User Management Pages — DONE
 
-- [ ] 10.6.1 `GET /admin/users` — data table with columns: name, email, role badge, email verified badge, subscription count, last login, status badge, actions (view)
-- [ ] 10.6.2 Filters: role dropdown, status dropdown, email verified toggle, search by email/name
-- [ ] 10.6.3 `GET /admin/users/[id]` — user detail: profile card (avatar, name, email, role, joined date), subscriptions list (product, plan, status for each), action buttons (activate/deactivate, change role)
-- [ ] 10.6.4 `GET /admin/users/[id]/audit` — audit timeline: login events, plan changes, subscription status changes, refund events — all in chronological order
+*Two Vue components + two Astro pages. All 5 user admin endpoints wired (list, detail, status, role, audit).*
 
-#### 10.7 Refund Management Pages — PLACEHOLDER
+- [x] 10.6.1 `GET /admin/users` — data table with columns: name, email, role badge, email verified badge, subscription count, last login, status badge, actions (view). **Implemented as `UsersAdmin.vue` using AdminDataTable, AdminFilterBar, AdminStatusBadge, AdminConfirmDialog. Supports server-side pagination, search by email/name, filter by role/status/email verified. Activate/deactivate and change role actions with confirmation dialogs. Row click navigates to user detail.**
+- [x] 10.6.2 Filters: role dropdown, status dropdown, email verified toggle, search by email/name. **Implemented using AdminFilterBar with 3 dropdown filters (role, status, email verified) + search. Role options: Owner, Admin, Member. Status: Active, Inactive. Email verified: Verified, Not Verified.**
+- [x] 10.6.3 `GET /admin/users/[id]` — user detail: profile card (avatar, name, email, role, joined date), subscriptions list (product, plan, status for each), action buttons (activate/deactivate, change role). **Implemented as `UserDetailAdmin.vue` with Astro dynamic route at `users/[id].astro`. Info card shows full name, email, role badge, status badge, email verified, staff access, subscriptions summary. Tab navigation: Profile | Subscriptions | Audit Trail. Profile tab has user details + quick actions card + subscription summary card. Subscriptions tab lists all subscriptions across products using AdminDataTable with status badges and "View" link to subscription detail.**
+- [x] 10.6.4 `GET /admin/users/[id]/audit` — audit timeline: login events, plan changes, subscription status changes, refund events — all in chronological order. **Implemented as "Audit Trail" tab inside UserDetailAdmin.vue using AdminAuditTimeline component. Supports paginated audit events with Previous/Next controls. Lazy-loaded on tab selection. Events include: login (auth icon), plan_change (update icon), subscription_status (delete icon for cancel/expire), refund (update icon).**
 
-*Shell Astro page exists at `refunds/index.astro` with placeholder card linking to Django admin. No Vue component implemented yet.*
+**10.6 Architecture Notes:**
+- Two Vue components created: `UsersAdmin.vue` (~540 lines), `UserDetailAdmin.vue` (~750 lines)
+- Two Astro routes: `users/index.astro` (replaced placeholder), `users/[id].astro` (new)
+- All pages use 10.2 reusable components: AdminPageHeader, AdminDataTable, AdminFilterBar, AdminConfirmDialog, AdminStatusBadge, AdminEmptyState, AdminAuditTimeline
+- Frontend types in `lib/admin.ts` updated to match backend `AdminUserListItemSchema` and `AdminUserDetailSchema`: `UserItem` now includes `full_name`, `first_name`, `last_name`, `avatar`, `active_subscription_count`, `is_email_verified`, `last_login_at`; `UserDetail` adds `phone`, `timezone`, `currency`, `language`, `subscriptions: UserSubscriptionItem[]`; `UserAuditEntry` updated to match `AdminAuditEventSchema` with `event_type`, `description`, `metadata`, `ip_address`, `timestamp`
+- `AdminAuditTimeline.vue` updated to handle both `AuditLogEntry` and `UserAuditEntry` types with type guards and unified timestamp accessor
+- Consistent modal pattern (AdminConfirmDialog) for activate/deactivate and change role actions, with optional reason field
+- View Transitions support via astro:page-load event listener (same pattern as SubscriptionDetailAdmin)
+- URL-based user ID extraction with prop fallback (same pattern as other detail pages)
+- Backend endpoints already implemented in `admin_user_controller.py` — no backend changes needed
 
-- [ ] 10.7.1 `GET /admin/refunds` — data table with columns: subscription (user + product), amount, status badge, reason category, initiated by, approved by, date, actions (approve, reject for pending refunds)
-- [ ] 10.7.2 Filters: status dropdown, reason category dropdown, date range
-- [ ] 10.7.3 Approve/reject modals: show refund details, notes textarea, confirm button; enforce two-person rule (approver cannot be same as initiator)
+#### 10.7 Refund Management Pages — DONE
 
-#### 10.8 API Key Management Pages — PARTIAL (pre-existing component)
+*One Vue component + one Astro page + refund initiation UI. All 4 refund admin endpoints wired (list, initiate, approve, reject). Two-person rule enforced both client-side and server-side.*
 
-*`api-keys/index.astro` mounts the pre-existing `ApiKeysAdmin.vue` (from `components/vue/`) inside AdminLayout. This component predates Phase 10 and was migrated from `/dashboard/admin/api-keys`. It is fully functional but was NOT built with the 10.2 reusable components (AdminDataTable, AdminConfirmDialog, etc.). A refactor to use 10.2 components would align it with the admin design system.*
+- [x] 10.7.1 `GET /admin/refunds` — data table with columns: subscription (user + product), amount, status badge, reason category, initiated by, approved by, date, actions (approve, reject for pending refunds). **Implemented as `RefundsAdmin.vue` using AdminDataTable, AdminFilterBar, AdminStatusBadge, AdminConfirmDialog. Supports server-side pagination, filter by status/reason category/date range. View details modal shows full refund info. Approve/reject actions with confirmation dialogs.**
+- [x] 10.7.2 Filters: status dropdown, reason category dropdown, date range. **Implemented using AdminFilterBar with 2 dropdown filters (status, category) + date range picker (date_from/date_to). Status options: Pending, Completed, Failed. Category options: Customer Request, Billing Error, Goodwill, Policy, Chargeback.**
+- [x] 10.7.3 Approve/reject modals: show refund details, notes textarea, confirm button; enforce two-person rule (approver cannot be same as initiator). **Implemented with AdminConfirmDialog for both approve and reject. Refund summary shown in dialog body. Notes textarea for approval/rejection reason. Client-side two-person rule: current admin ID fetched on mount, approve button hidden if current admin is the initiator; warning icon shown instead. Server-side two-person rule enforced by backend AdminRefundController.**
+- [x] 10.7.4 Refund initiation: admin can issue refunds from subscription detail page. **Added `POST /admin/subscriptions/{id}/refund` endpoint in AdminSubscriptionController. Validates subscription has Stripe payment, calls create_stripe_refund() with amount/reason/category/admin notes, captures admin IP for CMP-02 audit trail. Frontend: "Issue Refund" button in SubscriptionDetailAdmin.vue (both Quick Actions section and Refunds tab header). Full modal with subscription summary, two-person rule warning (amber banner), amount field (optional, defaults to full), reason category dropdown (5 categories), reason textarea, admin notes textarea. `canIssueRefund` computed: requires stripe_subscription_id + active/trialing/past_due/canceled status.**
 
-- [ ] 10.8.1 `GET /admin/api-keys` — card list or table with: name, service domain, prefix (masked), is_active badge, last used (relative time), created date, actions (revoke, rotate)
-- [ ] 10.8.2 `GET /admin/api-keys/new` — form: name, service domain dropdown; on submit: show raw key ONCE in a "copy this now" modal with countdown warning (key disappears after modal close)
-- [ ] 10.8.3 Revoke confirmation dialog: "This will immediately disable the key. Services using it will lose access."
-- [ ] 10.8.4 Rotate flow: confirmation dialog → call rotate → show new raw key in modal (old key is now invalid)
+**10.7 Architecture Notes:**
+- One Vue component created: `RefundsAdmin.vue` (~480 lines)
+- One existing Vue component enhanced: `SubscriptionDetailAdmin.vue` — added Issue Refund button + modal (~150 additional lines)
+- One Astro route updated: `refunds/index.astro` (replaced placeholder with Vue component mount)
+- All pages use 10.2 reusable components: AdminPageHeader, AdminDataTable, AdminFilterBar, AdminConfirmDialog, AdminStatusBadge
+- Frontend types in `lib/admin.ts` updated: `listRefunds` now supports `subscription_id`, `date_from`, `date_to` params (matching backend filters)
+- Frontend API client updated: added `IssueRefundPayload`, `IssueRefundResponse` types and `adminApi.issueRefund()` function
+- `getRefundStatusColor` updated to handle `completed` status (green) — backend RefundStatus uses pending/completed/failed, not approved/rejected
+- `AdminStatusBadge.vue` updated to handle `completed` dot color (green) for refund type
+- Backend: new `POST /admin/subscriptions/{id}/refund` endpoint in AdminSubscriptionController (distinct from the pre-existing `POST /billing/subscriptions/{product_slug}/refund` in BillingAdminController)
+- Backend fix: `datetime.now()` → `django_timezone.now()` in `AdminRefundController.approve_refund` for timezone-aware timestamps
+- Detail modal with Teleport (same pattern as SubscriptionDetailAdmin) shows full refund info including Stripe IDs, IP, notes, two-person rule warning
+- Complete refund flow: Admin initiates from subscription detail → Stripe processes refund → DB record created → Two-person rule requires another admin to approve via /admin/refunds page
 
-#### 10.9 Webhook & Audit Log Pages — PLACEHOLDER
+#### 10.8 API Key Management Pages — DONE (pre-existing component, functional)
 
-*Shell Astro pages exist at `webhooks/index.astro` and `audit-log/index.astro` with placeholder cards linking to Django admin. No Vue components implemented yet.*
+*`api-keys/index.astro` mounts the pre-existing `ApiKeysAdmin.vue` (from `components/vue/`) inside AdminLayout. This component predates Phase 10 and was migrated from `/dashboard/admin/api-keys`. All 4 workflows are functional (list, create, revoke, rotate). Uses custom card layout and hand-rolled modals instead of Phase 10.2 reusable components — a cosmetic refactor could align it with the admin design system but is not strictly required.*
 
-- [ ] 10.9.1 `GET /admin/webhooks` — data table: event ID, event type, status badge (processed/pending/failed), created date, error message (if failed), action (retry for failed)
-- [ ] 10.9.2 Filters: event type dropdown, status dropdown, date range
-- [ ] 10.9.3 `GET /admin/audit-log` — data table: admin user, action (path), method, IP address, timestamp; expandable row for request details
-- [ ] 10.9.4 Filters: admin user dropdown, action type, date range
+- [x] 10.8.1 `GET /admin/api-keys` — card list with: name, service domain, prefix (masked), is_active badge, last used, created by, actions (revoke, rotate). **Implemented as card-based layout in `ApiKeysAdmin.vue` with pagination, search, filter by active status and service domain. Uses `TransitionGroup` for card animations. Minor deviations from spec: `created_at` date not displayed (only `created_by`); `last_used_at` shown as absolute datetime instead of relative time.**
+- [x] 10.8.2 Create API key: modal form with name + service domain dropdown; on submit: show raw key ONCE with copy-to-clipboard button and warning text. **Implemented as modal on index page (not separate `/new` route). Raw key shown with copy button and "Save this key now. It cannot be recovered after closing this dialog." warning. No countdown timer (spec deviation).**
+- [x] 10.8.3 Revoke confirmation dialog: destructive modal with warning about key immediately stopping. **Implemented with custom Teleport modal. Message: "This action cannot be undone. The key will stop working immediately." Close in spirit to spec wording.**
+- [x] 10.8.4 Rotate flow: confirmation dialog → call rotate → show new raw key in modal. **Full two-phase flow: confirmation modal warns old key will stop → calls `adminApi.rotateApiKey()` → shows new raw key with copy button and "Done — I've saved the new key" button.**
+
+**10.8 Architecture Notes:**
+- Pre-existing Vue component: `ApiKeysAdmin.vue` (~560 lines) in `components/vue/` (not `components/admin/`)
+- Backend: 5 endpoints in `AdminApiKeyController` — list, create, revoke, rotate, service-domains dropdown
+- Frontend API client: 5 functions in `lib/admin.ts` — `listApiKeys`, `createApiKey`, `revokeApiKey`, `rotateApiKey`, `fetchServiceDomains` with full TypeScript types
+- Does NOT use Phase 10.2 reusable components (AdminDataTable, AdminConfirmDialog, AdminStatusBadge) — uses custom card layout and hand-rolled Teleport modals
+- Accepted deviations: modal-based create (not separate route), no countdown timer, absolute datetime for last used, created_at not displayed
+- A future refactor to use 10.2 components would improve visual consistency but is not blocking
+
+#### 10.9 Webhook & Audit Log Pages — DONE
+
+*Two Vue components + two Astro pages. Webhook monitoring with retry; audit log with detail modals.*
+
+- [x] 10.9.1 `GET /admin/webhooks` — data table: event ID, event type, status badge (processed/pending/failed), created date, error message (if failed), action (retry for failed). **Implemented as `WebhooksAdmin.vue` using AdminDataTable, AdminFilterBar, AdminStatusBadge, AdminConfirmDialog. Columns: Event ID (truncated monospace), Event Type (formatted with arrows), Status (AdminStatusBadge type="webhook"), Received (relative + absolute time), Error (red for failed), Actions (view details, retry). Retry button only shown for unprocessed events. Detail modal shows full event info. Failed count warning banner in page header when failed events exist.**
+- [x] 10.9.2 Filters: event type dropdown, status dropdown, date range. **Implemented using AdminFilterBar with 2 dropdown filters (event type — 10 Stripe event types from backend HANDLED_EVENTS, status — Processed/Failed) + date range picker. Status filter maps to backend `processed` boolean param (Processed → true, Failed → false).**
+- [x] 10.9.3 `GET /admin/audit-log` — data table: admin user, action (path), method, IP address, timestamp; detail modal for request details. **Implemented as `AuditLogAdmin.vue` using AdminDataTable, AdminFilterBar. Columns: Admin User (email), Action (formatted with arrows), Method (color-coded badge — GET=blue, POST=green, PUT/PATCH=amber, DELETE=red), Path (monospace truncated), IP (monospace), Status Code (color-coded — 2xx=green, 4xx=amber, 5xx=red), Time (relative + absolute), Actions (view details with JSON indicator). Detail modal shows full entry info including pretty-printed JSON details.**
+- [x] 10.9.4 Filters: action type dropdown, date range. **Implemented using AdminFilterBar with 1 dropdown filter (action type — 8 action groups: Product, Plan, Subscription, Refund, API Key, User, Domain, Access Entry) + date range picker. Action filter maps to backend `action` param with icontains matching.**
+
+**10.9 Architecture Notes:**
+- Two Vue components created: `WebhooksAdmin.vue` (~500 lines), `AuditLogAdmin.vue` (~420 lines)
+- Two Astro routes updated: `webhooks/index.astro`, `audit-log/index.astro` (replaced placeholders with Vue component mounts)
+- All pages use 10.2 reusable components: AdminPageHeader, AdminDataTable, AdminFilterBar, AdminConfirmDialog (webhooks), AdminStatusBadge (webhooks)
+- Frontend types in `lib/admin.ts` fixed to match backend schemas:
+  - `WebhookEvent.processed: boolean` (was incorrectly `status: string`) — backend returns `processed` boolean, not `status` string
+  - `WebhookListResponse` changed from `extends PaginatedResponse<WebhookEvent>` to standalone `{ items, total, failed_count }` — backend returns custom format, not PaginatedResponse
+  - `AuditLogEntry.timestamp` (was incorrectly `created_at`) — backend uses `timestamp` field
+  - `AuditLogEntry.details: Record<string, unknown>` (was `| null`) — backend returns `{}` not null
+  - `listWebhooks` params: `processed: boolean` (was `status: string`) — maps to backend `processed` query param
+  - `listAuditLog` params: `admin_user_id: number` + `date_from`/`date_to` (was `admin_user: string`) — matches backend query params
+  - `retryWebhook` return type: full response with `id`, `event_id`, `event_type`, `processed`, `error_message`, `message` (was `{ message: string }`)
+- Webhook pagination: backend returns `{ items, total, failed_count }` without PaginatedResponse meta. Frontend computes `PaginationMeta` from `total` + `pageSize`
+- Backend bug fix: `meta["total"]` → `meta["total_items"]` in `AdminMetricsController.list_webhooks` — key name mismatch with `get_paginated_data_async` return dict
+- `WebhooksAdmin` converts `processed: boolean` to display-friendly status string ("processed"/"failed"/"pending") via `getWebhookStatus()` helper for AdminStatusBadge compatibility
 
 ---
 
-### Phase 11: Admin RBAC (Future)
+### Phase 11: Admin RBAC — Granular Admin Roles with Product Scoping
 
-**Goal:** Granular admin roles beyond `is_staff` boolean.
+**Goal:** Replace the binary `is_staff` boolean with a granular role-based access control system for the admin interface. Current state: every `is_staff=True` user can access ALL admin operations across ALL products/domains. RBAC adds fine-grained permissions so a Support agent can view subscriptions but not manage products, and a Finance officer can handle refunds but not change user roles. **Critically, Sattabase is a multi-domain auth & subscription engine** — permissions must be scoppable per Product so that a "Finance Product Manager" only sees Finance data, not Analytics data.
 
-- [ ] 11.1 Design admin role model: define roles (Super Admin, Product Manager, Support, Finance, Read-Only) with permission sets
-- [ ] 11.2 Add `AdminRole` model with `name`, `description`, `permissions` (JSONField — list of permission strings)
-- [ ] 11.3 Add `admin_role` FK to User model (nullable, default None — staff without role gets all permissions like current behavior)
-- [ ] 11.4 Create permission check decorator/utility: `require_permission("products:write")` — checks user's admin_role permissions
-- [ ] 11.5 Apply permission checks to all admin endpoints (read vs write separation)
-- [ ] 11.6 Add admin role management UI: list roles, create/edit roles (permission checkbox matrix), assign role to user
-- [ ] 11.7 Frontend: hide/disable UI sections based on current user's admin role permissions
+**Backward compatibility:** Existing `is_staff=True` users with `admin_role=None` continue to get full access (implicit Super Admin) across ALL products. No behavior change until roles are explicitly assigned.
+
+#### Three Role Layers — Critical Context
+
+Sattabase has **three separate role/permission layers** that interact. Phase 11 must account for all three:
+
+| Layer | Field | Values | Purpose | Scope |
+|-------|-------|--------|---------|-------|
+| **Tenant Role** | `User.role` | `owner`, `admin`, `member` | Position within the SaaS platform (who manages team billing) | User dashboard + team management |
+| **Admin Role** (Phase 11) | `User.admin_role` → `AdminRole` | Super Admin, Product Manager, Support, Finance, Read Only, custom | Granular admin panel permissions | Admin panel (`/admin/*`) only |
+| **Product Scope** (Phase 11) | `AdminRoleAssignment.scope_products` → M2M `Product` | Which products this admin can see/manage | Domain-level data isolation | Per-product filtering within admin panel |
+
+**Why product scoping matters:** Sattabase serves multiple sister domains (e.g., `finance.sattabase.tld`, `analytics.sattabase.tld`). Each Product has its own plans, subscriptions, API keys, and users. Without product scoping, a Support agent for the Finance product would also see Analytics subscriptions — a data isolation violation in a multi-domain platform.
+
+**Current coupling (must be reconciled):**
+
+1. **`AdminUserController.update_user_role()`** syncs `is_staff` based on tenant role:
+   - `role="owner"` → `is_staff=True` (auto-grants admin panel access)
+   - `role="admin"` → `is_staff=True` (auto-grants admin panel access)
+   - `role="member"` → `is_staff=False` (removes admin panel access)
+2. **`useAdminGuard.ts`** grants admin panel access to `owner`/`admin` roles even without `is_staff`
+3. **`create_superuser`** sets `role="owner"` + `is_staff=True` + `is_superuser=True`
+4. **All admin endpoints** return data across ALL products — no product-level filtering by default (some endpoints accept `product_id` as a query filter, but it's not enforced)
+
+**Resolution strategy:**
+
+- **Tenant role** (`owner/admin/member`) → determines **whether** a user can access the admin panel
+- **Admin role** (`AdminRole`) → determines **what actions** they can perform (read/write per domain)
+- **Product scope** (`scope_products`) → determines **which products' data** they can see/modify
+
+These three layers are independent — a user can be `role=owner` (tenant) + `admin_role=Support` (restricted actions) + `scope_products=[Finance]` (only Finance data).
+
+**Auto-assignment rules (new):**
+
+| Tenant Role Change | `is_staff` | `admin_role` | `scope_products` |
+|--------------------|-----------|-------------|-----------------|
+| → `owner` | `True` | `None` (implicit Super Admin) | None (all products — global scope) |
+| → `admin` | `True` | `None` (implicit Super Admin) | None (all products — global scope) |
+| → `member` | `False` | `None` | None (no admin access) |
+
+#### 11.1 AdminRole + AdminRoleAssignment Models + Migration
+
+- [ ] 11.1.1 Create `AdminRole` model in `billing/models.py` (after `AdminAuditLog`)
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `name` | CharField(50) | unique, indexed | e.g. "Super Admin", "Support", "Finance" |
+| `description` | TextField | blank=True | Human-readable role description |
+| `permissions` | JSONField | default=`[]` | List of permission strings from `AdminPermission` enum |
+| `is_system` | BooleanField | default=False, indexed | System roles cannot be deleted (Super Admin, Read Only) |
+| `created_at` | DateTimeField | auto_now_add | Creation timestamp |
+| `updated_at` | DateTimeField | auto_now | Last modification timestamp |
+
+- [ ] 11.1.2 Create `AdminRoleAssignment` model — the **through-model** that links a User to an AdminRole with an optional product scope. This is what makes a role assignment domain-specific:
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | BigAutoField | PK | Auto primary key |
+| `user` | FK(User) | CASCADE, indexed | The staff user |
+| `admin_role` | FK(AdminRole) | CASCADE, indexed | The role being assigned |
+| `scope_products` | M2M(Product) | blank=True | Products this assignment applies to. Empty = all products (global scope) |
+| `assigned_by` | FK(User) | SET_NULL, null=True | Admin who made the assignment |
+| `assigned_at` | DateTimeField | auto_now_add | When the assignment was created |
+| `is_active` | BooleanField | default=True | Can be deactivated without deleting |
+
+**Design rationale for `AdminRoleAssignment` (instead of a simple FK on User):**
+
+A user can hold **multiple role assignments**, each scoped to different products. Examples:
+- Assignment 1: `Support` role → scope: `[Finance]` (can view Finance subscriptions only)
+- Assignment 2: `Finance` role → scope: `[Analytics]` (can manage Analytics refunds only)
+- Single assignment: `Super Admin` role → scope: `[]` (all products — global)
+
+The user's **effective permissions** are the union of all active assignments. For product-scoped queries, only the assignments that include the target product (or have no scope = global) contribute permissions.
+
+- [ ] 11.1.3 Register `AdminRole` and `AdminRoleAssignment` in `billing/admin.py`. System roles are read-only. Role assignments shown as inline on User admin.
+- [ ] 11.1.4 Create seed migration with 5 pre-defined system roles:
+
+| Role | Permissions | Description |
+|------|------------|-------------|
+| **Super Admin** | ALL 16 permissions | Full access to everything across all products. Cannot be deleted. |
+| **Product Manager** | `products:read`, `products:write`, `plans:read`, `plans:write`, `metrics:read` | Manages products, plans, and access entries. Typically scoped to specific products. |
+| **Support** | `subscriptions:read`, `users:read`, `audit:read`, `metrics:read` | Views subscriptions and users for customer support. Typically scoped to specific products. |
+| **Finance** | `refunds:read`, `refunds:write`, `subscriptions:read`, `metrics:read` | Manages refunds and views financial metrics. Typically scoped to specific products. |
+| **Read Only** | All `:read` permissions (8 total) | Views all admin data but cannot modify anything. Cannot be deleted. |
+
+- [ ] 11.1.5 Run `makemigrations` and `migrate`
+
+#### 11.2 Update User Model for Backward Compatibility
+
+- [ ] 11.2.1 Do NOT add `admin_role` FK to User model — the `AdminRoleAssignment` through-model replaces the need for a direct FK. The relationship is accessed via `user.admin_role_assignments.all()`.
+- [ ] 11.2.2 Add `admin_role` property on User model for convenience:
+
+```python
+@property
+def admin_role(self):
+    """Return the first active admin role assignment, or None."""
+    assignment = self.admin_role_assignments.filter(is_active=True).first()
+    return assignment.admin_role if assignment else None
+```
+
+- [ ] 11.2.3 Add `get_effective_admin_permissions(product=None)` method on User model:
+
+```python
+def get_effective_admin_permissions(self, product=None):
+    """Return union of all permissions from active assignments.
+
+    If product is given, only include assignments whose scope
+    includes the product or has no scope (global).
+    If no product, return all permissions (legacy/global behavior).
+    """
+    if not self.is_staff:
+        return []
+
+    assignments = self.admin_role_assignments.filter(is_active=True)
+
+    if product is not None:
+        # Include global assignments (no scope_products) + assignments that include this product
+        assignments = assignments.filter(
+            models.Q(scope_products__isnull=True) | models.Q(scope_products=product)
+        ).distinct()
+
+    permissions = set()
+    for assignment in assignments:
+        permissions.update(assignment.admin_role.permissions or [])
+
+    # Backward compat: no assignments = implicit Super Admin = all permissions
+    if not self.admin_role_assignments.filter(is_active=True).exists():
+        return [p.value for p in AdminPermission]
+
+    return list(permissions)
+```
+
+- [ ] 11.2.4 Run `makemigrations` and `migrate` — no schema changes to User table (property/method only)
+- [ ] 11.2.5 Update `AdminUserListSchema` and `AdminUserDetailSchema` to include `admin_role_assignments` list (each with role, scope_products, is_active)
+- [ ] 11.2.6 Update frontend `UserItem` and `UserDetail` types to include `admin_role_assignments: AdminRoleAssignment[]`
+
+#### 11.3 Permission Check Infrastructure (with Product Scoping)
+
+- [ ] 11.3.1 Update `AdminPermission` enum in `billing/models.py` with 16 permission strings:
+
+```
+products:read, products:write, plans:read, plans:write,
+subscriptions:read, subscriptions:write, users:read, users:write,
+refunds:read, refunds:write, api_keys:read, api_keys:write,
+audit:read, metrics:read, webhooks:read, webhooks:write
+```
+
+- [ ] 11.3.2 Create `common/admin_permissions.py` with:
+  - `user_has_admin_permission(user, permission: str, product=None) -> bool` — checks permissions across all active assignments; if `product` given, only checks assignments scoped to that product or global; returns `True` if no assignments exist (backward compatible Super Admin); returns `False` if not staff
+  - `user_has_any_admin_permission(user, *permissions: str, product=None) -> bool` — OR check
+  - `get_user_admin_permissions(user, product=None) -> list[str]` — returns full permission list for given product context
+  - `get_user_scoped_products(user) -> list[Product]` — returns products the user has any admin access to. Returns all products if global scope (no assignments or Super Admin with empty scope).
+  - `user_can_access_product(user, product) -> bool` — True if user has any assignment that includes this product or is global
+- [ ] 11.3.3 Create `IsAdminWithPermission` permission class in `common/permissions.py` — extends `IsAdmin`, adds configurable permission check. For endpoints with `product_id` in path, automatically extracts product and passes to permission check.
+- [ ] 11.3.4 Create `@require_admin_permission("products:write")` decorator for per-endpoint granularity. For product-scoped endpoints, auto-extracts `product_id` from path/query params and enforces product scope.
+- [ ] 11.3.5 Create `ScopedQuerySetMixin` — utility mixin for admin list endpoints that automatically filters querysets by the user's product scope. Example: `AdminSubscriptionController.list_subscriptions()` auto-filters to `Subscription.objects.filter(product_id__in=user_scoped_product_ids)` instead of returning all subscriptions.
+- [ ] 11.3.6 Add `GET /admin/me/permissions` endpoint — returns full permission context. Response shape:
+
+```python
+{
+    "tenant_role": "owner",
+    "is_staff": True,
+    "is_super_admin": True,             # no assignments = full access
+    "assignments": [
+        {
+            "id": 1,
+            "admin_role": {"id": 3, "name": "Support", "permissions": ["subscriptions:read", ...]},
+            "scope_products": [
+                {"id": 1, "name": "Satta Finance", "slug": "finance"},
+            ],
+            "scope_is_global": False,   # empty scope_products on this assignment
+            "is_active": True,
+        }
+    ],
+    "effective_permissions": {
+        # Global permissions (union of all assignments with no product scope)
+        "global": ["audit:read"],
+        # Per-product permissions
+        "finance": ["subscriptions:read", "users:read", "metrics:read"],
+    },
+    "accessible_products": [
+        {"id": 1, "name": "Satta Finance", "slug": "finance"},
+    ],
+    "accessible_product_ids": [1],
+}
+```
+
+#### 11.4 Apply Permission + Scope Checks to All Admin Controllers
+
+- [ ] 11.4.1 `AdminProductController` — GET endpoints: `products:read` + filter to scoped products. Mutation endpoints: `products:write` + validate product is in user's scope. Admin without Finance scope cannot `GET /admin/products/{finance_id}`.
+- [ ] 11.4.2 `AdminPlanController` — GET: `plans:read` + auto-filter plans to scoped products. Mutations: `plans:write` + validate plan's product is in scope.
+- [ ] 11.4.3 `AdminSubscriptionController` — GET: `subscriptions:read` + auto-filter by `ScopedQuerySetMixin` (only subscriptions for scoped products). Mutations: `subscriptions:write` + validate subscription's product is in scope.
+- [ ] 11.4.4 `AdminUserController` — GET: `users:read`. Mutations: `users:write`. Users and audit are **NOT product-scoped** (a user exists across all products). However, user subscriptions shown in detail view are filtered to scoped products.
+- [ ] 11.4.5 `AdminRefundController` — GET: `refunds:read` + auto-filter refunds by scoped products. Mutations: `refunds:write` + validate refund's subscription product is in scope.
+- [ ] 11.4.6 `AdminApiKeyController` — GET: `api_keys:read` + auto-filter by scoped products (via ServiceDomain → Product). Mutations: `api_keys:write` + validate domain's product is in scope.
+- [ ] 11.4.7 `AdminMetricsController` — `metrics:read` + auto-scope metrics to scoped products. If user only has Finance scope, `metrics/overview` returns Finance-only MRR/churn. `metrics/revenue` filters `by_product` to scoped products.
+- [ ] 11.4.8 Audit log endpoints: `audit:read`. Audit is **partially product-scoped** — admin actions on specific products are filterable by product, but global actions (role changes, API key management) are visible to all.
+- [ ] 11.4.9 Webhook endpoints — GET: `webhooks:read`. Webhooks are **NOT product-scoped** (Stripe webhooks are global). However, retry is `webhooks:write` and remains global.
+- [ ] 11.4.10 Return 403 with clear `permission_required` and `product_scope_required` fields when check fails.
+
+**Permission + scope mapping summary:**
+
+| Admin Controller | Permission | Product-Scoped? | Scope Enforcement |
+|-----------------|-----------|----------------|-------------------|
+| `AdminProductController` | `products:read/write` | ✅ Yes | Filter list to scoped products; block access to out-of-scope product IDs |
+| `AdminPlanController` | `plans:read/write` | ✅ Yes | Filter by scoped products; block access to plans of out-of-scope products |
+| `AdminSubscriptionController` | `subscriptions:read/write` | ✅ Yes | Filter by scoped products; block mutations on out-of-scope subscriptions |
+| `AdminUserController` | `users:read/write` | ❌ No (global) | Users span all products; but subscription data in detail view is scoped |
+| `AdminRefundController` | `refunds:read/write` | ✅ Yes | Filter by subscription → product; block out-of-scope refunds |
+| `AdminApiKeyController` | `api_keys:read/write` | ✅ Yes | Filter by service_domain → product; block out-of-scope keys |
+| `AdminMetricsController` | `metrics:read` | ✅ Yes | Filter metrics to scoped products; global metrics only for global scope |
+| Audit log | `audit:read` | Partial | Product-specific actions filterable by scope; global actions visible to all |
+| Webhook endpoints | `webhooks:read/write` | ❌ No (global) | Stripe webhooks are platform-wide, not per-product |
+
+#### 11.5 Admin Role Management API Endpoints
+
+- [ ] 11.5.1 Create `AdminRoleController` in `billing/admin_role_controller.py` — prefix `/admin/roles`, auth `JWTAuth + IsAuthenticated + IsAdmin`, requires `users:read` for GET, `users:write` for mutations
+- [ ] 11.5.2 Define schemas in `billing/admin_schemas.py`: `AdminRoleListSchema`, `AdminRoleDetailSchema`, `AdminRoleCreateSchema`, `AdminRoleUpdateSchema`, `AdminRoleAssignmentSchema` (includes role, scope_products, is_active), `AdminRoleAssignmentCreateSchema` (admin_role_id, scope_product_ids, user_id)
+- [ ] 11.5.3 `GET /admin/roles` — list all roles with user counts, paginated
+- [ ] 11.5.4 `GET /admin/roles/{id}` — role detail with full permission list + assigned users summary
+- [ ] 11.5.5 `POST /admin/roles` — create custom role (validate permission strings against `AdminPermission` enum)
+- [ ] 11.5.6 `PUT /admin/roles/{id}` — update role. System roles: only description can be changed.
+- [ ] 11.5.7 `DELETE /admin/roles/{id}` — delete custom role. System roles return 403.
+- [ ] 11.5.8 `GET /admin/roles/permissions` — returns all available permission strings grouped by domain
+- [ ] 11.5.9 `GET /admin/users/{id}/admin-role-assignments` — list all role assignments for a user (with scope info)
+- [ ] 11.5.10 `POST /admin/users/{id}/admin-role-assignments` — create a new role assignment (specify admin_role_id + scope_product_ids). Validates: user is staff, role exists, products exist. Audit-logged.
+- [ ] 11.5.11 `PATCH /admin/users/{id}/admin-role-assignments/{assignment_id}` — update assignment (change scope_products, toggle is_active). Audit-logged.
+- [ ] 11.5.12 `DELETE /admin/users/{id}/admin-role-assignments/{assignment_id}` — remove assignment. Audit-logged.
+- [ ] 11.5.13 All mutation endpoints are audit-logged via `AdminAuditLog`
+
+#### 11.6 Tenant Role ↔ Admin Role Assignment Sync
+
+- [ ] 11.6.1 Update `AdminUserController.update_user_role()` — after syncing `is_staff`:
+  - If tenant role changed to `owner`/`admin` AND user has NO active assignments → no auto-assignment needed (backward compat: no assignments = implicit Super Admin)
+  - If tenant role changed to `member` → deactivate all admin role assignments (set `is_active=False` on all `AdminRoleAssignment` rows for this user)
+  - **Important:** Do NOT delete assignments on demotion — just deactivate them, so they can be reactivated if role is restored.
+- [ ] 11.6.2 Validate in `POST /admin/users/{id}/admin-role-assignments` that target user has `is_staff=True`
+- [ ] 11.6.3 Update user detail API response to clearly distinguish all layers:
+
+```python
+{
+    "role": "owner",                           # tenant role
+    "is_staff": True,                          # admin panel access gate
+    "admin_role_assignments": [                # admin panel capability + scope
+        {
+            "id": 1,
+            "admin_role": {"id": 3, "name": "Support", "permissions": [...]},
+            "scope_products": [{"id": 1, "name": "Satta Finance", "slug": "finance"}],
+            "scope_is_global": False,
+            "is_active": True,
+        }
+    ],
+    "effective_admin_permissions": {           # resolved for UI display
+        "global": ["audit:read"],
+        "finance": ["subscriptions:read", "users:read"],
+    },
+}
+```
+
+#### 11.7 Frontend: `useAdminPermissions` Composable
+
+- [ ] 11.7.1 Create `frontend/src/composables/useAdminPermissions.ts`
+- [ ] 11.7.2 On mount, call `GET /admin/me/permissions` — returns `{ tenant_role, is_staff, is_super_admin, assignments, effective_permissions, accessible_products, accessible_product_ids }`
+- [ ] 11.7.3 Provide reactive refs: `tenantRole`, `isSuperAdmin`, `assignments`, `effectivePermissions: Record<string, string[]>` (keyed by product slug or "global"), `accessibleProducts`, `accessibleProductIds`, `isLoading`, `error`
+- [ ] 11.7.4 Provide methods:
+  - `hasAdminPermission(perm, productSlug?) -> ComputedRef<boolean>` — checks effective permissions for given product context (or global if no slug)
+  - `canRead(domain, productSlug?) -> ComputedRef<boolean>` — shorthand for `hasAdminPermission("${domain}:read", productSlug?)`
+  - `canWrite(domain, productSlug?) -> ComputedRef<boolean>` — shorthand for `hasAdminPermission("${domain}:write", productSlug?)`
+  - `canAccessProduct(productSlug) -> ComputedRef<boolean>` — True if product is in accessible_products or is global
+  - `getScopedProductIds() -> number[]` — returns product IDs the admin can see
+- [ ] 11.7.5 Cache permissions in sessionStorage (invalidate on login/logout/role change)
+- [ ] 11.7.6 Update `useAdminGuard.ts` — after checking tenant role/is_staff, also load admin permissions
+
+#### 11.8 Frontend: Permission-Aware Admin Sidebar
+
+- [ ] 11.8.1 Update `AdminSidebar.astro` — conditionally render nav items based on permissions:
+  - Dashboard → `metrics:read`
+  - Products → `products:read` + only show products in `accessibleProducts`
+  - Subscriptions → `subscriptions:read`
+  - Users → `users:read`
+  - Refunds → `refunds:read`
+  - API Keys → `api_keys:read`
+  - Webhooks → `webhooks:read`
+  - Audit Log → `audit:read`
+- [ ] 11.8.2 Products sidebar item: if admin has scoped products, show a **sub-menu** listing only accessible products (e.g., "Finance", "Analytics"). If global scope, show flat "Products" link.
+- [ ] 11.8.3 Add "Roles" nav item under System section (visible only with `users:read` permission)
+- [ ] 11.8.4 Show admin role badge + scope indicator next to user name:
+  - "Finance Support" (if single scoped product + role)
+  - "Global Super Admin" (if no scope = all products)
+  - "Multi-domain Admin" (if scoped to 2+ products)
+
+#### 11.9 Frontend: Admin Page Component Read/Write + Scope Guards
+
+- [ ] 11.9.1 Update all admin Vue components to check write permissions before showing action buttons (same as before, but now product-context-aware):
+  - `ProductsAdmin.vue` — only show products in `accessibleProducts`. Hide Create button without `products:write`.
+  - `ProductDetailAdmin.vue` — block access if product not in scope. Hide edit/toggle/delete without `products:write`.
+  - `PlanDetailAdmin.vue` — block if parent product not in scope. Hide mutations without `plans:write`.
+  - `SubscriptionDetailAdmin.vue` — auto-filter subscriptions to scoped products. Hide mutations without `subscriptions:write`.
+  - `UsersAdmin.vue` / `UserDetailAdmin.vue` — show all users (not product-scoped) but filter displayed subscriptions to scoped products. Show two role sections (tenant + admin assignments).
+  - `RefundsAdmin.vue` — auto-filter refunds to scoped products. Hide mutations without `refunds:write`.
+  - `ApiKeysAdmin.vue` — auto-filter API keys to scoped products (via service domain). Hide mutations without `api_keys:write`.
+  - `WebhooksAdmin.vue` — not product-scoped. Hide Retry without `webhooks:write`.
+- [ ] 11.9.2 Add **product scope indicator** to page headers — "Showing Finance data" badge when scoped, "All Products" when global
+- [ ] 11.9.3 Show "View Only" badge when `:read` but not `:write`
+- [ ] 11.9.4 Graceful 403 handling with `permission_required` and `product_scope_required` fields
+- [ ] 11.9.5 Add product filter dropdown to list pages that shows only accessible products
+
+#### 11.10 Frontend: AdminRolesAdmin.vue Page
+
+- [ ] 11.10.1 Create `AdminRolesAdmin.vue` component in `frontend/src/components/admin/`
+- [ ] 11.10.2 Role list view — table with name, description, permission count, user count, is_system badge, actions
+- [ ] 11.10.3 Create/edit role modal — permission checkbox matrix (8 domains × read/write columns)
+- [ ] 11.10.4 **Product scope selector** in role assignment UI — when assigning a role to a user, show multi-select dropdown of all products. Empty selection = global scope. Show clear warning: "No products selected = access to ALL products"
+- [ ] 11.10.5 User's active assignments view — card-based layout showing each assignment with role badge + product scope chips
+- [ ] 11.10.6 Delete confirmation modal — blocked for system roles; warns about scope implications
+- [ ] 11.10.7 Create Astro page `frontend/src/pages/admin/roles/index.astro` mounting the component
+- [ ] 11.10.8 Add admin API functions to `admin.ts`: `listAdminRoles`, `getAdminRole`, `createAdminRole`, `updateAdminRole`, `deleteAdminRole`, `getPermissionGroups`, `listRoleAssignments`, `createRoleAssignment`, `updateRoleAssignment`, `deleteRoleAssignment`
+
+#### 11.11 Audit Integration for RBAC Events
+
+- [ ] 11.11.1 Log `admin.permission_denied` to `AdminAuditLog` (includes user, required_permission, product_scope, attempted_path)
+- [ ] 11.11.2 Log `user.admin_role_assigned` (includes admin_role, scope_products, assigned_by)
+- [ ] 11.11.3 Log `user.admin_role_deactivated` (when tenant role demoted to member)
+- [ ] 11.11.4 Log `user.admin_role_reactivated` (when tenant role restored)
+- [ ] 11.11.5 Log `admin_role.created`, `admin_role.updated`, `admin_role.deleted`
+- [ ] 11.11.6 Log `admin_role_assignment.scope_changed` (when product scope modified)
+- [ ] 11.11.7 Add `admin_role` and `product_id` filter options to `GET /admin/audit-log`
+
+#### Backward Compatibility & Migration Strategy
+
+| Scenario | `is_staff` | Assignments | Product Scope | Admin Capabilities |
+|----------|-----------|-------------|---------------|-------------------|
+| `role=owner` + no assignments | `True` | None | Global (all products) | Full Super Admin (unchanged) |
+| `role=owner` + Support role, Finance scope | `True` | 1 active | Finance only | Support perms on Finance data only |
+| `role=admin` + Finance role, Finance+Analytics scope | `True` | 1 active | Finance + Analytics | Finance perms on Finance & Analytics |
+| `role=admin` + 2 assignments (different roles per product) | `True` | 2 active | Per-assignment | Different permissions per product |
+| `role=member` + deactivated assignments | `False` | All inactive | N/A | No admin access (assignments preserved for reactivation) |
+| `role=member` + manual `is_staff=True` | `True` | None | Global | Full Super Admin |
+| Assignment deleted while assigned | Unchanged | Removed | N/A | Falls back to other assignments or implicit Super Admin |
+
+**Key principles:**
+1. **Tenant role** controls panel **entry**. **Admin role + product scope** controls panel **capabilities and data visibility**.
+2. **No assignments = implicit Super Admin** (backward compatible — zero behavior change for existing staff).
+3. **Product scope is additive**: multiple assignments can grant different permissions for different products. The effective permissions for a product are the union of all matching assignments.
+4. **Deactivation, not deletion**: when a user is demoted to `member`, assignments are deactivated (not deleted) so they can be restored if the user is re-promoted.
+
+Migration is **zero-downtime**: deploy backend first (permissions checked but no assignments = full access), then create assignments via admin UI, then deploy frontend.
 
 ---
 
@@ -1561,7 +1963,7 @@ Both SDKs are implemented in-repo under `sdk/`:
 | API key hash storage | Never store raw keys; SHA-256 hash + prefix for identification |
 | Two auth patterns (proxy vs direct) | Some sister services have backends (Pattern A), some are SPA-only (Pattern B); support both |
 | Dedicated admin layout | Admin UX is fundamentally different from user dashboard; separate routes prevent accidental cross-access |
-| `is_staff` first, RBAC later | Start simple, add granularity when team grows; the audit logging infrastructure is already in place |
+| `is_staff` first, RBAC via Phase 11 | Phase 1–10 used `is_staff` boolean; Phase 11 adds `AdminRole` + `AdminRoleAssignment` with 16 granular permissions across 8 domains AND product-level scoping. Tenant role (`owner/admin/member`) remains separate — controls panel entry via `is_staff` sync; admin role + product scope controls capabilities and data visibility per sister domain. |
 | Admin endpoints under `/admin/` | Clear URL separation; existing `/billing/admin/` endpoints migrate to `/admin/billing/` |
 | Feature matrix endpoint | Critical for admin UX — comparing plans side-by-side is the #1 admin task |
 | Bulk access entry update | Admins need to update all access entries for a plan at once (e.g., new feature added to all tiers) |
@@ -1576,7 +1978,7 @@ Both SDKs are implemented in-repo under `sdk/`:
 | API key leakage | Keys shown only ONCE at creation; stored as hashes; revocable instantly |
 | Domain spoofing | `X-Service-Domain` validated against `ServiceCredential` + `ServiceDomain` table |
 | Admin endpoint abuse | `is_staff` + `@log_admin_access` on every mutation; rate limiting |
-| Admin privilege escalation | Future RBAC limits what each staff role can access |
+| Admin privilege escalation | Phase 11 RBAC limits what each staff role can access (16 permissions across 8 domains); `admin_role=None` = implicit Super Admin for backward compatibility |
 | Subscription override abuse | All overrides are audit-logged with admin user, IP, and before/after state |
 | Refund fraud | Two-person approval (initiated_by + approved_by); reason category required |
 | SDK token exposure | Pattern A (proxy) recommended for backends; Pattern B (SPA) uses httpOnly cookies where possible |

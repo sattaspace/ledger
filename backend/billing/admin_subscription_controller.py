@@ -15,6 +15,7 @@ Endpoints:
         GET    /admin/subscriptions/{id}/plan-changes      — plan change history
         GET    /admin/subscriptions/{id}/invoices          — invoice history
         GET    /admin/subscriptions/{id}/refunds           — refund history
+        POST   /admin/subscriptions/{id}/refund             — issue refund
 """
 
 import logging
@@ -28,7 +29,7 @@ from django.utils import timezone
 from asgiref.sync import sync_to_async
 
 from ninja import Query
-from ninja_extra import api_controller, http_get, http_patch
+from ninja_extra import api_controller, http_get, http_patch, http_post
 
 from common.exceptions import (
     NotFoundException,
@@ -62,7 +63,9 @@ from .admin_schemas import (
     AdminInvoiceDetailSchema,
     AdminInvoiceLineItemSchema,
     AdminRefundListItemSchema,
+    AdminRefundApprovalSchema,
 )
+from .schemas import RefundInputSchema
 from .admin_utils import log_admin_access, admin_write_rate_limit, admin_read_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -702,6 +705,107 @@ class AdminSubscriptionController:
             })
 
         return {"meta": meta, "results": items}
+
+    @http_post(
+        "/subscriptions/{subscription_id}/refund",
+        response={200: dict, 400: dict, 404: dict, 403: dict},
+        summary="Issue refund for subscription",
+        description=(
+            "Issue a refund for a subscription's latest payment via Stripe. "
+            "Requires staff access. The refund will be in 'pending' status "
+"until another admin approves it (two-person rule). "
+            "Optionally specify amount_cents for partial refunds."
+        ),
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def issue_refund(
+        self,
+        request: HttpRequest,
+        subscription_id: int,
+        payload: RefundInputSchema,
+    ):
+        """Issue a refund for a subscription from the admin panel.
+
+        This endpoint creates a Stripe refund and records it in the
+        database. The refund is created with status 'pending' and must
+        be approved by a different admin (two-person rule) before it
+        is marked 'completed'.
+
+        The admin's IP address is captured for the audit trail (CMP-02).
+        The amount is validated against the latest invoice's paid amount
+        to prevent over-refunding (FIN-03).
+
+        If amount_cents is not provided, the full amount of the latest
+        invoice payment is refunded.
+        """
+        import stripe as stripe_lib
+        from .stripe import create_stripe_refund
+        from .controllers import BillingAdminController
+
+        sub = await self._get_subscription_or_404(subscription_id)
+
+        if not sub.stripe_subscription_id:
+            raise BadRequestException(
+                "Cannot refund a subscription without a Stripe payment."
+            )
+
+        # Use target_user_id from payload, or default to the subscription's user
+        target_user_id = getattr(payload, "target_user_id", None)
+        if target_user_id and target_user_id != sub.user_id:
+            raise BadRequestException(
+                f"Target user ID {target_user_id} does not match "
+                f"the subscription's user (id={sub.user_id})."
+            )
+
+        try:
+            refund = await sync_to_async(create_stripe_refund)(
+                subscription=sub,
+                amount_cents=payload.amount_cents,
+                reason=payload.reason,
+                initiated_by=request.user,
+                reason_category=payload.reason_category,
+                admin_notes=payload.admin_notes,
+            )
+            # CMP-02: Capture admin's IP for audit trail
+            refund.initiated_by_ip = request.META.get("REMOTE_ADDR")
+            await sync_to_async(refund.save)(update_fields=["initiated_by_ip"])
+        except ValueError as e:
+            raise BadRequestException(str(e))
+        except stripe_lib.error.StripeError as e:
+            from .controllers import handle_stripe_error
+            raise handle_stripe_error(e, context="refund")
+
+        logger.info(
+            "ADMIN_REFUND_ISSUED: refund_id=%s, sub_id=%s, user=%s, "
+            "product='%s', amount=%s %s, status=%s, reason_category='%s', "
+            "initiated_by=%s, ip=%s",
+            refund.id,
+            sub.id,
+            sub.user.email,
+            sub.product.name,
+            refund.amount_cents,
+            refund.currency,
+            refund.status,
+            refund.reason_category,
+            request.user.email,
+            request.META.get("REMOTE_ADDR"),
+        )
+
+        return {
+            "refund_id": refund.id,
+            "stripe_refund_id": refund.stripe_refund_id or "",
+            "amount_cents": refund.amount_cents,
+            "currency": refund.currency,
+            "status": refund.status,
+            "reason_category": refund.reason_category,
+            "message": (
+                "Refund created successfully. It is pending approval "
+                "by another admin (two-person rule)."
+                if refund.status == RefundStatus.PENDING
+                else "Refund processed."
+            ),
+        }
 
     @http_get(
         "/subscriptions/{subscription_id}/refunds",

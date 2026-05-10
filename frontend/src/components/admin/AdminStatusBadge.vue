@@ -116,10 +116,10 @@ const badgeColors = computed(() => {
       const c = getRefundStatusColor(props.status);
       const dotColor = props.status === "pending"
         ? "bg-amber-500"
-        : props.status === "approved"
-          ? "bg-blue-500"
-          : props.status === "processed"
-            ? "bg-green-500"
+        : props.status === "completed" || props.status === "processed"
+          ? "bg-green-500"
+          : props.status === "approved"
+            ? "bg-blue-500"
             : props.status === "rejected" || props.status === "failed"
               ? "bg-red-500"
               : "bg-gray-500";

@@ -863,7 +863,7 @@ class AdminMetricsController:
 
         return {
             "items": items,
-            "total": meta["total"],
+            "total": meta["total_items"],
             "failed_count": failed_count,
         }
 

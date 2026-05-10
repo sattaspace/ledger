@@ -282,10 +282,15 @@ export interface AccessMatrixRowSaveResponse {
 
 export interface SubscriptionItem {
   id: number;
+  user_id: number;
   user_email: string;
   user_name: string;
+  product_id: number;
   product_name: string;
+  product_slug: string;
+  plan_id: number;
   plan_name: string;
+  plan_slug: string;
   status:
     | "active"
     | "trialing"
@@ -293,90 +298,135 @@ export interface SubscriptionItem {
     | "canceled"
     | "expired"
     | "paused";
-  current_period_start: string;
-  current_period_end: string;
-  created_at: string;
+  currency: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  dunning_step: number;
+  stripe_subscription_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface SubscriptionDetail extends SubscriptionItem {
-  user_id: number;
-  plan_id: number;
-  product_id: number;
-  stripe_subscription_id: string | null;
-  cancel_at_period_end: boolean;
   trial_start: string | null;
   trial_end: string | null;
-  plan_changes: PlanChangeItem[];
-  invoices: InvoiceItem[];
-  refunds: RefundItem[];
+  canceled_at: string | null;
+  expires_at: string | null;
+  past_due_at: string | null;
+  has_used_trial: boolean;
+  tos_accepted_at: string | null;
+  tos_version: string | null;
+  last_dunning_email_at: string | null;
+  stripe_customer_id: string | null;
+  access: Record<string, unknown>;
 }
 
 export interface SubscriptionOverridePayload {
   plan_id?: number;
   status?: string;
-  current_period_end?: string;
+  period_start?: string;
+  period_end?: string;
+  reason?: string;
 }
 
 export interface SubscriptionExtendPayload {
-  extend_days: number;
+  days: number;
+  reason?: string;
 }
 
 export interface SubscriptionListResponse extends PaginatedResponse<SubscriptionItem> {}
 
 export interface PlanChangeItem {
   id: number;
+  from_plan_id: number;
   from_plan_name: string;
+  to_plan_id: number;
   to_plan_name: string;
-  proration_amount: number;
-  created_at: string;
-  initiated_by: string;
+  proration_amount_cents: number;
+  currency: string;
+  stripe_proration_id: string | null;
+  proration_behavior: string;
+  initiated_by_id: number | null;
+  initiated_by_email: string | null;
+  created_at: string | null;
 }
 
 export interface InvoiceItem {
   id: number;
-  invoice_number: string;
-  amount: number;
-  currency: string;
+  stripe_invoice_id: string;
+  subscription_id: number;
+  number: string;
   status: string;
-  hosted_url: string | null;
-  created_at: string;
+  amount_paid_cents: number;
+  amount_due_cents: number;
+  tax_cents: number;
+  discount_cents: number;
+  currency: string;
+  period_start: string | null;
+  period_end: string | null;
+  hosted_url: string;
+  pdf_url: string;
+  stripe_fee_cents: number;
+  attempt_count: number;
+  created_at: string | null;
 }
 
 // ─── User Types ─────────────────────────────────────────────────────────────
 
 export interface UserItem {
   id: number;
-  display_name: string;
   email: string;
-  role: string;
-  is_staff: boolean;
-  email_verified: boolean;
+  first_name: string;
+  last_name: string;
+  full_name: string;
   is_active: boolean;
+  is_email_verified: boolean;
+  is_staff: boolean;
+  role: string;
+  avatar: string | null;
   subscription_count: number;
-  last_login: string | null;
-  created_at: string;
+  active_subscription_count: number;
+  last_login_at: string | null;
+  created_at: string | null;
+}
+
+export interface UserSubscriptionItem {
+  id: number;
+  product_name: string;
+  product_slug: string;
+  plan_name: string;
+  plan_slug: string;
+  status: string;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  created_at: string | null;
 }
 
 export interface UserDetail extends UserItem {
-  avatar: string | null;
-  currency: string;
-  subscriptions: SubscriptionItem[];
+  phone: string | null;
+  timezone: string | null;
+  currency: string | null;
+  language: string | null;
+  subscriptions: UserSubscriptionItem[];
 }
 
 export interface UserStatusPayload {
   is_active: boolean;
+  reason?: string;
 }
 
 export interface UserRolePayload {
   role: string;
+  reason?: string;
 }
 
 export interface UserAuditEntry {
-  id: number;
-  action: string;
-  details: string;
-  ip_address: string;
-  created_at: string;
+  event_type: string;
+  description: string;
+  metadata: Record<string, unknown>;
+  ip_address: string | null;
+  timestamp: string | null;
 }
 
 export interface UserListResponse extends PaginatedResponse<UserItem> {}
@@ -387,20 +437,45 @@ export interface RefundItem {
   id: number;
   subscription_id: number;
   user_email: string;
-  product_name: string;
-  amount: number;
+  product_name: string | null;
+  plan_name: string | null;
+  stripe_refund_id: string | null;
+  stripe_charge_id: string;
+  amount_cents: number;
   currency: string;
-  status: "pending" | "approved" | "rejected" | "processed" | "failed";
+  reason: string;
+  status: string;
   reason_category: string;
-  reason_detail: string;
-  initiated_by: string;
-  approved_by: string | null;
-  created_at: string;
+  initiated_by_id: number | null;
+  initiated_by_email: string | null;
+  initiated_by_ip: string | null;
+  approved_by_id: number | null;
+  approved_by_email: string | null;
+  approved_at: string | null;
+  admin_notes: string;
+  created_at: string | null;
 }
 
 export interface RefundApprovalPayload {
   approved: boolean;
   notes?: string;
+}
+
+export interface IssueRefundPayload {
+  amount_cents?: number;
+  reason?: string;
+  reason_category?: string;
+  admin_notes?: string;
+}
+
+export interface IssueRefundResponse {
+  refund_id: number;
+  stripe_refund_id: string;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  reason_category: string;
+  message: string;
 }
 
 export interface RefundListResponse extends PaginatedResponse<RefundItem> {}
@@ -495,13 +570,16 @@ export interface WebhookEvent {
   id: number;
   event_id: string;
   event_type: string;
-  status: "processed" | "pending" | "failed";
-  error_message: string | null;
-  created_at: string;
-  processed_at: string | null;
+  processed: boolean;
+  error_message: string;
+  created_at: string | null;
 }
 
-export interface WebhookListResponse extends PaginatedResponse<WebhookEvent> {}
+export interface WebhookListResponse {
+  items: WebhookEvent[];
+  total: number;
+  failed_count: number;
+}
 
 // ─── Audit Log Types ────────────────────────────────────────────────────────
 
@@ -514,8 +592,8 @@ export interface AuditLogEntry {
   path: string;
   ip_address: string | null;
   status_code: number | null;
-  details: Record<string, unknown> | null;
-  created_at: string;
+  details: Record<string, unknown>;
+  timestamp: string | null;
 }
 
 export interface AuditLogListResponse extends PaginatedResponse<AuditLogEntry> {}
@@ -791,16 +869,16 @@ export const adminApi = {
 
   async cancelSubscription(
     subscriptionId: number,
-  ): Promise<{ message: string }> {
-    return apiClient.patch<{ message: string }>(
+  ): Promise<SubscriptionDetail> {
+    return apiClient.patch<SubscriptionDetail>(
       `/admin/subscriptions/${subscriptionId}/cancel`,
     );
   },
 
   async expireSubscription(
     subscriptionId: number,
-  ): Promise<{ message: string }> {
-    return apiClient.patch<{ message: string }>(
+  ): Promise<SubscriptionDetail> {
+    return apiClient.patch<SubscriptionDetail>(
       `/admin/subscriptions/${subscriptionId}/expire`,
     );
   },
@@ -808,8 +886,8 @@ export const adminApi = {
   async extendSubscription(
     subscriptionId: number,
     payload: SubscriptionExtendPayload,
-  ): Promise<{ message: string }> {
-    return apiClient.patch<{ message: string }>(
+  ): Promise<SubscriptionDetail> {
+    return apiClient.patch<SubscriptionDetail>(
       `/admin/subscriptions/${subscriptionId}/extend`,
       payload,
     );
@@ -818,22 +896,38 @@ export const adminApi = {
   async getSubscriptionPlanChanges(
     subscriptionId: number,
   ): Promise<PlanChangeItem[]> {
-    return apiClient.get<PlanChangeItem[]>(
+    const data = await apiClient.get<PaginatedResponse<PlanChangeItem>>(
       `/admin/subscriptions/${subscriptionId}/plan-changes`,
+      { params: { page: 1, page_size: 100 } },
     );
+    return data.results ?? [];
   },
 
   async getSubscriptionInvoices(
     subscriptionId: number,
   ): Promise<InvoiceItem[]> {
-    return apiClient.get<InvoiceItem[]>(
+    const data = await apiClient.get<PaginatedResponse<InvoiceItem>>(
       `/admin/subscriptions/${subscriptionId}/invoices`,
+      { params: { page: 1, page_size: 100 } },
     );
+    return data.results ?? [];
   },
 
   async getSubscriptionRefunds(subscriptionId: number): Promise<RefundItem[]> {
-    return apiClient.get<RefundItem[]>(
+    const data = await apiClient.get<PaginatedResponse<RefundItem>>(
       `/admin/subscriptions/${subscriptionId}/refunds`,
+      { params: { page: 1, page_size: 100 } },
+    );
+    return data.results ?? [];
+  },
+
+  async issueRefund(
+    subscriptionId: number,
+    payload: IssueRefundPayload,
+  ): Promise<IssueRefundResponse> {
+    return apiClient.post<IssueRefundResponse>(
+      `/admin/subscriptions/${subscriptionId}/refund`,
+      payload,
     );
   },
 
@@ -859,8 +953,8 @@ export const adminApi = {
   async updateUserStatus(
     userId: number,
     payload: UserStatusPayload,
-  ): Promise<{ message: string }> {
-    return apiClient.patch<{ message: string }>(
+  ): Promise<UserDetail> {
+    return apiClient.patch<UserDetail>(
       `/admin/users/${userId}/status`,
       payload,
     );
@@ -869,11 +963,8 @@ export const adminApi = {
   async updateUserRole(
     userId: number,
     payload: UserRolePayload,
-  ): Promise<{ message: string }> {
-    return apiClient.patch<{ message: string }>(
-      `/admin/users/${userId}/role`,
-      payload,
-    );
+  ): Promise<UserDetail> {
+    return apiClient.patch<UserDetail>(`/admin/users/${userId}/role`, payload);
   },
 
   async getUserAudit(
@@ -898,6 +989,9 @@ export const adminApi = {
     page_size?: number;
     status?: string;
     reason_category?: string;
+    subscription_id?: number;
+    date_from?: string;
+    date_to?: string;
   }): Promise<RefundListResponse> {
     return apiClient.get<RefundListResponse>("/admin/refunds", { params });
   },
@@ -957,15 +1051,27 @@ export const adminApi = {
     page?: number;
     page_size?: number;
     event_type?: string;
-    status?: string;
+    processed?: boolean;
   }): Promise<WebhookListResponse> {
     return apiClient.get<WebhookListResponse>("/admin/webhooks", { params });
   },
 
-  async retryWebhook(webhookId: number): Promise<{ message: string }> {
-    return apiClient.post<{ message: string }>(
-      `/admin/webhooks/${webhookId}/retry`,
-    );
+  async retryWebhook(webhookId: number): Promise<{
+    id: number;
+    event_id: string;
+    event_type: string;
+    processed: boolean;
+    error_message: string;
+    message: string;
+  }> {
+    return apiClient.post<{
+      id: number;
+      event_id: string;
+      event_type: string;
+      processed: boolean;
+      error_message: string;
+      message: string;
+    }>(`/admin/webhooks/${webhookId}/retry`);
   },
 
   // ═══════════════════════════════════════════════════════════
@@ -975,8 +1081,10 @@ export const adminApi = {
   async listAuditLog(params?: {
     page?: number;
     page_size?: number;
-    admin_user?: string;
+    admin_user_id?: number;
     action?: string;
+    date_from?: string;
+    date_to?: string;
   }): Promise<AuditLogListResponse> {
     return apiClient.get<AuditLogListResponse>("/admin/audit-log", { params });
   },
@@ -1087,6 +1195,11 @@ export function getRefundStatusColor(status: string): {
       return {
         bg: "bg-amber-100 dark:bg-amber-950",
         text: "text-amber-700 dark:text-amber-400",
+      };
+    case "completed":
+      return {
+        bg: "bg-green-100 dark:bg-green-950",
+        text: "text-green-700 dark:text-green-400",
       };
     case "approved":
       return {
