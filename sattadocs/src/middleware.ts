@@ -55,15 +55,28 @@ export const onRequest: MiddlewareHandler = async (context, next) => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * Redirect to the dev-docs login page, preserving the original URL
- * so the user can be sent back after authenticating.
- */
+function getOrigin(request: Request, url: URL): string {
+  const forwardedHost = request.headers.get("X-Forwarded-Host");
+  const forwardedProto = request.headers.get("X-Forwarded-Proto");
+
+  if (forwardedHost && forwardedProto) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  const host = request.headers.get("Host");
+  if (host && forwardedProto) {
+    return `${forwardedProto}://${host}`;
+  }
+
+  return url.origin;
+}
+
 function redirect(
   context: Parameters<MiddlewareHandler>[0],
   url: URL,
 ): Response {
-  const loginUrl = new URL("/dev-docs-login", url.origin);
+  const origin = getOrigin(context.request, url);
+  const loginUrl = new URL("/dev-docs-login", origin);
   loginUrl.searchParams.set("redirect", url.pathname + url.search);
   return context.redirect(loginUrl.toString());
 }
