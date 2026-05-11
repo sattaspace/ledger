@@ -1,3 +1,8 @@
+---
+title: Pending Items for User-Facing Features
+description:  Gap analysis between backend API endpoints and current frontend implementation.
+---
+
 # Frontend Pending Items for User-Facing Features
 
 > Gap analysis between backend API endpoints and current frontend implementation.

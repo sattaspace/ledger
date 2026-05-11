@@ -1,3 +1,8 @@
+---
+title: Stripe Dashboard Implementation Required
+description: Code changes have been implemented in the backend. Complete these steps before going to production.
+---
+
 # Stripe Dashboard Implementation Required
 
 > **This document lists all manual configuration steps required in the Stripe Dashboard.**

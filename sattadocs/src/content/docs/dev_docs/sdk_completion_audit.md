@@ -1,3 +1,8 @@
+---
+title: SDK Completion Audit
+description: TypeScript SDK, Python SDK, Backend API readiness for sister-domain communication
+---
+
 # SDK Completion Audit
 
 **Date:** 2026-05-07

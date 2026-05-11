@@ -1,3 +1,8 @@
+---
+title: Enhancement plan
+description:  Sattabase — Central Auth & Subscription Platform
+---
+
 # Sattabase — Central Auth & Subscription Platform
 
 > Multi-tenant subscription management serving multiple service domains

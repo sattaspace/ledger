@@ -1,3 +1,8 @@
+---
+title: Satta Ledger Integration Guide
+description: This guide walks you through integrating the Python SDK 
+---
+
 # Satta Ledger — Localhost Integration Guide
 
 This guide walks you through integrating the Python SDK in `ledgerbackend` and the sister-domain-starter in `ledgerfrontend`, then verifying the full chain works on localhost.

@@ -1,3 +1,8 @@
+---
+title: TypeScript SDK
+description:  the central authentication, subscription, and access control platform.
+---
+
 # @sattabase/sdk
 
 TypeScript SDK for **Sattabase** — the central authentication, subscription, and access control platform.

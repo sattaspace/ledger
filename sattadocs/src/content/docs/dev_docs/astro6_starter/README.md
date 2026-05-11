@@ -1,3 +1,8 @@
+---
+title: Sister Domain Starter 
+description: Copy-paste starter files for any AstroJS sister domain frontend in the SattaSpace ecosystem.
+---
+
 # Sattabase Sister Domain Starter Kit
 
 > Copy-paste starter files for any AstroJS sister domain frontend in the SattaSpace ecosystem.

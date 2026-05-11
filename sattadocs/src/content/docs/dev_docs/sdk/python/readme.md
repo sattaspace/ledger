@@ -1,3 +1,8 @@
+---
+title: Python sdk
+description: the central authentication, subscription, and access-control platform for multi-tenant service domains.
+---
+
 # sattabase-sdk
 
 Python SDK for **Sattabase** — the central authentication, subscription, and access-control platform for multi-tenant service domains.
