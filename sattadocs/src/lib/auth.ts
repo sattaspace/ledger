@@ -9,17 +9,25 @@
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-/** Read the backend URL from environment (set via astro.config.mjs). */
+/** Read the backend URL from environment (runtime, not build-time). */
 function getBackendUrl(): string {
-  // import.meta.env.DEV is true during 'npm run dev'
+  // In development, use localhost
   if (import.meta.env.DEV) {
     return "http://localhost:8086/api/v1";
   }
 
-  // Otherwise, return the environment variable (or the fallback)
-  return (
-    import.meta.env.PUBLIC_API_BASE_URL_SB || "http://localhost:8086/api/v1"
-  );
+  // In production, use runtime environment variable (SERVER_API_BASE_URL)
+  // IMPORTANT: We use process.env directly for RUNTIME variables in SSR mode.
+  // PUBLIC_ prefixed vars are inlined at BUILD time, which doesn't work for Docker.
+  const runtimeUrl =
+    process.env.SERVER_API_BASE_URL || process.env.PUBLIC_API_BASE_URL_SB;
+
+  if (runtimeUrl) {
+    return runtimeUrl;
+  }
+
+  // Fallback for Docker internal network
+  return "http://sb-backend:8086/api/v1";
 }
 
 /** Cookie name used to persist the staff session JWT. */

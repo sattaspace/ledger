@@ -65,7 +65,7 @@ services:
     container_name: sb-sattadocs
     restart: always
     environment:
-      - PUBLIC_API_BASE_URL_SB=http://sb-backend:8086/api/v1
+      - SERVER_API_BASE_URL=http://sb-backend:8086/api/v1
     ports:
       - "127.0.0.1:4323:4323" # Only accessible to local reverse proxy
     networks:
