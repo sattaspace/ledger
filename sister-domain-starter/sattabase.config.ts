@@ -13,7 +13,7 @@
 export default {
   // API base URL of the Sattabase backend (Django Ninja)
   apiBaseUrl:
-    import.meta.env.PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1",
+    import.meta.env.PUBLIC_API_BASE_URL_SB || "http://localhost:8000/api/v1",
 
   // Sattabase base domain frontend URL (for redirects to register, billing, etc.)
   baseDomainUrl:

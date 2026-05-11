@@ -40,7 +40,7 @@ USER appuser
 EXPOSE 8090
 
 # Production uses Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "4", \
+CMD ["gunicorn", "--bind", "0.0.0.0:8086", "--workers", "4", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--access-logfile", "-", "--error-logfile", "-", \
      "base.asgi:application"]

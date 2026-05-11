@@ -15,6 +15,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: always
     networks:
       - sattabase_net
 
@@ -28,6 +29,7 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+    restart: always
     networks:
       - sattabase_net
 
@@ -37,7 +39,7 @@ services:
     restart: always
     env_file: .env
     ports:
-      - "127.0.0.1:8090:8090" # Only accessible to local reverse proxy
+      - "127.0.0.1:8086:8086" # Only accessible to local reverse proxy
     volumes:
       - ./backend/staticfiles:/app/staticfiles
       - ./backend/media:/app/media
@@ -63,7 +65,7 @@ services:
     container_name: sb-sattadocs
     restart: always
     ports:
-      - "127.0.0.1:4322:4322" # Only accessible to local reverse proxy
+      - "127.0.0.1:4323:4323" # Only accessible to local reverse proxy
     networks:
       - sattabase_net
 
@@ -74,6 +76,7 @@ services:
     env_file: .env
     volumes:
       - ./backend/media:/app/media
+    restart: always
     depends_on:
       sb-db:
         condition: service_healthy
@@ -87,6 +90,7 @@ services:
     container_name: sb-celery-beat
     command: celery -A base beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
     env_file: .env
+    restart: always
     depends_on:
       sb-db:
         condition: service_healthy

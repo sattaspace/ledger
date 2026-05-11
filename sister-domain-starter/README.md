@@ -64,7 +64,7 @@ cp .env.example /path/to/my-sister-domain/.env
 Edit `.env` and fill in your domain-specific values:
 
 ```env
-PUBLIC_API_BASE_URL=https://api.sattaspace.com/api/v1
+PUBLIC_API_BASE_URL_SB=https://api.sattaspace.com/api/v1
 PUBLIC_BASE_DOMAIN_URL=https://sattabase.sattaspace.com
 PUBLIC_THIS_DOMAIN_URL=https://finance.sattaspace.com
 PUBLIC_SERVICE_DOMAIN=finance.sattaspace.com

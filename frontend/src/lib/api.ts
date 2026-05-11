@@ -11,10 +11,14 @@
  */
 
 // Vite will find this exact string and replace it during 'npm run build'
-const envUrl = import.meta.env.PUBLIC_API_BASE_URL;
-export const API_BASE_URL = envUrl || "https://baseapi.sattaspace.com/api/v1";
+// Vite/Astro provides 'import.meta.env.DEV' which is true during 'npm run dev'
+const isDev = import.meta.env.DEV;
 
+const envUrl = import.meta.env.PUBLIC_API_BASE_URL_SB;
 
+export const API_BASE_URL = isDev
+  ? "http://localhost:8000/api/v1"
+  : envUrl || "http://localhost:8000/api/v1";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,38 +53,42 @@ let _refreshToken: string | null = null;
 
 /** Pick the correct storage backend based on "remember me" preference. */
 function tokenStorage(): Storage {
- if (typeof window === "undefined") return sessionStorage;
- try {
-   return localStorage.getItem(REMEMBER_KEY) === "true"
-     ? localStorage
-     : sessionStorage;
- } catch {
-   return sessionStorage;
- }
+  if (typeof window === "undefined") return sessionStorage;
+  try {
+    return localStorage.getItem(REMEMBER_KEY) === "true"
+      ? localStorage
+      : sessionStorage;
+  } catch {
+    return sessionStorage;
+  }
 }
 
 /** Recover tokens from storage into memory (called on module init). */
 function initTokens(): void {
- if (typeof window === "undefined") return;
- try {
-   const access = sessionStorage.getItem(TOKEN_KEY_ACCESS)
-     || localStorage.getItem(TOKEN_KEY_ACCESS);
-   const refresh = sessionStorage.getItem(TOKEN_KEY_REFRESH)
-     || localStorage.getItem(TOKEN_KEY_REFRESH);
-   if (access) _accessToken = access;
-   if (refresh) _refreshToken = refresh;
- } catch { /* storage unavailable */ }
+  if (typeof window === "undefined") return;
+  try {
+    const access =
+      sessionStorage.getItem(TOKEN_KEY_ACCESS) ||
+      localStorage.getItem(TOKEN_KEY_ACCESS);
+    const refresh =
+      sessionStorage.getItem(TOKEN_KEY_REFRESH) ||
+      localStorage.getItem(TOKEN_KEY_REFRESH);
+    if (access) _accessToken = access;
+    if (refresh) _refreshToken = refresh;
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 // Recover tokens immediately so they're available before requireAuth() runs
 initTokens();
 
 function getAccessToken(): string | null {
- return _accessToken;
+  return _accessToken;
 }
 
 function getRefreshToken(): string | null {
- return _refreshToken;
+  return _refreshToken;
 }
 
 /**
@@ -88,31 +96,35 @@ function getRefreshToken(): string | null {
  * @param remember - true → localStorage (30-day persistence), false → sessionStorage
  */
 function setTokens(access: string, refresh: string, remember = false): void {
- _accessToken = access;
- _refreshToken = refresh;
+  _accessToken = access;
+  _refreshToken = refresh;
 
- if (typeof window === "undefined") return;
- try {
-   const storage = remember ? localStorage : sessionStorage;
-   storage.setItem(TOKEN_KEY_ACCESS, access);
-   storage.setItem(TOKEN_KEY_REFRESH, refresh);
-   localStorage.setItem(REMEMBER_KEY, String(remember));
- } catch { /* storage unavailable */ }
+  if (typeof window === "undefined") return;
+  try {
+    const storage = remember ? localStorage : sessionStorage;
+    storage.setItem(TOKEN_KEY_ACCESS, access);
+    storage.setItem(TOKEN_KEY_REFRESH, refresh);
+    localStorage.setItem(REMEMBER_KEY, String(remember));
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 /** Clear tokens from memory AND both storage backends. */
 function clearTokens(): void {
- _accessToken = null;
- _refreshToken = null;
+  _accessToken = null;
+  _refreshToken = null;
 
- if (typeof window === "undefined") return;
- try {
-   sessionStorage.removeItem(TOKEN_KEY_ACCESS);
-   sessionStorage.removeItem(TOKEN_KEY_REFRESH);
-   localStorage.removeItem(TOKEN_KEY_ACCESS);
-   localStorage.removeItem(TOKEN_KEY_REFRESH);
-   localStorage.removeItem(REMEMBER_KEY);
- } catch { /* storage unavailable */ }
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(TOKEN_KEY_ACCESS);
+    sessionStorage.removeItem(TOKEN_KEY_REFRESH);
+    localStorage.removeItem(TOKEN_KEY_ACCESS);
+    localStorage.removeItem(TOKEN_KEY_REFRESH);
+    localStorage.removeItem(REMEMBER_KEY);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 function buildHeaders(custom?: Record<string, string>): Record<string, string> {
@@ -126,7 +138,6 @@ function buildHeaders(custom?: Record<string, string>): Record<string, string> {
   if (headers["Content-Type"] === "") {
     delete headers["Content-Type"];
   }
-
 
   const token = getAccessToken();
   if (token) {
@@ -171,8 +182,11 @@ async function refreshAccessToken(): Promise<string | null> {
           try {
             const storage = tokenStorage();
             storage.setItem(TOKEN_KEY_ACCESS, _accessToken!);
-            if (data.refresh) storage.setItem(TOKEN_KEY_REFRESH, _refreshToken!);
-          } catch { /* storage unavailable */ }
+            if (data.refresh)
+              storage.setItem(TOKEN_KEY_REFRESH, _refreshToken!);
+          } catch {
+            /* storage unavailable */
+          }
         }
         return data.access;
       }
@@ -205,7 +219,11 @@ export const apiClient = {
   /**
    * POST request
    */
-  async post<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  async post<T = unknown>(
+    path: string,
+    body?: unknown,
+    options?: RequestOptions,
+  ): Promise<T> {
     return request<T>(path, {
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
@@ -216,7 +234,11 @@ export const apiClient = {
   /**
    * PUT request
    */
-  async put<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  async put<T = unknown>(
+    path: string,
+    body?: unknown,
+    options?: RequestOptions,
+  ): Promise<T> {
     return request<T>(path, {
       method: "PUT",
       body: body ? JSON.stringify(body) : undefined,
@@ -227,7 +249,11 @@ export const apiClient = {
   /**
    * PATCH request
    */
-  async patch<T = unknown>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  async patch<T = unknown>(
+    path: string,
+    body?: unknown,
+    options?: RequestOptions,
+  ): Promise<T> {
     return request<T>(path, {
       method: "PATCH",
       body: body ? JSON.stringify(body) : undefined,
@@ -238,7 +264,10 @@ export const apiClient = {
   /**
    * DELETE request
    */
-  async delete<T = unknown>(path: string, options?: RequestOptions): Promise<T> {
+  async delete<T = unknown>(
+    path: string,
+    options?: RequestOptions,
+  ): Promise<T> {
     return request<T>(path, { method: "DELETE", ...options });
   },
 
@@ -276,8 +305,11 @@ interface RequestOptions extends RequestInit {
   /** Query parameters to append to the URL. NOT a standard fetch option. */
   params?: Record<string, string | number | boolean>;
 }
- 
-function buildUrl(path: string, params?: Record<string, string | number | boolean>): string {
+
+function buildUrl(
+  path: string,
+  params?: Record<string, string | number | boolean>,
+): string {
   let url = `${API_BASE_URL}${path}`;
   if (params && Object.keys(params).length > 0) {
     const qs = new URLSearchParams();
@@ -292,7 +324,10 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
   return url;
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const { params, ...restOptions } = options;
   const url = buildUrl(path, params);
   const headers = buildHeaders(
@@ -301,7 +336,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   // Prevent browser/CDN from caching API responses — every request
   // must hit the server so currency conversions and auth state are fresh.
-  const fetchOptions: RequestInit = { ...restOptions, headers, cache: "no-store" };
+  const fetchOptions: RequestInit = {
+    ...restOptions,
+    headers,
+    cache: "no-store",
+  };
 
   let response = await fetch(url, fetchOptions);
 
@@ -341,7 +380,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 // ─── Error factory ──────────────────────────────────────────────────────────
 
-async function createApiErrorFromResponse(response: Response): Promise<ApiError> {
+async function createApiErrorFromResponse(
+  response: Response,
+): Promise<ApiError> {
   let message = `Request failed with status ${response.status}`;
 
   try {
@@ -353,14 +394,18 @@ async function createApiErrorFromResponse(response: Response): Promise<ApiError>
       else if (body.non_field_errors?.[0]) message = body.non_field_errors[0];
 
       // Handle validation error format: { detail: "...", errors: [{ field, message }], code: "validation_error" }
-      if (body.code === "validation_error" && Array.isArray(body.errors) && body.errors.length > 0) {
+      if (
+        body.code === "validation_error" &&
+        Array.isArray(body.errors) &&
+        body.errors.length > 0
+      ) {
         const firstError = body.errors[0];
         if (firstError.message) {
           // Build user-friendly message from field name
           const fieldLabel = (firstError.field || "")
-            .replace(/payload\.\s*/g, "")  // Remove "payload." prefix
-            .replace(/body\.\s*/g, "")    // Remove "body." prefix
-            .replace(/_/g, " ")            // snake_case → space
+            .replace(/payload\.\s*/g, "") // Remove "payload." prefix
+            .replace(/body\.\s*/g, "") // Remove "body." prefix
+            .replace(/_/g, " ") // snake_case → space
             .replace(/\b\w/g, (c: string) => c.toUpperCase()); // Capitalize
           message = fieldLabel
             ? `${fieldLabel}: ${firstError.message}`
@@ -371,7 +416,13 @@ async function createApiErrorFromResponse(response: Response): Promise<ApiError>
       // Field-level errors (dict format)
       const fieldErrors: Record<string, string[]> = {};
       for (const [key, value] of Object.entries(body)) {
-        if (key !== "detail" && key !== "message" && key !== "non_field_errors" && key !== "code" && key !== "errors") {
+        if (
+          key !== "detail" &&
+          key !== "message" &&
+          key !== "non_field_errors" &&
+          key !== "code" &&
+          key !== "errors"
+        ) {
           if (Array.isArray(value)) {
             fieldErrors[key] = value.map(String);
           } else if (typeof value === "string") {

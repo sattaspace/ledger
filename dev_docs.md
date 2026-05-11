@@ -443,7 +443,7 @@ npm run build
 | `SB_CSRF_TRUSTED_ORIGINS` | CSRF-trusted origins | `http://localhost:4321,...` |
 | `SB_CORS_ALLOW_ALL_ORIGINS` | Allow all CORS origins (default: `DEBUG`) | `true` |
 | `SB_CORS_ALLOWED_ORIGINS` | Explicit CORS allowed origins | `http://localhost:4321,...` |
-| `SB_FRONTEND_URL` | Frontend URL (auto-added to CORS/CSRF) | `http://localhost:4321` |
+| `PUBLIC_SITE_URL_SB` | Frontend URL (auto-added to CORS/CSRF) | `http://localhost:4321` |
 
 #### Database
 
@@ -508,18 +508,17 @@ npm run build
 | `SB_STRIPE_SECRET_KEY` | Stripe secret key | `sk_test_...` |
 | `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_test_...` |
 | `SB_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
-| `SB_STRIPE_APP_DOMAIN` | App domain for portal/checkout URLs (default: `SB_FRONTEND_URL`) | `http://localhost:4321` |
+| `SB_STRIPE_APP_DOMAIN` | App domain for portal/checkout URLs (default: `PUBLIC_SITE_URL_SB`) | `http://localhost:4321` |
 | `SB_STRIPE_TAX_ENABLED` | Enable Stripe Tax at checkout | `True` |
 
 #### URL & App Settings
 
 | Variable | Description | Example |
 |---|---|---|
-| `PUBLIC_APP_NAME` | App display name | `SattaBase` |
-| `PUBLIC_SITE_URL` | Public site URL | `http://localhost:4321` |
-| `SB_BACKEND_URL` | Backend base URL | `http://localhost:8086` |
-| `SB_BACKEND_PUBLIC_API_URL` | Backend public API URL | `http://localhost:8086/api` |
-| `PUBLIC_API_BASE_URL` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
+| `PUBLIC_APP_NAME-SB` | App display name | `SattaBase` |
+| `PUBLIC_SITE_URL_SB` | Public site URL | `http://localhost:4321` |
+
+| `PUBLIC_API_BASE_URL_SB` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
 | `SB_TOS_VERSION` | Terms of Service version | `1.0` |
 | `SB_BASE_CURRENCY` | Base currency for billing | `USD` |
 | `SB_EXCHANGE_RATE_API_URL` | Exchange rate API URL | `https://open.er-api.com/v6/latest` |
@@ -532,7 +531,7 @@ npm run build
 
 > **Note**: In production, `SB_JWT_SIGNING_KEY` must be explicitly set and must differ from `SB_SECRET_KEY`. The server will refuse to start without it.
 >
-> **Note**: `SB_FRONTEND_URL` is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` in settings. Set this once and it covers CORS/CSRF for the frontend domain. In production, `SB_CORS_ALLOW_ALL_ORIGINS` defaults to `False`, so `SB_FRONTEND_URL` and `SB_CORS_ALLOWED_ORIGINS` must list all allowed domains.
+> **Note**: `PUBLIC_SITE_URL_SB` is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` in settings. Set this once and it covers CORS/CSRF for the frontend domain. In production, `SB_CORS_ALLOW_ALL_ORIGINS` defaults to `False`, so `PUBLIC_SITE_URL_SB` and `SB_CORS_ALLOWED_ORIGINS` must list all allowed domains.
 >
 > **Note**: `SB_API_KEY_ENFORCED` defaults to `False` for gradual rollout. When `True`, all requests with an invalid or revoked `X-API-Key` receive an immediate 403 response. Set this to `True` before deploying SDK consumers to production. A `RuntimeWarning` is emitted at startup if `DEBUG=False` and enforcement is off.
 >
@@ -1505,7 +1504,7 @@ Centralized fetch wrapper that handles authentication, error handling, and token
 - Auto-refreshes expired access tokens (transparent 401 handling)
 - Persists refreshed tokens to storage so they survive page reloads
 - Standardized error format with field-level error extraction
-- Configurable base URL via `PUBLIC_API_BASE_URL` env variable
+- Configurable base URL via `PUBLIC_API_BASE_URL_SB` env variable
 - FormData upload support via `upload()` and `uploadPut()` methods
 - `getMediaUrl()` helper to resolve relative media paths against the backend origin
 - `cache: "no-store"` on every request to prevent stale data

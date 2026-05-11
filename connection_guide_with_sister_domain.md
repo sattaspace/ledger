@@ -151,7 +151,7 @@ The sister domain's origin must be allowed by Sattabase. There are two ways:
 
 1. **ServiceDomain-based (automatic):** The `service_domain_cors_middleware` in Sattabase automatically adds all active `ServiceDomain.domain` values to the CORS allowed origins with a 5-minute cache. This requires no extra configuration.
 
-2. **`SB_FRONTEND_URL` setting:** If the Sattabase frontend itself runs on a separate domain, set `SB_FRONTEND_URL` in the `.env` file. It is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+2. **`PUBLIC_SITE_URL_SB` setting:** If the Sattabase frontend itself runs on a separate domain, set `PUBLIC_SITE_URL_SB` in the `.env` file. It is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
 
 In production (`CORS_ALLOW_ALL_ORIGINS=False`), both methods contribute to the allowed origins list.
 
@@ -1039,7 +1039,7 @@ There are two mechanisms:
 
 1. **Automatic (ServiceDomain-based):** The `service_domain_cors_middleware` in Sattabase dynamically adds all active `ServiceDomain.domain` values to the CORS allowed origins. This requires no extra configuration — just create the `ServiceDomain` record with `is_active=True`.
 
-2. **Explicit (`SB_FRONTEND_URL`):** If the Sattabase frontend runs on its own domain (e.g., `https://app.sattabase.tld`), set `SB_FRONTEND_URL=https://app.sattabase.tld` in the Sattabase `.env`. This is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+2. **Explicit (`PUBLIC_SITE_URL_SB`):** If the Sattabase frontend runs on its own domain (e.g., `https://app.sattabase.tld`), set `PUBLIC_SITE_URL_SB=https://app.sattabase.tld` in the Sattabase `.env`. This is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
 
 ### Behavior by Environment
 
@@ -1050,7 +1050,7 @@ There are two mechanisms:
 
 In production, make sure:
 - The `ServiceDomain` record for the sister domain is `is_active=True`
-- `SB_FRONTEND_URL` is set to the Sattabase frontend domain
+- `PUBLIC_SITE_URL_SB` is set to the Sattabase frontend domain
 - `SB_CORS_ALLOWED_ORIGINS` includes any additional domains if needed
 
 ### Sister Domain Backend Calling Sattabase

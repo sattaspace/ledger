@@ -11,10 +11,14 @@
 
 /** Read the backend URL from environment (set via astro.config.mjs). */
 function getBackendUrl(): string {
+  // import.meta.env.DEV is true during 'npm run dev'
+  if (import.meta.env.DEV) {
+    return "http://localhost:8000/api/v1";
+  }
+
+  // Otherwise, return the environment variable (or the fallback)
   return (
-    process.env.SB_BACKEND_PUBLIC_API_URL ||
-    process.env.PUBLIC_API_BASE_URL ||
-    "http://localhost:8000/api/v1"
+    import.meta.env.PUBLIC_API_BASE_URL_SB || "http://localhost:8000/api/v1"
   );
 }
 

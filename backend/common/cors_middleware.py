@@ -20,7 +20,7 @@ Security:
     - The origin must match exactly (no wildcards).
     - ``CORS_ALLOW_ALL_ORIGINS`` in DEBUG mode still takes precedence.
     - ``FRONTEND_URL`` is always allowed (read from ``settings.FRONTEND_URL``
-      which is set via ``SB_FRONTEND_URL`` env var).
+      which is set via ``PUBLIC_SITE_URL_SB`` env var).
 
 Note:
     This middleware is fully ASGI-compatible (Django 5.2 ``@sync_and_async_middleware``
@@ -55,7 +55,7 @@ def _get_allowed_origins() -> set:
     from django.conf import settings
     from django.core.cache import cache
 
-    # Frontend URL is always allowed (from SB_FRONTEND_URL env var)
+    # Frontend URL is always allowed (from PUBLIC_SITE_URL_SB env var)
     frontend_url = getattr(settings, "FRONTEND_URL", "").strip()
 
     origins = cache.get(CACHE_KEY)

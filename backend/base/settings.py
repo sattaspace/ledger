@@ -59,7 +59,10 @@ SILENCED_SYSTEM_CHECKS = ["security.W019"]
 # the backend accepts requests from the frontend origin for CORS, CSRF,
 # and Stripe redirect URLs.  Automatically added to CORS_ALLOWED_ORIGINS
 # and CSRF_TRUSTED_ORIGINS so you don't need to duplicate it in both lists.
-FRONTEND_URL = env("SB_FRONTEND_URL", default="http://localhost:4321").rstrip("/")
+FRONTEND_URL = env("PUBLIC_SITE_URL_SB", default="http://localhost:4321").rstrip("/")
+
+if DEBUG:
+    FRONTEND_URL = "http://localhost:4321"
 
 CORS_ALLOW_ALL_ORIGINS = env("SB_CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
@@ -469,6 +472,9 @@ STRIPE_SECRET_KEY = env("SB_STRIPE_SECRET_KEY", default="")
 STRIPE_PUBLISHABLE_KEY = env("SB_STRIPE_PUBLISHABLE_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env("SB_STRIPE_WEBHOOK_SECRET", default="")
 STRIPE_APP_DOMAIN = env("SB_STRIPE_APP_DOMAIN", default=FRONTEND_URL)
+if DEBUG:
+    STRIPE_APP_DOMAIN = FRONTEND_URL
+    
 STRIPE_PORTAL_RETURN_URL = env(
     "SB_STRIPE_PORTAL_RETURN_URL",
     default=f"{STRIPE_APP_DOMAIN}/dashboard/billing",
