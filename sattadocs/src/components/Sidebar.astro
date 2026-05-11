@@ -1,0 +1,213 @@
+---
+/**
+ * Custom Sidebar component with logout functionality for staff users.
+ * Wraps Starlight's default sidebar and adds a logout section at the bottom.
+ */
+
+import DefaultSidebar from "@astrojs/starlight/components/Sidebar.astro";
+
+// Get the staff user from middleware (if logged in)
+const staffUser = Astro.locals.staffUser;
+---
+
+<DefaultSidebar>
+  <slot />
+</DefaultSidebar>
+
+{
+  staffUser && (
+    <div class="staff-logout-section">
+      <div class="staff-user-info">
+        <span class="staff-user-name">
+          {staffUser.display_name || staffUser.email}
+        </span>
+        <span class="staff-badge">Staff</span>
+      </div>
+      <button type="button" id="staff-logout-btn" class="staff-logout-btn">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+        Sign Out
+      </button>
+    </div>
+  )
+}
+
+<style>
+  .staff-logout-section {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: var(--sl-sidebar-width, 18rem);
+    padding: 1rem;
+    background: linear-gradient(to top, var(--color-gray-50) 80%, transparent);
+    border-top: 1px solid var(--color-gray-200);
+    z-index: 10;
+  }
+
+  .staff-user-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-accent-50);
+    border: 1px solid var(--color-accent-200);
+    border-radius: 0.5rem;
+  }
+
+  .staff-user-name {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-gray-900);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .staff-badge {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.125rem 0.5rem;
+    background: var(--color-accent-500);
+    color: white;
+    border-radius: 9999px;
+  }
+
+  .staff-logout-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.625rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: white;
+    background: var(--color-accent-600);
+    border: 1px solid var(--color-accent-700);
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition:
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      transform 0.1s ease;
+  }
+
+  .staff-logout-btn:hover {
+    background: var(--color-accent-700);
+    border-color: var(--color-accent-800);
+  }
+
+  .staff-logout-btn:active {
+    transform: scale(0.98);
+  }
+
+  .staff-logout-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .staff-logout-btn svg {
+    flex-shrink: 0;
+  }
+
+  /* Dark mode adjustments */
+  :global([data-theme="dark"]) .staff-logout-section {
+    background: linear-gradient(to top, var(--color-gray-950) 80%, transparent);
+    border-top-color: var(--color-gray-700);
+  }
+
+  :global([data-theme="dark"]) .staff-user-info {
+    background: var(--color-gray-900);
+    border-color: var(--color-accent-400);
+  }
+
+  :global([data-theme="dark"]) .staff-user-name {
+    color: var(--color-gray-100);
+  }
+
+  :global([data-theme="dark"]) .staff-badge {
+    background: var(--color-accent-400);
+    color: var(--color-gray-900);
+  }
+
+  :global([data-theme="dark"]) .staff-logout-btn {
+    background: var(--color-accent-500);
+    border-color: var(--color-accent-600);
+    color: white;
+  }
+
+  :global([data-theme="dark"]) .staff-logout-btn:hover {
+    background: var(--color-accent-400);
+    border-color: var(--color-accent-500);
+  }
+
+  /* Add padding to sidebar content to prevent overlap with logout section */
+  :global(.sl-sidebar-content) {
+    padding-bottom: 6rem !important;
+  }
+</style>
+<script>
+  const logoutBtn = document.getElementById("staff-logout-btn");
+
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      const originalText = logoutBtn.innerHTML;
+      logoutBtn.disabled = true;
+      logoutBtn.innerHTML = `
+        <svg class="spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10" stroke-opacity="0.25" />
+          <path d="M12 2a10 10 0 0 1 10 10" stroke-opacity="1" />
+        </svg>
+        Signing out...
+      `;
+
+      try {
+        const response = await fetch("/api/logout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (response.ok) {
+          // Redirect to home page after logout
+          window.location.href = "/";
+        } else {
+          throw new Error("Logout failed");
+        }
+      } catch (error) {
+        console.error("Logout error:", error);
+        logoutBtn.disabled = false;
+        logoutBtn.innerHTML = originalText;
+        alert("Failed to sign out. Please try again.");
+      }
+    });
+  }
+
+  // Add spinner animation
+  const style = document.createElement("style");
+  style.textContent = `
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      animation: spin 1s linear infinite;
+    }
+  `;
+  document.head.appendChild(style);
+</script>

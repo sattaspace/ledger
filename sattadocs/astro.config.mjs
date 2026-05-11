@@ -113,6 +113,7 @@ export default defineConfig({
       components: {
         Head: "./src/components/Head.astro",
         LastUpdated: "./src/components/LastUpdated.astro", // Add this
+        Sidebar: "./src/components/Sidebar.astro",
       },
 
       // Banner for announcements (uncomment when needed)
