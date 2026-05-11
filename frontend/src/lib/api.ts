@@ -17,8 +17,8 @@ const isDev = import.meta.env.DEV;
 const envUrl = import.meta.env.PUBLIC_API_BASE_URL_SB;
 
 export const API_BASE_URL = isDev
-  ? "http://localhost:8000/api/v1"
-  : envUrl || "http://localhost:8000/api/v1";
+  ? "http://localhost:8086/api/v1"
+  : envUrl || "http://localhost:8086/api/v1";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

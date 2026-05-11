@@ -18,8 +18,8 @@ export const POST: APIRoute = async ({ request }) => {
       const isDev = import.meta.env.DEV;
       const envUrl = import.meta.env.PUBLIC_API_BASE_URL_SB;
       const backendUrl = isDev
-        ? "http://localhost:8000/api/v1"
-        : envUrl || "http://localhost:8000/api/v1";
+        ? "http://localhost:8086/api/v1"
+        : envUrl || "http://localhost:8086/api/v1";
 
       // We don't have the refresh token, so we can't fully blacklist,
       // but clearing the cookie is sufficient since the access token
