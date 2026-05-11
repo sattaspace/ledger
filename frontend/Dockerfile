@@ -14,6 +14,7 @@ WORKDIR /app
 
 # Set environment variables
 ENV NODE_ENV=production
+ENV PUBLIC_API_BASE_URL_SB=https://baseapi.sattaspace.com/api/v1
 ENV HOST=0.0.0.0
 ENV PORT=4321
 
@@ -24,7 +25,7 @@ COPY --from=build-stage /app/dist ./dist
 # We copy them from the build stage.
 COPY --from=build-stage /app/node_modules ./node_modules
 COPY --from=build-stage /app/package.json ./package.json
-COPY ../.env ./.env
+# COPY ../.env ./.env
 
 USER node
 EXPOSE 4321
