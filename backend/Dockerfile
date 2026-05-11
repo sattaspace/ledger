@@ -37,7 +37,7 @@ RUN mkdir -p /app/logs /app/staticfiles /app/media && \
 
 USER appuser
 
-EXPOSE 8090
+EXPOSE 8086
 
 # Production uses Gunicorn
 CMD ["gunicorn", "--bind", "0.0.0.0:8086", "--workers", "4", \
