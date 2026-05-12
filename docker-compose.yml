@@ -37,7 +37,8 @@ services:
     build: ./backend
     container_name: sb-backend
     restart: always
-    env_file: .env
+    env_file:
+      - .env  
     ports:
       - "127.0.0.1:8086:8086" # Only accessible to local reverse proxy
     volumes:
@@ -55,6 +56,8 @@ services:
     build: ./frontend
     container_name: sb-frontend
     restart: always
+    env_file:
+      - .env  
     ports:
       - "127.0.0.1:4321:4321" # Only accessible to local reverse proxy
     networks:
@@ -64,8 +67,10 @@ services:
     build: ./sattadocs
     container_name: sb-sattadocs
     restart: always
-    environment:
-      - SERVER_API_BASE_URL=http://sb-backend:8086/api/v1
+    env_file:
+      - .env  
+    # environment:
+    #   - SERVER_API_BASE_URL_SB=http://sb-backend:8086/api/v1
     ports:
       - "127.0.0.1:4323:4323" # Only accessible to local reverse proxy
     networks:

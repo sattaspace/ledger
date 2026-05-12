@@ -18,7 +18,7 @@ export const POST: APIRoute = async ({ request }) => {
       const isDev = import.meta.env.DEV;
       // Use runtime environment variable for production
       const envUrl =
-        process.env.SERVER_API_BASE_URL || process.env.PUBLIC_API_BASE_URL_SB;
+        process.env.SERVER_API_BASE_URL_SB || process.env.PUBLIC_API_BASE_URL_SB;
       const backendUrl = isDev
         ? "http://localhost:8086/api/v1"
         : envUrl || "http://sb-backend:8086/api/v1";

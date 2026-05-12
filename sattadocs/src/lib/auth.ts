@@ -20,7 +20,7 @@ function getBackendUrl(): string {
   // IMPORTANT: We use process.env directly for RUNTIME variables in SSR mode.
   // PUBLIC_ prefixed vars are inlined at BUILD time, which doesn't work for Docker.
   const runtimeUrl =
-    process.env.SERVER_API_BASE_URL || process.env.PUBLIC_API_BASE_URL_SB;
+    process.env.SERVER_API_BASE_URL_SB || process.env.PUBLIC_API_BASE_URL_SB;
 
   if (runtimeUrl) {
     return runtimeUrl;

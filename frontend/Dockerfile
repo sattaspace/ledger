@@ -14,7 +14,6 @@ WORKDIR /app
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PUBLIC_API_BASE_URL_SB=https://baseapi.sattaspace.com/api/v1
 ENV HOST=0.0.0.0
 ENV PORT=4321
 

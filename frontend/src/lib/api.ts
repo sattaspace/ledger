@@ -14,7 +14,8 @@
 // Vite/Astro provides 'import.meta.env.DEV' which is true during 'npm run dev'
 const isDev = import.meta.env.DEV;
 
-const envUrl = import.meta.env.PUBLIC_API_BASE_URL_SB;
+const envUrl =
+  process.env.SERVER_API_BASE_URL_SB || process.env.PUBLIC_API_BASE_URL_SB;
 
 export const API_BASE_URL = isDev
   ? "http://localhost:8086/api/v1"
