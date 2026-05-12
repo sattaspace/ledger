@@ -11,17 +11,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 1. Determine mode manually
-const mode = process.env.NODE_ENV || "development";
-
-// 2. Load env variables
-const env = loadEnv(mode, path.resolve(__dirname, "../"), "");
+const isDev = import.meta.env.DEV;
 
 // https://astro.build/config
 export default defineConfig({
   output: "server",
   // Use manually loaded env for the site property
-  site:
-    mode === "development" ? "http://localhost:4321" : env.PUBLIC_SITE_URL_SB,
+  site: isDev
+    ? "http://localhost:4321"
+    : process.env.PUBLIC_SITE_URL_SB || "https://base.sattaspace.com",
   trailingSlash: "never",
 
   adapter: node({

@@ -12,7 +12,8 @@ const {
   description = "Central authentication and subscription billing for the SattaSpace ecosystem.",
 } = Astro.props;
 
-const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+const siteOrigin = Astro.site?.toString() || "https://base.sattaspace.com";
+const canonicalURL = new URL(Astro.url.pathname, siteOrigin);
 
 const siteTitle = "SattaBase";
 const ogImage = `${Astro.site || "https://base.sattaspace.com"}/og-image.png`;
