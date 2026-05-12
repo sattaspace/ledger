@@ -365,7 +365,7 @@ class AdminMetricsController:
                     recognized_date__gte=twelve_months_ago.date(),
                 )
                 .values(
-                    plan_id=F("plan__id"),
+                    plan_id_val=F("plan__id"),
                     plan_name=F("plan__name"),
                     plan_slug=F("plan__slug"),
                     product_name=F("plan__product__name"),
@@ -390,7 +390,7 @@ class AdminMetricsController:
             by_plan = []
             for row in plan_qs:
                 by_plan.append({
-                    "plan_id": row["plan_id"],
+                    "plan_id": row["plan_id_val"],
                     "plan_name": row["plan_name"],
                     "plan_slug": row["plan_slug"],
                     "product_name": row["product_name"],
