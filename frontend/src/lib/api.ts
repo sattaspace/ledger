@@ -19,7 +19,7 @@ const envUrl =
 
 export const API_BASE_URL = isDev
   ? "http://localhost:8086/api/v1"
-  : envUrl || "http://localhost:8086/api/v1";
+  : envUrl || "https://baseapi.sattaspace.com/api/v1";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
