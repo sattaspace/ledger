@@ -80,26 +80,16 @@ logger = logging.getLogger(__name__)
 # Helper: currency formatting
 # =============================================================================
 
-
-CURRENCY_SYMBOLS = {
-    "USD": "$",
-    "EUR": "\u20ac",
-    "GBP": "\u00a3",
-    "INR": "\u20b9",
-    "BDT": "\u09f3",
-    "CAD": "C$",
-    "AUD": "A$",
-    "SGD": "S$",
-    "JPY": "\u00a5",
-    "CNY": "\u00a5",
-    "KRW": "\u20a9",
-}
+# Use centralized currency metadata from currency_service
+from .currency_service import get_currency_symbol, get_currency_decimal_digits
 
 
 def _format_currency(cents: int, currency: str = "USD") -> str:
     """Format cents into a human-readable currency string."""
-    symbol = CURRENCY_SYMBOLS.get(currency.upper(), currency.upper() + " ")
-    return f"{symbol}{cents / 100:.2f}"
+    symbol = get_currency_symbol(currency)
+    decimal_digits = get_currency_decimal_digits(currency)
+    amount = cents / 100
+    return f"{symbol}{amount:.{decimal_digits}f}"
 
 
 # =============================================================================

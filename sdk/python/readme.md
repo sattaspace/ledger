@@ -507,11 +507,34 @@ class AuthMeResponse(BaseModel):
     account_status: str = "active"              # "active" | "inactive" | "deleted"
     subscription: SubscriptionInfo | None = None
     access: dict[str, Any] = {}                 # Feature flags and limits
+    exchange_rates: dict[str, str] | None = None    # Rate map (when X-Service-Domain present)
+    currencies: dict[str, dict[str, Any]] | None = None  # Currency metadata (when X-Service-Domain present)
 
     def has_access(self, key: str) -> bool: ...      # Coerces strings/ints to bool
     def get_access(self, key: str, default=None): ...  # Raw value lookup
     @property
     def access_keys(self) -> list[str]: ...            # All available keys
+```
+
+#### Currency Metadata on auth/me
+
+When the `X-Service-Domain` header is present (SDK mode), the `auth/me` response includes two additional fields:
+
+- **`exchange_rates`** — dict mapping target currency → rate string (e.g. `{"EUR": "0.920000", "BDT": "109.850000"}`)
+- **`currencies`** — dict mapping ISO code → metadata dict (e.g. `{"USD": {"symbol": "$", "name": "US Dollar", "decimal_digits": 2}}`)
+
+Sister domain backends should cache `currencies` in Redis with a long TTL (24 hours) and use it for all currency display operations instead of hardcoding symbol maps. The base backend's `/billing/currencies` endpoint is also available for direct fetches.
+
+```python
+auth_me = await client.auth.me(tokens.access)
+
+# Cache currency metadata for the sister domain
+if auth_me.currencies:
+    redis.set("currencies_meta", json.dumps(auth_me.currencies), ex=86400)
+
+# Use cached metadata to get a symbol
+currencies = json.loads(redis.get("currencies_meta") or "{}")
+symbol = currencies.get("BDT", {}).get("symbol", "BDT")  # → "৳"
 ```
 
 ### `MessageResponse`

@@ -12,7 +12,7 @@ description: SDK (TypeScript) vs Backend (Django Ninja) — security & feature a
 > **Last updated: 2026-05-07** — Layer 1 (B1–B5) ALL DONE: **Python 109/109**, **TypeScript 71/71** = **180/180 total**. Layer 2 (B6–B15) integration tests DONE: **Python 9 passed + 2 skipped + 7 gracefully handled** (18 total), **TypeScript 13 passed + 2 skipped + 6 gracefully handled** (21 total). Tests handle three backend config realities: (1) `/billing/auth/me` returns 500 — backend bug, tests skip with diagnostic; (2) `API_KEY_ENFORCED=False` — middleware doesn't reject fake/revoked keys, tests skip gracefully; (3) email already verified — tests accept 400 as valid state. No SDK bugs found in any layer. Next: Layer 3 (B16–B17) mini project.
 
 ---
-
+ 
 ## 1. Overview
 
 The `@sattabase/sdk` (TypeScript) is designed to be consumed by **sister domains** — external applications that authenticate users against Sattabase and receive domain-specific access maps. The SDK sends every request with two identifying headers:

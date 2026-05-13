@@ -342,26 +342,12 @@ class Plan(TimeStampedModel):
         }
         cycle = cycle_labels.get(self.billing_cycle, "")
 
-        # Use locale-aware currency formatting based on plan's currency
-        import locale
+        # Use centralized currency metadata from currency_service
+        from .currency_service import get_currency_symbol, get_currency_decimal_digits
 
-        currency_symbols = {
-            "USD": "$",
-            "EUR": "\u20ac",
-            "GBP": "\u00a3",
-            "INR": "\u20b9",
-            "BDT": "\u09f3",
-            "CAD": "C$",
-            "AUD": "A$",
-            "SGD": "S$",
-            "JPY": "\u00a5",
-            "CNY": "\u00a5",
-            "KRW": "\u20a9",
-        }
-        symbol = currency_symbols.get(
-            self.currency.upper(), self.currency.upper() + " "
-        )
-        return f"{symbol}{amount:.2f}{cycle}"
+        symbol = get_currency_symbol(self.currency)
+        decimal_digits = get_currency_decimal_digits(self.currency)
+        return f"{symbol}{amount:.{decimal_digits}f}{cycle}"
 
     @property
     def is_free(self) -> bool:

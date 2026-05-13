@@ -1,0 +1,38 @@
+---
+/**
+ * LoadingSpinner — simple loading spinner component for Ledger.
+ */
+
+interface Props {
+  size?: "sm" | "md" | "lg";
+  variant?: "brand" | "muted";
+  message?: string;
+}
+
+const { size = "md", variant = "brand", message = "Loading..." } = Astro.props;
+
+const sizeMap = {
+  sm: { container: "h-6 w-6", border: "border-2", text: "text-xs" },
+  md: { container: "h-10 w-10", border: "border-2", text: "text-sm" },
+  lg: { container: "h-14 w-14", border: "border-[3px]", text: "text-base" },
+};
+
+const s = sizeMap[size];
+---
+
+<div class="flex flex-col items-center justify-center gap-3 py-16">
+  <div class={`relative ${s.container}`}>
+    <div class={`absolute inset-0 rounded-full ${s.border} border-navy-200 dark:border-navy-700`}>
+    </div>
+    <div
+      class:list={[
+        "absolute inset-0 rounded-full animate-spin",
+        s.border,
+        "border-t-transparent",
+      ]}
+      style={`border-color: transparent; border-top-color: ${variant === "brand" ? "var(--color-cyan-600)" : "var(--color-slate-custom-600)"};`}
+    >
+    </div>
+  </div>
+  {message && <p class={`${s.text} text-slate-custom-700 dark:text-slate-custom-400`}>{message}</p>}
+</div>

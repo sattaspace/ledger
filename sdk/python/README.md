@@ -1,1 +1,0 @@
-# Sattabase Python SDK

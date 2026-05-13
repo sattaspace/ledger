@@ -218,6 +218,23 @@ class AuthMeSchema(Schema):
         default_factory=dict,
         description="Flat key-value access map from the plan's access entries",
     )
+    exchange_rates: Optional[dict[str, str]] = Field(
+        None,
+        description=(
+            "Exchange rates from the user's base currency to all available "
+            "currencies. Only populated when X-Service-Domain header is present. "
+            "Format: {'USD': '1.000000', 'EUR': '0.920000', 'BDT': '109.850000'}"
+        ),
+    )
+    currencies: Optional[dict[str, dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Currency metadata (symbol, name, decimal_digits) for all supported "
+            "currencies. Only populated when X-Service-Domain header is present. "
+            "Sister domains MUST use this instead of hardcoding symbol maps. "
+            "Format: {'USD': {'symbol': '$', 'name': 'US Dollar', 'decimal_digits': 2}, ...}"
+        ),
+    )
 
 
 # =============================================================================
@@ -381,6 +398,76 @@ class RefundOutputSchema(Schema):
     amount_cents: int = Field(..., description="Refund amount in cents")
     currency: str = Field(..., description="ISO 4217 currency code")
     status: str = Field(..., description="Refund status (pending/completed/failed)")
+
+
+# =============================================================================
+# Exchange Rate Schemas
+# =============================================================================
+
+
+class ExchangeRateOutputSchema(Schema):
+    """Single exchange rate entry."""
+
+    base_currency: str = Field(..., description="ISO 4217 base currency code")
+    target_currency: str = Field(..., description="ISO 4217 target currency code")
+    rate: str = Field(..., description="Exchange rate (1 base = ? target)")
+    fetched_at: datetime = Field(..., description="When the rate was fetched")
+
+
+class ExchangeRateListSchema(Schema):
+    """Response for listing all exchange rates."""
+
+    base_currency: str = Field(..., description="The base currency for these rates")
+    rates: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of target_currency → rate string, e.g. {'BDT': '109.850000', 'EUR': '0.920000'}",
+    )
+    fetched_at: Optional[datetime] = Field(
+        None, description="When the most recent rate was fetched"
+    )
+    count: int = Field(..., description="Number of rates returned")
+
+
+class ExchangeRateConvertSchema(Schema):
+    """Response for a currency conversion lookup."""
+
+    from_currency: str = Field(..., description="Source currency code")
+    to_currency: str = Field(..., description="Target currency code")
+    rate: Optional[str] = Field(None, description="Exchange rate used (1 from = ? to)")
+    converted_amount: Optional[str] = Field(
+        None, description="Converted amount in major units (e.g. '109.85' for 1 USD → BDT)"
+    )
+    available: bool = Field(
+        ..., description="Whether a rate was available for this pair"
+    )
+
+
+# =============================================================================
+# Currency Metadata Schemas
+# =============================================================================
+
+
+class CurrencyMetaEntrySchema(Schema):
+    """Metadata for a single currency."""
+
+    symbol: str = Field(..., description="Display symbol (e.g. '$', '৳', '€')")
+    name: str = Field(..., description="Human-readable name (e.g. 'US Dollar')")
+    decimal_digits: int = Field(
+        ..., description="Number of decimal places (0 for JPY/KRW/VND, 2 for most)"
+    )
+
+
+class CurrenciesListSchema(Schema):
+    """Response for listing all supported currency metadata."""
+
+    currencies: dict[str, CurrencyMetaEntrySchema] = Field(
+        ...,
+        description=(
+            "Map of ISO 4217 code → metadata. "
+            "e.g. {'USD': {'symbol': '$', 'name': 'US Dollar', 'decimal_digits': 2}}"
+        ),
+    )
+    count: int = Field(..., description="Number of currencies returned")
 
 
 # =============================================================================

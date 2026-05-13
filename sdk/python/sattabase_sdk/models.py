@@ -91,6 +91,23 @@ class AuthMeResponse(BaseModel):
     account_status: str = "active"
     subscription: Optional[SubscriptionInfo] = None
     access: dict[str, Any] = Field(default_factory=dict)
+    exchange_rates: Optional[dict[str, str]] = Field(
+        None,
+        description=(
+            "Exchange rates from the user's base currency to all available "
+            "currencies. Only populated when X-Service-Domain header is present. "
+            "Format: {'USD': '1.000000', 'EUR': '0.920000', 'BDT': '109.850000'}"
+        ),
+    )
+    currencies: Optional[dict[str, dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Currency metadata (symbol, name, decimal_digits) for all supported "
+            "currencies. Only populated when X-Service-Domain header is present. "
+            "Sister domains MUST use this instead of hardcoding symbol maps. "
+            "Format: {'USD': {'symbol': '$', 'name': 'US Dollar', 'decimal_digits': 2}}"
+        ),
+    )
 
     # ----- Helper methods for feature gating -----
 

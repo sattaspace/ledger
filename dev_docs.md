@@ -41,6 +41,7 @@ Satta Ledger is a full-stack multi-tenant SaaS application for personal accounti
 - **Modular Stripe integration** — Stripe API calls are encapsulated in `billing/stripe/` sub-package (client, checkout, customer, portal, prices, gdpr, webhooks) rather than scattered across the codebase.
 - **Idempotent plan changes** — plan changes use a two-step preview-then-confirm flow with server-side tokens to prevent double-charges.
 - **Service-to-service API key authentication** — sister domain backends authenticate via `X-API-Key` header validated by `service_credential_middleware` (global Django middleware using ``@sync_and_async_middleware`` pattern for full ASGI compatibility). Keys are stored as SHA-256 hashes with `sb_live_` prefix, one active key per `ServiceDomain`. Enforcement mode (`API_KEY_ENFORCED`) allows gradual rollout.
+- **Centralized currency metadata** — all currency metadata (symbol, name, decimal_digits) is defined once in the base backend's `CURRENCY_META` dict and exposed via `GET /billing/currencies` and the `currencies` field on `auth/me`. Sister domains MUST consume these endpoints instead of hardcoding their own symbol maps, ensuring a single source of truth across all domains.
 
 ---
 
@@ -246,7 +247,7 @@ sattabase/
 │   │   ├── controllers.py            # BillingProtectedController, BillingPublicController, BillingAdminController
 │   │   ├── views.py                  # Legacy router (backward compat)
 │   │   ├── tasks.py                  # Celery tasks (revenue recognition, dunning, FX)
-│   │   ├── currency_service.py       # Multi-currency price conversion
+│   │   ├── currency_service.py       # Multi-currency conversion + CURRENCY_META (single source of truth)
 │   │   ├── stripe_errors.py          # Custom Stripe exception classes
 │   │   ├── admin.py                  # Django admin registration
 │   │   ├── admin_controller.py       # BillingAdminController (refund, sync, metrics)
@@ -443,7 +444,7 @@ npm run build
 | `SB_CSRF_TRUSTED_ORIGINS` | CSRF-trusted origins | `http://localhost:4321,...` |
 | `SB_CORS_ALLOW_ALL_ORIGINS` | Allow all CORS origins (default: `DEBUG`) | `true` |
 | `SB_CORS_ALLOWED_ORIGINS` | Explicit CORS allowed origins | `http://localhost:4321,...` |
-| `PUBLIC_SITE_URL_SB` | Frontend URL (auto-added to CORS/CSRF) | `http://localhost:4321` |
+| `SB_FRONTEND_URL` | Frontend URL (auto-added to CORS/CSRF) | `http://localhost:4321` |
 
 #### Database
 
@@ -508,17 +509,18 @@ npm run build
 | `SB_STRIPE_SECRET_KEY` | Stripe secret key | `sk_test_...` |
 | `SB_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | `pk_test_...` |
 | `SB_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
-| `SB_STRIPE_APP_DOMAIN` | App domain for portal/checkout URLs (default: `PUBLIC_SITE_URL_SB`) | `http://localhost:4321` |
+| `SB_STRIPE_APP_DOMAIN` | App domain for portal/checkout URLs (default: `SB_FRONTEND_URL`) | `http://localhost:4321` |
 | `SB_STRIPE_TAX_ENABLED` | Enable Stripe Tax at checkout | `True` |
 
 #### URL & App Settings
 
 | Variable | Description | Example |
 |---|---|---|
-| `PUBLIC_APP_NAME-SB` | App display name | `SattaBase` |
-| `PUBLIC_SITE_URL_SB` | Public site URL | `http://localhost:4321` |
-
-| `PUBLIC_API_BASE_URL_SB` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
+| `PUBLIC_APP_NAME` | App display name | `SattaBase` |
+| `PUBLIC_SITE_URL` | Public site URL | `http://localhost:4321` |
+| `SB_BACKEND_URL` | Backend base URL | `http://localhost:8086` |
+| `SB_BACKEND_PUBLIC_API_URL` | Backend public API URL | `http://localhost:8086/api` |
+| `PUBLIC_API_BASE_URL` | Frontend API URL (Astro env) | `http://localhost:8000/api/v1` |
 | `SB_TOS_VERSION` | Terms of Service version | `1.0` |
 | `SB_BASE_CURRENCY` | Base currency for billing | `USD` |
 | `SB_EXCHANGE_RATE_API_URL` | Exchange rate API URL | `https://open.er-api.com/v6/latest` |
@@ -531,7 +533,7 @@ npm run build
 
 > **Note**: In production, `SB_JWT_SIGNING_KEY` must be explicitly set and must differ from `SB_SECRET_KEY`. The server will refuse to start without it.
 >
-> **Note**: `PUBLIC_SITE_URL_SB` is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` in settings. Set this once and it covers CORS/CSRF for the frontend domain. In production, `SB_CORS_ALLOW_ALL_ORIGINS` defaults to `False`, so `PUBLIC_SITE_URL_SB` and `SB_CORS_ALLOWED_ORIGINS` must list all allowed domains.
+> **Note**: `SB_FRONTEND_URL` is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` in settings. Set this once and it covers CORS/CSRF for the frontend domain. In production, `SB_CORS_ALLOW_ALL_ORIGINS` defaults to `False`, so `SB_FRONTEND_URL` and `SB_CORS_ALLOWED_ORIGINS` must list all allowed domains.
 >
 > **Note**: `SB_API_KEY_ENFORCED` defaults to `False` for gradual rollout. When `True`, all requests with an invalid or revoked `X-API-Key` receive an immediate 403 response. Set this to `True` before deploying SDK consumers to production. A `RuntimeWarning` is emitted at startup if `DEBUG=False` and enforcement is off.
 >
@@ -854,6 +856,36 @@ Cached exchange rates for multi-currency price display.
 **Unique constraint:** `(base_currency, target_currency)`
 **Database table:** `billing_exchange_rate`
 
+#### Currency Metadata (`CURRENCY_META` in `currency_service.py`)
+
+Rather than a database model, currency metadata is maintained as a Python dictionary constant `CURRENCY_META` in `billing/currency_service.py`. This is the **single source of truth** for all currency display information across the platform and sister domains.
+
+| Field | Type | Description |
+|---|---|---|
+| `symbol` | str | Display symbol (e.g. `$`, `৳`, `€`, `¥`) |
+| `name` | str | Human-readable name (e.g. "US Dollar", "Bangladeshi Taka") |
+| `decimal_digits` | int | Number of decimal places (0 for JPY/KRW/VND, 2 for most) |
+
+**Format:** `dict[str, dict[str, str | int]]` keyed by ISO 4217 code.
+
+```python
+CURRENCY_META = {
+    "USD": {"symbol": "$", "name": "US Dollar", "decimal_digits": 2},
+    "EUR": {"symbol": "€", "name": "Euro", "decimal_digits": 2},
+    "BDT": {"symbol": "৳", "name": "Bangladeshi Taka", "decimal_digits": 2},
+    "JPY": {"symbol": "¥", "name": "Japanese Yen", "decimal_digits": 0},
+    # ... 38 currencies total
+}
+```
+
+**Helper functions** (also in `currency_service.py`):
+- `get_currency_symbol(code)` → returns the display symbol for a currency
+- `get_currency_name(code)` → returns the human-readable name
+- `get_currency_decimal_digits(code)` → returns the number of decimal places
+- `get_all_currencies_meta()` → returns the full `CURRENCY_META` dict
+
+**Important:** Sister domains MUST NOT duplicate this data. They should consume it via `GET /billing/currencies` or the `currencies` field on `auth/me`.
+
 #### PlanChangeLog
 
 Audit trail of plan changes with proration details.
@@ -1004,6 +1036,13 @@ Billing schemas handle product/plan/subscription/invoice/refund request/response
 | `SubscriptionDetailSchema` | Full subscription with nested plan + access map | `GET /billing/subscriptions/{slug}` |
 | `ProrationPreviewOutputSchema` | subtotal, tax, total, next_billing, change_type, preview_token | Plan change preview |
 | `TransactionItemSchema` | id, type, amounts, hosted_url, pdf_url, card_brand | Transaction history |
+
+#### Currency Metadata Schemas
+
+| Schema | Fields | Used By |
+|---|---|---|
+| `CurrencyMetaEntrySchema` | symbol, name, decimal_digits | Inside `CurrenciesListSchema` and `AuthMeSchema` |
+| `CurrenciesListSchema` | currencies (dict[str, CurrencyMetaEntrySchema]), count | `GET /billing/currencies` |
 
 ### Common API Key Schemas (`common/schemas.py`)
 
@@ -1201,7 +1240,7 @@ All endpoints are documented in the auto-generated OpenAPI spec at `/api/v1/docs
 
 | Method | Path | Description | Request Body | Response |
 |---|---|---|---|---|
-| GET | `/billing/auth/me` | Get user subscription + access | Header: `X-Service-Domain` | `AuthMeSchema` |
+| GET | `/billing/auth/me` | Get user subscription + access + exchange_rates + currencies (when X-Service-Domain present) | Header: `X-Service-Domain` | `AuthMeSchema` |
 | GET | `/billing/subscriptions` | List user subscriptions | `?limit=&offset=` | Subscription list |
 | GET | `/billing/subscriptions/{productSlug}` | Get subscription detail | — | `SubscriptionDetailSchema` |
 | POST | `/billing/subscriptions/{productSlug}/checkout` | Create Stripe checkout session | `CheckoutInputSchema` | `{checkout_url, reactivated}` |
@@ -1213,6 +1252,9 @@ All endpoints are documented in the auto-generated OpenAPI spec at `/api/v1/docs
 | POST | `/billing/subscriptions/{productSlug}/confirm-plan-change` | Confirm plan change | `ConfirmPlanChangeInputSchema` | `ConfirmPlanChangeOutputSchema` |
 | POST | `/billing/portal` | Create Stripe Portal session | — | `{portal_url}` |
 | GET | `/billing/subscriptions/transactions` | Transaction history | `?limit=&starting_after=` | Transaction list |
+| GET | `/billing/currencies` | List all supported currency metadata (symbol, name, decimal_digits) | — | `CurrenciesListSchema` |
+| GET | `/billing/exchange-rates` | Get all exchange rates for a base currency | `?base=USD` | `ExchangeRateListSchema` |
+| GET | `/billing/exchange-rates/convert` | Convert amount between currencies | `?from=USD&to=BDT&amount=100` | `ExchangeRateConvertSchema` |
 
 #### Billing — Admin (IsAdmin required)
 
@@ -1504,7 +1546,7 @@ Centralized fetch wrapper that handles authentication, error handling, and token
 - Auto-refreshes expired access tokens (transparent 401 handling)
 - Persists refreshed tokens to storage so they survive page reloads
 - Standardized error format with field-level error extraction
-- Configurable base URL via `PUBLIC_API_BASE_URL_SB` env variable
+- Configurable base URL via `PUBLIC_API_BASE_URL` env variable
 - FormData upload support via `upload()` and `uploadPut()` methods
 - `getMediaUrl()` helper to resolve relative media paths against the backend origin
 - `cache: "no-store"` on every request to prevent stale data
@@ -1602,7 +1644,7 @@ Billing API client, types, and formatting helpers. Uses the same `apiClient` fro
 | `getProducts()` | GET /billing/products | List all public products |
 | `getProductBySlug(slug, currency?)` | GET /billing/products/{slug} | Get product with plans + currency conversion |
 | `getPlansForProduct(slug, currency?)` | GET /billing/products/{slug}/plans | List plans with optional FX conversion |
-| `getAuthMe(domain?)` | GET /billing/auth/me | Get subscription + access (supports `X-Service-Domain` header) |
+| `getAuthMe(domain?)` | GET /billing/auth/me | Get subscription + access + exchange_rates + currencies (supports `X-Service-Domain` header) |
 | `getSubscriptions()` | GET /billing/subscriptions | List user subscriptions |
 | `getSubscriptionDetail(slug)` | GET /billing/subscriptions/{slug} | Get subscription with plan + access map |
 | `cancelSubscription(slug, reason?)` | POST /billing/subscriptions/{slug}/cancel | Cancel subscription |
@@ -1627,6 +1669,32 @@ Billing API client, types, and formatting helpers. Uses the same `apiClient` fro
 | `formatCycle(cycle)` | Map billing cycle to `"/mo"`, `"/yr"`, or `"one-time"` |
 | `getStatusStyle(status)` | Return Tailwind CSS badge classes for subscription status |
 | `formatDate(dateStr)` | Format ISO date to `"Mon DD, YYYY"` |
+
+### Currency Library — Sister Domain (`ledgerfrontend/src/lib/currency.ts`)
+
+The Ledger frontend provides currency formatting and conversion utilities. **All currency metadata comes from the base backend** — this module does NOT hardcode any currency symbols.
+
+**Architecture:**
+- Currency metadata (symbol, name, decimal_digits) is cached in `localStorage` from the `currencies` field on `auth/me` (changes very rarely)
+- Exchange rates are cached in `sessionStorage` from the `exchange_rates` field on `auth/me`
+- If no metadata is cached, falls back to `Intl.NumberFormat` for symbol resolution
+- The `useAuth` composable calls `cacheCurrenciesMeta()` and `cacheExchangeRates()` on every auth/me response
+
+**Exported functions:**
+
+| Function | Description |
+|---|---|
+| `formatCurrency(amount, currencyCode, options?)` | Format amount with proper currency symbol and decimal digits |
+| `convertAmount(amount, fromCurrency, toCurrency)` | Convert between currencies using cached rates |
+| `getCurrencySymbol(currencyCode)` | Get display symbol from cached metadata (falls back to Intl.NumberFormat) |
+| `getCurrencyName(currencyCode)` | Get human-readable name from cached metadata |
+| `getCurrencyDecimalDigits(currencyCode)` | Get decimal places from cached metadata (default: 2) |
+| `cacheCurrenciesMeta(currencies)` | Cache currency metadata from auth/me response (localStorage) |
+| `cacheExchangeRates(authMeResponse)` | Cache exchange rates + base currency from auth/me (sessionStorage) |
+| `getCachedRates(baseCurrency?)` | Get cached exchange rates |
+| `getBaseCurrency()` | Get user's base currency from cache |
+| `clearExchangeRates()` | Clear rate cache (on logout). Does NOT clear currencies_meta |
+| `clearCurrenciesMeta()` | Clear currency metadata cache (use only if stale) |
 
 ### Toast System (`src/lib/toast.ts`)
 

@@ -76,6 +76,25 @@ CORS_ALLOWED_ORIGINS = env.list(
     ],
 )
 
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "x-service-domain",
+    "x-api-key",
+]
+
+CORS_EXPOSE_HEADERS = [
+    "x-api-key",
+    "x-service-domain",
+]
+
 # Ensure the frontend URL is always in CORS_ALLOWED_ORIGINS.
 if FRONTEND_URL not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
@@ -93,6 +112,8 @@ CSRF_TRUSTED_ORIGINS = env.list(
 # Ensure the frontend URL is always in CSRF_TRUSTED_ORIGINS.
 if FRONTEND_URL not in CSRF_TRUSTED_ORIGINS:
     CSRF_TRUSTED_ORIGINS.append(FRONTEND_URL)
+    
+
 
 
 MIDDLEWARE = [

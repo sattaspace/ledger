@@ -15,6 +15,8 @@ After this middleware, every request has:
 - ``request.sattabase_user`` — :class:`User` model or None
 - ``request.sattabase_access`` — ``dict[str, Any]`` access map
 - ``request.sattabase_subscription`` — :class:`SubscriptionInfo` or None
+- ``request.sattabase_exchange_rates`` — ``dict[str, str]`` or None
+- ``request.sattabase_currencies`` — ``dict[str, dict]`` or None (currency metadata)
 """
 
 from __future__ import annotations
@@ -133,6 +135,8 @@ class SattabaseAuthMiddleware:
             request.sattabase_user = None
             request.sattabase_access = {}
             request.sattabase_subscription = None
+            request.sattabase_exchange_rates = None
+            request.sattabase_currencies = None
             return self.get_response(request)
 
         # Run async fetch in sync context
@@ -164,11 +168,15 @@ class SattabaseAuthMiddleware:
             request.sattabase_user = None
             request.sattabase_access = {}
             request.sattabase_subscription = None
+            request.sattabase_exchange_rates = None
+            request.sattabase_currencies = None
             return self.get_response(request)
 
         request.sattabase_user = auth_me.user
         request.sattabase_access = auth_me.access
         request.sattabase_subscription = auth_me.subscription
+        request.sattabase_exchange_rates = auth_me.exchange_rates
+        request.sattabase_currencies = auth_me.currencies
 
         return self.get_response(request)
 
@@ -179,6 +187,8 @@ class SattabaseAuthMiddleware:
             request.sattabase_user = None
             request.sattabase_access = {}
             request.sattabase_subscription = None
+            request.sattabase_exchange_rates = None
+            request.sattabase_currencies = None
             return await self.get_response(request)
 
         client = self._get_client()
@@ -192,10 +202,14 @@ class SattabaseAuthMiddleware:
             request.sattabase_user = None
             request.sattabase_access = {}
             request.sattabase_subscription = None
+            request.sattabase_exchange_rates = None
+            request.sattabase_currencies = None
             return await self.get_response(request)
 
         request.sattabase_user = auth_me.user
         request.sattabase_access = auth_me.access
         request.sattabase_subscription = auth_me.subscription
+        request.sattabase_exchange_rates = auth_me.exchange_rates
+        request.sattabase_currencies = auth_me.currencies
 
         return await self.get_response(request)

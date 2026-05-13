@@ -3,6 +3,12 @@
 Handles conversion between plan base currency and user's preferred
 currency using exchange rates stored in the ExchangeRate model.
 
+Also serves as the **single source of truth** for currency metadata
+(symbol, name, decimal digits). Sister domains consume this data
+via the ``/billing/currencies`` endpoint or the ``currencies`` field
+on ``/billing/auth/me`` — they should NOT hardcode their own symbol
+maps.
+
 Flow:
   1. Plans are priced in BASE_CURRENCY (default USD).
   2. Exchange rates are fetched daily from a free API by Celery.
@@ -20,6 +26,107 @@ from typing import Optional, Dict, Any
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Currency Metadata — Single Source of Truth
+# =============================================================================
+# Every currency supported by the system is defined here.
+# Sister domains fetch this via /billing/currencies or the currencies
+# field on auth/me — they must NOT duplicate this data.
+#
+# Fields per currency:
+#   symbol        — display symbol (e.g. "$", "৳", "€")
+#   name          — human-readable name (e.g. "US Dollar", "Bangladeshi Taka")
+#   decimal_digits — number of decimal places for amounts (0 for JPY/KRW/VND)
+# =============================================================================
+
+CURRENCY_META: dict[str, dict[str, str | int]] = {
+    "USD": {"symbol": "$", "name": "US Dollar", "decimal_digits": 2},
+    "EUR": {"symbol": "€", "name": "Euro", "decimal_digits": 2},
+    "GBP": {"symbol": "£", "name": "British Pound", "decimal_digits": 2},
+    "JPY": {"symbol": "¥", "name": "Japanese Yen", "decimal_digits": 0},
+    "CNY": {"symbol": "¥", "name": "Chinese Yuan", "decimal_digits": 2},
+    "INR": {"symbol": "₹", "name": "Indian Rupee", "decimal_digits": 2},
+    "BDT": {"symbol": "৳", "name": "Bangladeshi Taka", "decimal_digits": 2},
+    "PKR": {"symbol": "₨", "name": "Pakistani Rupee", "decimal_digits": 2},
+    "AUD": {"symbol": "A$", "name": "Australian Dollar", "decimal_digits": 2},
+    "CAD": {"symbol": "C$", "name": "Canadian Dollar", "decimal_digits": 2},
+    "CHF": {"symbol": "CHF", "name": "Swiss Franc", "decimal_digits": 2},
+    "HKD": {"symbol": "HK$", "name": "Hong Kong Dollar", "decimal_digits": 2},
+    "NZD": {"symbol": "NZ$", "name": "New Zealand Dollar", "decimal_digits": 2},
+    "SGD": {"symbol": "S$", "name": "Singapore Dollar", "decimal_digits": 2},
+    "KRW": {"symbol": "₩", "name": "South Korean Won", "decimal_digits": 0},
+    "SEK": {"symbol": "kr", "name": "Swedish Krona", "decimal_digits": 2},
+    "NOK": {"symbol": "kr", "name": "Norwegian Krone", "decimal_digits": 2},
+    "DKK": {"symbol": "kr", "name": "Danish Krone", "decimal_digits": 2},
+    "MXN": {"symbol": "MX$", "name": "Mexican Peso", "decimal_digits": 2},
+    "BRL": {"symbol": "R$", "name": "Brazilian Real", "decimal_digits": 2},
+    "ZAR": {"symbol": "R", "name": "South African Rand", "decimal_digits": 2},
+    "RUB": {"symbol": "₽", "name": "Russian Ruble", "decimal_digits": 2},
+    "TRY": {"symbol": "₺", "name": "Turkish Lira", "decimal_digits": 2},
+    "AED": {"symbol": "د.إ", "name": "UAE Dirham", "decimal_digits": 2},
+    "SAR": {"symbol": "﷼", "name": "Saudi Riyal", "decimal_digits": 2},
+    "THB": {"symbol": "฿", "name": "Thai Baht", "decimal_digits": 2},
+    "MYR": {"symbol": "RM", "name": "Malaysian Ringgit", "decimal_digits": 2},
+    "IDR": {"symbol": "Rp", "name": "Indonesian Rupiah", "decimal_digits": 2},
+    "VND": {"symbol": "₫", "name": "Vietnamese Dong", "decimal_digits": 0},
+    "PHP": {"symbol": "₱", "name": "Philippine Peso", "decimal_digits": 2},
+    "TWD": {"symbol": "NT$", "name": "Taiwan Dollar", "decimal_digits": 2},
+    "PLN": {"symbol": "zł", "name": "Polish Zloty", "decimal_digits": 2},
+    "NGN": {"symbol": "₦", "name": "Nigerian Naira", "decimal_digits": 2},
+    "EGP": {"symbol": "E£", "name": "Egyptian Pound", "decimal_digits": 2},
+    "KES": {"symbol": "KSh", "name": "Kenyan Shilling", "decimal_digits": 2},
+    "COP": {"symbol": "COL$", "name": "Colombian Peso", "decimal_digits": 2},
+    "CLP": {"symbol": "CLP$", "name": "Chilean Peso", "decimal_digits": 0},
+    "PEN": {"symbol": "S/.", "name": "Peruvian Sol", "decimal_digits": 2},
+    "ARS": {"symbol": "AR$", "name": "Argentine Peso", "decimal_digits": 2},
+    "ILS": {"symbol": "₪", "name": "Israeli Shekel", "decimal_digits": 2},
+}
+
+
+def get_currency_symbol(currency_code: str) -> str:
+    """Get the display symbol for a currency code.
+
+    Falls back to the currency code itself if no meta is known.
+    This is the canonical helper — use it everywhere instead of
+    maintaining local symbol maps.
+    """
+    meta = CURRENCY_META.get(currency_code.upper())
+    if meta:
+        return str(meta["symbol"])
+    return currency_code.upper()
+
+
+def get_currency_name(currency_code: str) -> str:
+    """Get the human-readable name for a currency code.
+
+    Falls back to the currency code if no meta is known.
+    """
+    meta = CURRENCY_META.get(currency_code.upper())
+    if meta:
+        return str(meta["name"])
+    return currency_code.upper()
+
+
+def get_currency_decimal_digits(currency_code: str) -> int:
+    """Get the number of decimal places for a currency.
+
+    Returns 2 as a safe default for unknown currencies.
+    """
+    meta = CURRENCY_META.get(currency_code.upper())
+    if meta:
+        return int(meta["decimal_digits"])
+    return 2
+
+
+def get_all_currencies_meta() -> dict[str, dict[str, str | int]]:
+    """Return the full CURRENCY_META dict.
+
+    Used by the /billing/currencies endpoint and auth/me piggyback
+    so sister domains can consume it without hardcoding.
+    """
+    return CURRENCY_META
 
 
 # =============================================================================
@@ -317,6 +424,59 @@ def update_exchange_rates() -> dict:
     )
 
     return {"updated": updated, "skipped": skipped, "base": base}
+
+
+def get_all_rates_for_base(base_currency: str) -> dict[str, str]:
+    """Get all exchange rates for a given base currency as a compact dict.
+
+    Returns: {"USD": "1.000000", "EUR": "0.920000", "BDT": "109.850000", ...}
+
+    Used by auth/me to piggyback exchange rates for sister domains.
+    Also includes the base currency itself with rate "1.000000".
+    """
+    from .models import ExchangeRate
+
+    base_code = base_currency.upper()
+
+    rates = {}
+    # Add base→base as 1.0
+    rates[base_code] = "1.000000"
+
+    # Direct rates: base → all targets
+    for row in ExchangeRate.objects.filter(base_currency=base_code).values(
+        "target_currency", "rate"
+    ):
+        rates[row["target_currency"]] = str(row["rate"])
+
+    # If we got some rates, also try reverse for any missing pairs
+    # This handles cases like BDT→USD when only USD→BDT is stored
+    if not rates or len(rates) <= 1:
+        # Try using the system base (usually USD) as pivot
+        system_base = getattr(settings, "BASE_CURRENCY", "USD").upper()
+        if system_base != base_code:
+            for row in ExchangeRate.objects.filter(base_currency=system_base).values(
+                "target_currency", "rate"
+            ):
+                target = row["target_currency"]
+                if target == base_code and row["rate"] > 0:
+                    # We have USD→BDT, need BDT→USD (invert)
+                    # And BDT→EUR = BDT→USD * USD→EUR
+                    base_to_system = Decimal("1") / row["rate"]
+                    rates[system_base] = str(base_to_system.quantize(Decimal("0.000001")))
+
+                    # Now compute cross rates: base → system → target
+                    for cross_row in ExchangeRate.objects.filter(
+                        base_currency=system_base
+                    ).exclude(target_currency=base_code).values(
+                        "target_currency", "rate"
+                    ):
+                        cross_rate = base_to_system * cross_row["rate"]
+                        rates[cross_row["target_currency"]] = str(
+                            cross_rate.quantize(Decimal("0.000001"))
+                        )
+                    break
+
+    return rates
 
 
 # =============================================================================

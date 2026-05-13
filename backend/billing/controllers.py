@@ -57,6 +57,7 @@ Security features utilised from ``common``:
 
 import logging
 from typing import Optional
+from decimal import Decimal, ROUND_HALF_UP
 
 import stripe
 from ninja import Query
@@ -94,6 +95,9 @@ from .schemas import (
     ConfirmPlanChangeInputSchema,
     ConfirmPlanChangeOutputSchema,
     RefundInputSchema,
+    ExchangeRateListSchema,
+    ExchangeRateConvertSchema,
+    CurrenciesListSchema,
 )
 from .services import BillingService
 from .stripe_errors import handle_stripe_error
@@ -276,6 +280,122 @@ class BillingPublicController:
 
         return plans
 
+    @http_get(
+        "/exchange-rates",
+        response=ExchangeRateListSchema,
+        summary="List exchange rates",
+        description=(
+            "Return all available exchange rates from the base currency. "
+            "Sister domains use this to cache rates locally for multi-currency "
+            "transaction handling. Optional ?base= query param (defaults to USD)."
+        ),
+    )
+    async def list_exchange_rates(self, base: str = "USD"):
+        """List all exchange rates for a given base currency.
+
+        Returns a compact map of target_currency → rate string,
+        ideal for sister domains to cache locally.
+        """
+        from .models import ExchangeRate
+
+        base_code = base.upper()
+
+        rates_qs = ExchangeRate.objects.filter(
+            base_currency=base_code
+        ).order_by("target_currency")
+
+        rates_list = await sync_to_async(list)(rates_qs.values("target_currency", "rate", "fetched_at"))
+
+        rates_map = {}
+        latest_fetched = None
+        for entry in rates_list:
+            rates_map[entry["target_currency"]] = str(entry["rate"])
+            if entry["fetched_at"] and (latest_fetched is None or entry["fetched_at"] > latest_fetched):
+                latest_fetched = entry["fetched_at"]
+
+        return {
+            "base_currency": base_code,
+            "rates": rates_map,
+            "fetched_at": latest_fetched,
+            "count": len(rates_map),
+        }
+
+    @http_get(
+        "/exchange-rates/{from_currency}/{to_currency}",
+        response=ExchangeRateConvertSchema,
+        summary="Get specific exchange rate",
+        description=(
+            "Get the exchange rate between two currencies. Handles direct, "
+            "reverse, and cross-pair lookups. Returns the rate and a "
+            "converted amount for 1 unit of the source currency."
+        ),
+    )
+    async def get_exchange_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+    ):
+        """Get exchange rate for a specific currency pair.
+
+        Uses the currency_service which handles direct, reverse,
+        and cross-pair (via base) lookups.
+        """
+        from .currency_service import get_exchange_rate as _get_rate
+
+        from_code = from_currency.upper()
+        to_code = to_currency.upper()
+
+        rate = await sync_to_async(_get_rate)(from_code, to_code)
+
+        if rate is not None:
+            converted = (Decimal("1") * rate).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            return {
+                "from_currency": from_code,
+                "to_currency": to_code,
+                "rate": str(rate),
+                "converted_amount": str(converted),
+                "available": True,
+            }
+
+        return {
+            "from_currency": from_code,
+            "to_currency": to_code,
+            "rate": None,
+            "converted_amount": None,
+            "available": False,
+        }
+
+    @http_get(
+        "/currencies",
+        response=CurrenciesListSchema,
+        summary="List supported currencies",
+        description=(
+            "Return metadata (symbol, name, decimal_digits) for all "
+            "supported currencies. This is the single source of truth — "
+            "sister domains MUST consume this endpoint instead of "
+            "hardcoding their own currency symbol maps. The response is "
+            "cacheable for extended periods (currency metadata changes "
+            "very rarely)."
+        ),
+    )
+    async def list_currencies(self):
+        """Return all supported currency metadata.
+
+        Used by sister domains to render currency symbols, names,
+        and decimal formatting without duplicating data.
+        """
+        from .currency_service import get_all_currencies_meta
+
+        meta = await sync_to_async(get_all_currencies_meta)()
+
+        return {
+            "currencies": meta,
+            "count": len(meta),
+        }
+
 
 # =============================================================================
 # Billing Protected Controller — Auth Me + Subscriptions
@@ -363,7 +483,27 @@ class BillingProtectedController:
             domain = request.service_domain_from_key.domain
         else:
             domain = request.headers.get("X-Service-Domain", "").strip()
-        return await BillingService.aget_auth_me_data(request.user, domain or None)
+        result = await BillingService.aget_auth_me_data(request.user, domain or None)
+
+        # ── Attach exchange rates + currency metadata for sister domains ────
+        # When a service domain is identified, include:
+        #   - exchange_rates: rate map for the user's base currency
+        #   - currencies: metadata (symbol, name, decimal_digits) for all
+        #     supported currencies
+        # This eliminates the need for sister domains to hardcode symbol maps
+        # or make extra API calls.
+        if domain:
+            from .currency_service import get_all_rates_for_base, get_all_currencies_meta
+
+            user_currency = getattr(request.user, "currency", "USD") or "USD"
+            result["exchange_rates"] = await sync_to_async(
+                get_all_rates_for_base
+            )(user_currency)
+            result["currencies"] = await sync_to_async(
+                get_all_currencies_meta
+            )()
+
+        return result
 
     # =========================================================================
     # Subscription Listing

@@ -1,8 +1,3 @@
----
-title: TypeScript SDK
-description:  the central authentication, subscription, and access control platform.
----
-
 # @sattabase/sdk
 
 TypeScript SDK for **Sattabase** — the central authentication, subscription, and access control platform.
@@ -192,6 +187,12 @@ if (authMe.subscription) {
 console.log(authMe.hasAccess("reports"));            // true
 console.log(authMe.getAccess("max_bank_accounts"));  // 5
 console.log(authMe.accessKeys);                      // ["dashboard", "reports", ...]
+
+// Currency metadata (when X-Service-Domain header present)
+if (authMe.currencies) {
+  console.log(authMe.currencies["BDT"].symbol);           // "৳"
+  console.log(authMe.currencies["JPY"].decimal_digits);   // 0
+}
 ```
 
 #### `refresh(refreshToken)`
@@ -405,11 +406,48 @@ class AuthMeResponse {
   account_status: string;                    // "active" | "inactive" | "deleted"
   subscription: SubscriptionInfo | null;
   access: Record<string, boolean | number | string>;
+  exchange_rates: Record<string, string> | null;        // Rate map (when X-Service-Domain present)
+  currencies: Record<string, CurrencyMetaEntry> | null;  // Currency metadata (when X-Service-Domain present)
 
   hasAccess(key: string): boolean;           // Coerces strings/ints to bool
   getAccess(key: string, default?): unknown; // Raw value lookup
   readonly accessKeys: string[];              // All available keys
 }
+```
+
+### `CurrencyMetaEntry`
+
+Currency metadata returned by the base backend (single source of truth).
+
+```ts
+interface CurrencyMetaEntry {
+  symbol: string;          // Display symbol (e.g. "$", "৳", "€")
+  name: string;            // Human-readable name (e.g. "US Dollar")
+  decimal_digits: number;  // Decimal places (0 for JPY/KRW, 2 for most)
+}
+```
+
+#### Currency Metadata on auth/me
+
+When the request includes `X-Service-Domain` header, `auth/me` returns two additional fields:
+
+- **`exchange_rates`** — rate map from user's base currency (e.g. `{"EUR": "0.920000", "BDT": "109.850000"}`)
+- **`currencies`** — full currency metadata map (e.g. `{"USD": {"symbol": "$", "name": "US Dollar", "decimal_digits": 2}}`)
+
+Sister domain frontends should cache `currencies` in localStorage (persists across sessions, rarely changes) and `exchange_rates` in sessionStorage (session-only, changes daily). Never hardcode currency symbol maps.
+
+```ts
+const authMe = await client.auth.me(tokens.access);
+
+// Cache currency metadata in localStorage
+if (authMe.currencies) {
+  localStorage.setItem("currencies_meta", JSON.stringify(authMe.currencies));
+}
+
+// Use cached metadata to get a symbol
+const currencies = JSON.parse(localStorage.getItem("currencies_meta") || "{}");
+const symbol = currencies.BDT?.symbol ?? "BDT";  // → "৳"
+const digits = currencies.JPY?.decimal_digits ?? 2;  // → 0
 ```
 
 ### `MessageResponse`

@@ -70,6 +70,7 @@ The sister domain handles:
 - Displaying the user's name/email from `auth.me()` response
 - Enforcing feature gates and numeric limits from the access map
 - Redirecting users to Sattabase for plan changes and subscription management
+- Consuming currency metadata (symbol, name, decimal_digits) from Sattabase's `/billing/currencies` endpoint or the `currencies` field on `auth/me` — never hardcoding currency symbol maps
 
 ---
 
@@ -151,7 +152,7 @@ The sister domain's origin must be allowed by Sattabase. There are two ways:
 
 1. **ServiceDomain-based (automatic):** The `service_domain_cors_middleware` in Sattabase automatically adds all active `ServiceDomain.domain` values to the CORS allowed origins with a 5-minute cache. This requires no extra configuration.
 
-2. **`PUBLIC_SITE_URL_SB` setting:** If the Sattabase frontend itself runs on a separate domain, set `PUBLIC_SITE_URL_SB` in the `.env` file. It is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+2. **`SB_FRONTEND_URL` setting:** If the Sattabase frontend itself runs on a separate domain, set `SB_FRONTEND_URL` in the `.env` file. It is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
 
 In production (`CORS_ALLOW_ALL_ORIGINS=False`), both methods contribute to the allowed origins list.
 
@@ -440,6 +441,64 @@ def create_transaction(request):
     return {"id": transaction.id, "amount": str(transaction.amount)}
 ```
 
+### Currency Metadata (Backend)
+
+Sister domain backends MUST NOT hardcode currency symbol maps. Instead, they consume currency metadata from the Sattabase base backend, which is the single source of truth.
+
+**Two consumption paths:**
+
+1. **Dedicated endpoint** — `GET /billing/currencies` returns all 38 supported currencies with `symbol`, `name`, and `decimal_digits`. Use this when you need a full refresh or on first startup.
+
+2. **Auth/me piggyback** — The `GET /billing/auth/me` response includes a `currencies` field (alongside `exchange_rates`) when `X-Service-Domain` header is present. This avoids an extra API call since every request already calls auth/me.
+
+**Implementation pattern (Redis-cached):**
+
+```python
+# ledger/api/currency.py
+from django.core.cache import cache
+
+CURRENCIES_CACHE_KEY = "ledger:currencies_meta"
+CURRENCIES_CACHE_TTL = 24 * 60 * 60  # 24 hours — currency metadata rarely changes
+
+def get_currencies_meta() -> dict[str, dict]:
+    """Get currency metadata from cache, fetching from API on cache miss."""
+    meta = cache.get(CURRENCIES_CACHE_KEY)
+    if meta is not None:
+        return meta
+    
+    # Cache miss — fetch from Sattabase
+    import httpx
+    url = f"{settings.SATTABASE_BASE_URL}/billing/currencies"
+    headers = {
+        "X-API-Key": settings.SATTABASE_API_KEY,
+        "X-Service-Domain": settings.SATTABASE_SERVICE_DOMAIN,
+    }
+    with httpx.Client(timeout=5) as client:
+        response = client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    
+    currencies = data.get("currencies", {})
+    cache.set(CURRENCIES_CACHE_KEY, currencies, CURRENCIES_CACHE_TTL)
+    return currencies
+
+def get_currency_symbol(currency_code: str) -> str:
+    """Get symbol from cached metadata, fallback to currency code."""
+    meta = get_currencies_meta()
+    entry = meta.get(currency_code.upper())
+    return entry.get("symbol", currency_code.upper()) if entry else currency_code.upper()
+
+def cache_currencies_from_auth_me(currencies: dict) -> None:
+    """Cache currencies received from auth/me piggyback."""
+    if currencies and isinstance(currencies, dict):
+        cache.set(CURRENCIES_CACHE_KEY, currencies, CURRENCIES_CACHE_TTL)
+```
+
+**Key points:**
+- Cache in Redis with a long TTL (24 hours) — currency metadata changes very rarely
+- `cache_currencies_from_auth_me()` is called by the middleware or /me endpoint to save an extra API call
+- Fallback gracefully: if the API is unreachable and cache is empty, use the currency code as the symbol
+
 ### Frontend SDK Usage
 
 ```python
@@ -465,6 +524,62 @@ async def get_user_access(token: str):
             "access": auth_me.access,
         }
 ```
+
+### Currency Metadata (Frontend)
+
+Sister domain frontends MUST NOT hardcode currency symbol maps. Instead, they consume currency metadata from the `currencies` field on the `auth/me` response.
+
+**Implementation pattern (localStorage/sessionStorage):**
+
+```typescript
+// src/lib/currency.ts
+const CURRENCIES_META_KEY = "ledger:currencies_meta";  // localStorage (persists)
+const RATES_CACHE_KEY = "ledger:exchange_rates";         // sessionStorage (session-only)
+
+// Cache currency metadata from auth/me (called by useAuth composable)
+export function cacheCurrenciesMeta(currencies: Record<string, unknown> | null): void {
+  if (!currencies) return;
+  localStorage.setItem(CURRENCIES_META_KEY, JSON.stringify(currencies));
+}
+
+// Get symbol from cached metadata, fallback to Intl.NumberFormat
+export function getCurrencySymbol(currencyCode: string): string {
+  const meta = JSON.parse(localStorage.getItem(CURRENCIES_META_KEY) || "{}");
+  const entry = meta[currencyCode.toUpperCase()];
+  if (entry?.symbol) return entry.symbol;
+  
+  // Fallback: try browser's Intl API
+  try {
+    const parts = new Intl.NumberFormat("en-US", {
+      style: "currency", currency: currencyCode,
+      currencyDisplay: "narrowSymbol",
+    }).formatToParts(0);
+    const symbolPart = parts.find(p => p.type === "currency");
+    if (symbolPart?.value && symbolPart.value !== currencyCode) return symbolPart.value;
+  } catch { /* Intl doesn't know this currency */ }
+  
+  return currencyCode.toUpperCase();  // Final fallback
+}
+
+// Format amount with proper symbol and decimal digits
+export function formatCurrency(amount: number, currencyCode: string): string {
+  const meta = JSON.parse(localStorage.getItem(CURRENCIES_META_KEY) || "{}");
+  const entry = meta[currencyCode.toUpperCase()];
+  const symbol = entry?.symbol || getCurrencySymbol(currencyCode);
+  const digits = entry?.decimal_digits ?? 2;
+  const formatted = digits === 0
+    ? Math.round(amount).toLocaleString("en-US")
+    : amount.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${symbol}${formatted}`;
+}
+```
+
+**Key points:**
+- Currency metadata is cached in **localStorage** (persists across sessions, changes very rarely)
+- Exchange rates are cached in **sessionStorage** (cleared on tab close, changes daily)
+- The `useAuth` composable calls `cacheCurrenciesMeta()` on every `auth/me` response
+- On logout, only clear `sessionStorage` rates — NOT localStorage currencies (they're still valid)
+- Fallback chain: cached metadata → `Intl.NumberFormat` → currency code
 
 ---
 
@@ -561,6 +676,35 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return res.status(401).json({ detail: "Account deactivated", code: "account_inactive" });
     }
     return res.status(401).json({ detail: "Authentication failed" });
+  }
+}
+```
+
+### Currency Metadata (Node.js Backend)
+
+Same principle as Pattern A — do NOT hardcode currency symbols. Fetch from `GET /billing/currencies` and cache in Redis or in-memory with a long TTL (24 hours). The `currencies` field on `auth/me` can also be used to avoid an extra API call.
+
+```typescript
+// server/lib/currency.ts
+let currenciesCache: Record<string, { symbol: string; name: string; decimal_digits: number }> | null = null;
+let cacheExpiry = 0;
+
+export async function getCurrenciesMeta(): Promise<Record<string, any>> {
+  if (currenciesCache && Date.now() < cacheExpiry) return currenciesCache;
+  
+  const response = await fetch(`${config.baseUrl}/billing/currencies`, {
+    headers: { "X-API-Key": config.apiKey!, "X-Service-Domain": config.serviceDomain },
+  });
+  const data = await response.json();
+  currenciesCache = data.currencies;
+  cacheExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  return currenciesCache;
+}
+
+export function cacheCurrenciesFromAuthMe(currencies: Record<string, any>): void {
+  if (currencies && Object.keys(currencies).length > 0) {
+    currenciesCache = currencies;
+    cacheExpiry = Date.now() + 24 * 60 * 60 * 1000;
   }
 }
 ```
@@ -781,6 +925,8 @@ export function useAuth() {
 
   async function loadProfile() {
     authMe.value = await client.auth.me();
+    // Cache currency metadata from auth/me (single source of truth)
+    cacheCurrenciesMeta(authMe.value!.currencies);
     // Initialize user-scoped storage
     initUserStorage(authMe.value!.user.id);
   }
@@ -1039,7 +1185,7 @@ There are two mechanisms:
 
 1. **Automatic (ServiceDomain-based):** The `service_domain_cors_middleware` in Sattabase dynamically adds all active `ServiceDomain.domain` values to the CORS allowed origins. This requires no extra configuration — just create the `ServiceDomain` record with `is_active=True`.
 
-2. **Explicit (`PUBLIC_SITE_URL_SB`):** If the Sattabase frontend runs on its own domain (e.g., `https://app.sattabase.tld`), set `PUBLIC_SITE_URL_SB=https://app.sattabase.tld` in the Sattabase `.env`. This is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+2. **Explicit (`SB_FRONTEND_URL`):** If the Sattabase frontend runs on its own domain (e.g., `https://app.sattabase.tld`), set `SB_FRONTEND_URL=https://app.sattabase.tld` in the Sattabase `.env`. This is automatically added to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
 
 ### Behavior by Environment
 
@@ -1050,7 +1196,7 @@ There are two mechanisms:
 
 In production, make sure:
 - The `ServiceDomain` record for the sister domain is `is_active=True`
-- `PUBLIC_SITE_URL_SB` is set to the Sattabase frontend domain
+- `SB_FRONTEND_URL` is set to the Sattabase frontend domain
 - `SB_CORS_ALLOWED_ORIGINS` includes any additional domains if needed
 
 ### Sister Domain Backend Calling Sattabase
@@ -1235,6 +1381,7 @@ def my_view(request):
 - [ ] Create a `ServiceCredential` (API key) for the domain — save the raw key
 - [ ] Set `SB_API_KEY_ENFORCED=True` in production
 - [ ] Verify CORS: the sister domain origin is either a registered `ServiceDomain` or in `SB_CORS_ALLOWED_ORIGINS`
+- [ ] **Currency metadata:** Frontend caches `currencies` from `auth/me` into localStorage. Backend fetches from `/billing/currencies` on cache miss. No hardcoded symbol maps exist.
 
 ### Sister Domain Side (application code)
 
