@@ -1655,44 +1655,32 @@ Phase 1 requires updating `DashboardLayout.astro` sidebar navigation to include 
 
 ---
 
-## 7. Phase 4 — Investments ✅ DONE
+## 7. Phase 4 — Investments
 
-### 7.1 Pinia Store ✅ DONE
+### 7.1 Pinia Store
 
-| Store | File | Key Actions | Status |
-|-------|------|-------------|--------|
-| `useInvestmentStore` | `src/stores/investment.ts` | fetchList, fetchSummary, fetchOne, create, update, remove, restore, fetchHoldings, createHolding, updateHolding, deleteHolding | ✅ DONE |
+| Store | File | Key Actions |
+|-------|------|-------------|
+| `useInvestmentStore` | `src/stores/investment.ts` | fetchList, fetchSummary, fetchOne, create, update, remove, restore, fetchHoldings, createHolding, updateHolding, deleteHolding |
 
-**InvestmentDetail.vue** ✅ DONE — Full detail view with summary cards (Portfolio Value, Cost Basis, Unrealized G/L, Return %), sortable holdings table (Symbol, Asset Name, Type, Qty, Cost Basis, Current Price, Current Value, G/L $, G/L %), holding CRUD, color-coded gain/loss, edit/delete/restore actions, summary footer row
+### 7.2 Investments — `/dashboard/investments`
 
-**HoldingForm.vue** ✅ DONE — Modal form for adding/editing holdings with symbol, asset_name, asset_type (Stock/ETF/Crypto/Bond/Mutual Fund/Other), quantity, cost_basis (CurrencyInput), current_price (CurrencyInput), current_value (auto-calculated from qty × price, overridable), currency select, purchase_date
-
-**Sidebar Navigation** ✅ DONE — Added "Investments" section with Portfolio link
-
-### 7.2 Investments — `/dashboard/investments` ✅ DONE
-
-**Portfolio Overview** (`src/pages/dashboard/investments/index.astro`) ✅ DONE
+**Portfolio Overview** (`src/pages/dashboard/investments/index.astro`)
 - Summary cards at top: Total Portfolio Value, Total Cost Basis, Total Unrealized Gain/Loss (green/red), Gain/Loss %, Account Count
 - Investment account list: each shows account name, portfolio_value, cost_basis, unrealized gain/loss, last_synced_at
 - "Add Investment Account" button
-- Client-side search (backend doesn't support server-side filtering for investments)
-- Soft-delete/restore via ConfirmDialog
 
-**InvestmentsPage.vue** ✅ DONE — Portfolio overview with 5 summary cards, 3-column card grid with gain/loss coloring, return % progress bar, relative time display, client-side search, soft-delete, pagination
-
-**Create/Edit Investment** (`InvestmentForm.vue`) ✅ DONE
-- Select existing Account (only INVESTMENT type accounts), portfolio_value (CurrencyInput), cost_basis_total (CurrencyInput)
-- Account dropdown filtered to INVESTMENT type in create mode, locked in edit mode
+**Create/Edit Investment** (`InvestmentForm.vue`)
+- Select existing Account (only INVESTMENT type accounts), portfolio_value, cost_basis_total
 - Holdings managed on detail page
 
-**Investment Detail** — `/dashboard/investments/[id].astro` ✅ DONE
+**Investment Detail** — `/dashboard/investments/[id].astro`
 - Holdings table: Symbol, Asset Name, Asset Type badge, Quantity, Cost Basis, Current Price, Current Value, Unrealized Gain/Loss ($), Unrealized Gain/Loss (%)
 - Add/Edit Holding form: symbol, asset_name, asset_type (Stock/ETF/Crypto/Bond/Mutual Fund/Other), quantity, cost_basis, current_price, current_value, currency, purchase_date
 - Unrealized gain/loss color coding: positive = green, negative = red
 - Sort holdings by: value (default desc), gain/loss, symbol
-- Summary footer row with totals
 
-**Time estimate for Phase 4**: ~~5-6 days~~ → Completed
+**Time estimate for Phase 4**: 5-6 days
 
 ---
 
