@@ -1,338 +1,372 @@
 ---
 /**
- * DashboardLayout — authenticated layout with sidebar for Satta Ledger.
+ * DashboardLayout — "frozen shell" pattern for Satta Ledger.
+ *
+ * Key architecture:
+ *   - Frozen sidebar with `transition:persist="app-sidebar"` → survives navigation
+ *   - Mobile sidebar overlay with swipe-to-dismiss, backdrop blur, ResizeObserver
+ *   - Frozen topbar with `transition:persist="app-navbar"` → survives navigation
+ *   - Island content area with rounded corners, subtle background, NOT persisted → swaps on navigation
+ *   - View transition suppression CSS (kill root animation, suppress on frozen elements)
+ *   - Island fade-in animation
+ *   - Sign out handler, theme toggle handler, user info loading
+ *
+ * Uses BaseLayout as wrapper.
+ * Sidebar nav links are defined in Sidebar.astro (data-driven navSections).
+ * Topbar is defined in Navbar.astro.
  */
 
 import BaseLayout from "./BaseLayout.astro";
+import Sidebar from "@/components/astro/Sidebar.astro";
+import Navbar from "@/components/astro/Navbar.astro";
+import ToastContainer from "@/components/vue/ToastContainer.vue";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "Dashboard — Satta Ledger",
+  description = "Your Ledger dashboard",
+} = Astro.props;
 ---
 
-<BaseLayout title="Dashboard — Satta Ledger" description="Your Ledger dashboard">
-  <div class="flex h-dvh overflow-hidden">
-    <!-- Desktop Sidebar -->
-    <aside
-      class="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 z-30 bg-white/80 dark:bg-navy-900/80 border-r border-navy-200 dark:border-navy-700 backdrop-blur-sm"
+<BaseLayout {title} {description}>
+  <!-- View transition suppression styles -->
+  <style is:inline>
+    /* Kill root animation for view transitions */
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+      animation: none !important;
+    }
+
+    /* Suppress transition on frozen (persisted) elements */
+    ::view-transition-old(app-sidebar),
+    ::view-transition-new(app-sidebar),
+    ::view-transition-old(app-navbar),
+    ::view-transition-new(app-navbar) {
+      animation: none !important;
+    }
+
+    /* Island fade-in keyframe */
+    @keyframes island-fade-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .island-content {
+      animation: island-fade-in 0.25s ease-out;
+    }
+
+    /* Mobile sidebar overlay */
+    .sidebar-overlay-backdrop {
+      transition: opacity 0.25s ease;
+    }
+
+    .sidebar-overlay-panel {
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Mobile sidebar scrollbar */
+    .mobile-sidebar-scroll::-webkit-scrollbar {
+      width: 4px;
+    }
+    .mobile-sidebar-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .mobile-sidebar-scroll::-webkit-scrollbar-thumb {
+      background: var(--color-navy-200);
+      border-radius: 9999px;
+    }
+    .dark .mobile-sidebar-scroll::-webkit-scrollbar-thumb {
+      background: var(--color-navy-700);
+    }
+  </style>
+
+  <!-- Skip to content link (accessibility) -->
+  <a
+    href="#main-content"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[200] focus:rounded-lg focus:bg-cyan-600 focus:px-4 focus:py-2 focus:text-white focus:text-sm focus:font-medium focus:shadow-lg"
+  >
+    Skip to content
+  </a>
+
+  <!-- Shell: full viewport height, overflow hidden -->
+  <div class="h-dvh overflow-hidden flex" id="dashboard-shell">
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- FROZEN SIDEBAR (desktop)                                          -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div
+      class="hidden lg:flex lg:w-64 lg:flex-col lg:shrink-0 z-30"
+      transition:persist="app-sidebar"
+      transition:animate="none"
     >
-      <div id="dashboard-sidebar-content" class="flex h-full flex-col">
-        <!-- Logo -->
-        <div class="flex h-16 items-center gap-3 px-6 border-b border-navy-200 dark:border-navy-700">
-          <div
-            class="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-600 text-white font-bold text-sm shadow-md shadow-cyan-600/20"
-          >
-            L
-          </div>
-          <span class="text-lg font-bold tracking-tight text-navy-900 dark:text-navy-100">Satta Ledger</span>
-        </div>
+      <Sidebar />
+    </div>
 
-        <!-- Navigation -->
-        <nav
-          class="flex-1 space-y-1 overflow-y-auto px-3 py-4"
-          aria-label="Main navigation"
-        >
-          <a
-            href="/dashboard"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 12a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"></path>
-            </svg>
-            <span class="truncate">Dashboard</span>
-          </a>
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- MOBILE SIDEBAR OVERLAY                                            -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="mobile-sidebar-overlay" class="fixed inset-0 z-40 lg:hidden" style="display: none;">
+      <!-- Backdrop -->
+      <div
+        id="mobile-sidebar-backdrop"
+        class="sidebar-overlay-backdrop absolute inset-0 bg-navy-900/50 backdrop-blur-sm opacity-0"
+      ></div>
 
-          <!-- Core Section -->
-          <div class="pt-3 pb-1 px-3">
-            <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-custom-500 dark:text-slate-custom-600">Core</p>
-          </div>
-
-          <a
-            href="/dashboard/transactions"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"></path>
-            </svg>
-            <span class="truncate">Transactions</span>
-          </a>
-
-          <a
-            href="/dashboard/accounts"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
-            </svg>
-            <span class="truncate">Accounts</span>
-          </a>
-
-          <a
-            href="/dashboard/institutions"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
-            </svg>
-            <span class="truncate">Institutions</span>
-          </a>
-
-          <a
-            href="/dashboard/categories"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-            </svg>
-            <span class="truncate">Categories</span>
-          </a>
-
-          <a
-            href="/dashboard/tags"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"></path>
-            </svg>
-            <span class="truncate">Tags</span>
-          </a>
-
-          <!-- Planning Section -->
-          <div class="pt-5 pb-1 px-3">
-            <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-custom-500 dark:text-slate-custom-600">Planning</p>
-          </div>
-
-          <a
-            href="/dashboard/bills"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
-            </svg>
-            <span class="truncate">Bills</span>
-          </a>
-
-          <a
-            href="/dashboard/budgets"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
-            </svg>
-            <span class="truncate">Budgets</span>
-          </a>
-
-          <!-- Cards & Debt Section -->
-          <div class="pt-5 pb-1 px-3">
-            <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-custom-500 dark:text-slate-custom-600">Cards & Debt</p>
-          </div>
-
-          <a
-            href="/dashboard/cards"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
-            </svg>
-            <span class="truncate">Cards</span>
-          </a>
-
-          <a
-            href="/dashboard/debts"
-            class="nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-200"
-          >
-            <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
-            </svg>
-            <span class="truncate">Debts</span>
-          </a>
-        </nav>
-
-        <!-- Bottom section -->
-        <div class="border-t border-navy-200 dark:border-navy-700 bg-white dark:bg-navy-900">
-          <!-- User info -->
-          <div class="px-4 py-3">
-            <div
-              id="sidebar-user-info"
-              class="flex items-center gap-3 rounded-lg p-1 -mx-1 transition-colors hover:bg-cyan-50 dark:hover:bg-navy-800 cursor-pointer"
-            >
-              <div
-                class="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-cyan-700 text-white text-xs font-bold shrink-0"
-              >
-                <span id="sidebar-user-avatar">?</span>
-              </div>
-              <div class="flex-1 min-w-0">
-                <p
-                  class="truncate text-sm font-medium leading-tight text-navy-900 dark:text-navy-100"
-                  id="sidebar-user-name"
-                >
-                  Loading...
-                </p>
-                <p
-                  class="truncate text-[11px] text-slate-custom-600 dark:text-slate-custom-500 mt-0.5"
-                  id="sidebar-user-email"
-                >
-                  ...
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <!-- Sign out -->
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 px-6 py-2.5 text-sm font-medium text-slate-custom-600 dark:text-slate-custom-500 transition-all duration-200 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 border-t border-navy-200 dark:border-navy-700"
-            id="sidebar-sign-out"
-            aria-label="Sign out"
-          >
-            <svg
-              class="h-4 w-4 shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-              ></path>
-            </svg>
-            <span>Sign out</span>
-          </button>
+      <!-- Panel -->
+      <div
+        id="mobile-sidebar-panel"
+        class="sidebar-overlay-panel absolute inset-y-0 left-0 w-72 max-w-[80vw] -translate-x-full"
+      >
+        <div class="flex h-full flex-col bg-white dark:bg-navy-900 mobile-sidebar-scroll overflow-y-auto">
+          <Sidebar />
         </div>
       </div>
-    </aside>
+    </div>
 
-    <!-- Mobile top bar -->
-    <div class="flex flex-1 flex-col min-w-0 lg:pl-64">
-      <!-- Top bar -->
-      <header
-        class="shrink-0 flex h-14 items-center gap-4 border-b border-navy-200 dark:border-navy-700 bg-white/80 dark:bg-navy-900/80 backdrop-blur-sm px-4 lg:px-6"
-      >
-        <!-- Mobile menu toggle -->
-        <button
-          type="button"
-          class="lg:hidden inline-flex items-center justify-center rounded-lg p-2 text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 transition-colors"
-          id="mobile-menu-toggle"
-          aria-label="Open menu"
-        >
-          <svg
-            class="h-5 w-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M4 6h16M4 12h16M4 18h16"></path>
-          </svg>
-        </button>
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- MAIN AREA (topbar + island)                                       -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="flex flex-1 flex-col min-w-0">
 
-        <!-- Page title area -->
-        <div class="flex-1">
-          <h1 class="text-sm font-medium text-navy-900 dark:text-navy-100" id="page-title">
-            Dashboard
-          </h1>
-        </div>
+      <!-- FROZEN TOPBAR -->
+      <div transition:persist="app-navbar" transition:animate="none">
+        <Navbar />
+      </div>
 
-        <!-- Right side actions -->
-        <div class="flex items-center gap-2">
-          <!-- Theme toggle -->
-          <button
-            type="button"
-            class="inline-flex items-center justify-center rounded-lg p-2 text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 transition-colors"
-            id="theme-toggle"
-            aria-label="Toggle dark mode"
-          >
-            <svg
-              class="h-4 w-4 dark:hidden"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
-              ></path>
-            </svg>
-            <svg
-              class="h-4 w-4 hidden dark:block"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"
-              ></path>
-            </svg>
-          </button>
-        </div>
-      </header>
-
-      <!-- Content area -->
-      <main class="flex-1 overflow-y-auto">
-        <div class="p-4 md:p-6 lg:p-8">
-          <div class="mx-auto max-w-7xl">
+      <!-- ISLAND CONTENT AREA (not persisted — swaps on navigation) -->
+      <div id="main-content" class="flex-1 overflow-y-auto bg-cloud-bright dark:bg-navy-950/50" tabindex="-1">
+        <div class="p-3 sm:p-4 md:p-6 lg:p-8">
+          <div class="island-content mx-auto max-w-7xl rounded-[25px] border border-navy-200/50 dark:border-navy-700/30 bg-white dark:bg-navy-900/80 shadow-sm p-4 sm:p-6 md:p-8">
             <slot />
           </div>
         </div>
-      </main>
+      </div>
+
     </div>
   </div>
+
+  <!-- Global Toast Notification Container -->
+  <ToastContainer client:load />
 </BaseLayout>
 
 <script>
-  // ── Sign out handler ──
-  const signOutBtn = document.getElementById("sidebar-sign-out");
-  signOutBtn?.addEventListener("click", async () => {
+  // ── Mobile sidebar toggle ──
+  const overlay = document.getElementById('mobile-sidebar-overlay');
+  const backdrop = document.getElementById('mobile-sidebar-backdrop');
+  const panel = document.getElementById('mobile-sidebar-panel');
+
+  let mobileSidebarOpen = false;
+
+  function openMobileSidebar() {
+    if (!overlay || !backdrop || !panel) return;
+    mobileSidebarOpen = true;
+    overlay.style.display = 'block';
+    // Force reflow
+    overlay.offsetHeight;
+    backdrop.classList.remove('opacity-0');
+    backdrop.classList.add('opacity-100');
+    panel.classList.remove('-translate-x-full');
+    panel.classList.add('translate-x-0');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeMobileSidebar() {
+    if (!overlay || !backdrop || !panel) return;
+    mobileSidebarOpen = false;
+    backdrop.classList.remove('opacity-100');
+    backdrop.classList.add('opacity-0');
+    panel.classList.remove('translate-x-0');
+    panel.classList.add('-translate-x-full');
+    document.body.style.overflow = '';
+    setTimeout(() => {
+      if (!mobileSidebarOpen) {
+        overlay.style.display = 'none';
+      }
+    }, 300);
+  }
+
+  // Listen for toggle event from Navbar
+  document.addEventListener('toggle-mobile-sidebar', ((e: CustomEvent) => {
+    const shouldOpen = e.detail?.open ?? true;
+    if (shouldOpen && !mobileSidebarOpen) {
+      openMobileSidebar();
+    } else if (!shouldOpen && mobileSidebarOpen) {
+      closeMobileSidebar();
+    } else if (mobileSidebarOpen) {
+      closeMobileSidebar();
+    } else {
+      openMobileSidebar();
+    }
+  }) as EventListener);
+
+  // Backdrop click closes sidebar
+  backdrop?.addEventListener('click', closeMobileSidebar);
+
+  // ── Swipe-to-dismiss (touch gestures) ──
+  let touchStartX = 0;
+  let touchCurrentX = 0;
+  let isSwiping = false;
+
+  panel?.addEventListener('touchstart', (e: TouchEvent) => {
+    if (!e.touches[0]) return;
+    touchStartX = e.touches[0].clientX;
+    isSwiping = true;
+  }, { passive: true });
+
+  panel?.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!isSwiping || !e.touches[0]) return;
+    touchCurrentX = e.touches[0].clientX;
+    const diff = touchCurrentX - touchStartX;
+    if (diff < 0 && panel) {
+      // Swiping left — dismiss
+      panel.style.transform = `translateX(${diff}px)`;
+    }
+  }, { passive: true });
+
+  panel?.addEventListener('touchend', () => {
+    if (!isSwiping) return;
+    isSwiping = false;
+    const diff = touchCurrentX - touchStartX;
+    if (diff < -60) {
+      closeMobileSidebar();
+    } else if (panel) {
+      // Snap back
+      panel.style.transform = '';
+      if (mobileSidebarOpen) {
+        panel.classList.add('translate-x-0');
+        panel.classList.remove('-translate-x-full');
+      }
+    }
+    touchStartX = 0;
+    touchCurrentX = 0;
+  });
+
+  // ── ResizeObserver: close mobile sidebar on lg breakpoint ──
+  if (typeof ResizeObserver !== 'undefined' && overlay) {
+    const ro = new ResizeObserver(() => {
+      if (window.innerWidth >= 1024 && mobileSidebarOpen) {
+        closeMobileSidebar();
+      }
+    });
+    ro.observe(document.documentElement);
+  }
+
+  // ── Sign out handler (sidebar) ──
+  const sidebarSignOut = document.getElementById('sidebar-sign-out');
+  sidebarSignOut?.addEventListener('click', async () => {
     try {
-      const { logout } = await import("@/lib/auth");
+      const { logout } = await import('@/lib/auth');
       await logout();
     } catch {
-      const { clearTokens } = await import("@/lib/api");
+      const { clearTokens } = await import('@/lib/api');
       clearTokens();
-      window.location.href = "/auth/login";
+      window.location.href = '/auth/login';
     }
   });
 
-  // ── Theme toggle ──
-  const themeToggle = document.getElementById("theme-toggle");
-  themeToggle?.addEventListener("click", () => {
-    const isDark = document.documentElement.classList.toggle("dark");
-    localStorage.setItem("theme", isDark ? "dark" : "light");
+  // ── Manage plan button ──
+  const managePlanBtn = document.getElementById('sidebar-manage-plan');
+  managePlanBtn?.addEventListener('click', async () => {
+    try {
+      const { redirectToBaseWithAuthCode } = await import('@/lib/auth');
+      await redirectToBaseWithAuthCode('/dashboard/billing');
+    } catch {
+      const { redirectToBase } = await import('@/lib/auth');
+      redirectToBase('/dashboard/billing');
+    }
   });
 
-  // ── Load user info into sidebar ──
-  async function loadSidebarUserInfo() {
+  // ── Load user info into sidebar & navbar ──
+  async function loadUserInfo() {
     try {
-      const { apiClient } = await import("@/lib/api");
-      const data = await apiClient.get<{ user: any; subscription: any }>(
-        "/billing/auth/me",
-      );
-
-      const userName = document.getElementById("sidebar-user-name");
-      const userEmail = document.getElementById("sidebar-user-email");
-      const userAvatar = document.getElementById("sidebar-user-avatar");
+      const { apiClient } = await import('@/lib/api');
+      const data = await apiClient.get<{ user: any; subscription: any }>('/billing/auth/me');
 
       if (data?.user) {
         const name =
           data.user.full_name ||
           data.user.display_name ||
-          data.user.email?.split("@")[0] ||
-          "User";
-        if (userName) userName.textContent = name;
-        if (userEmail) userEmail.textContent = data.user.email || "";
-        if (userAvatar) userAvatar.textContent = name.charAt(0).toUpperCase();
+          data.user.email?.split('@')[0] ||
+          'User';
+        const initial = name.charAt(0).toUpperCase();
+
+        // Sidebar user info
+        const sidebarName = document.getElementById('sidebar-user-name');
+        const sidebarEmail = document.getElementById('sidebar-user-email');
+        const sidebarAvatar = document.getElementById('sidebar-user-avatar');
+        if (sidebarName) sidebarName.textContent = name;
+        if (sidebarEmail) sidebarEmail.textContent = data.user.email || '';
+        if (sidebarAvatar) sidebarAvatar.textContent = initial;
+
+        // Navbar user info
+        const navbarAvatar = document.getElementById('navbar-user-avatar');
+        const navbarName = document.getElementById('navbar-user-name');
+        const dropdownName = document.getElementById('navbar-dropdown-name');
+        const dropdownEmail = document.getElementById('navbar-dropdown-email');
+        if (navbarAvatar) navbarAvatar.textContent = initial;
+        if (navbarName) navbarName.textContent = name;
+        if (dropdownName) dropdownName.textContent = name;
+        if (dropdownEmail) dropdownEmail.textContent = data.user.email || '';
+      }
+
+      if (data?.subscription) {
+        const planName = document.getElementById('sidebar-plan-name');
+        const planDot = document.getElementById('sidebar-plan-dot');
+        if (planName) planName.textContent = data.subscription.plan_name || 'Free Plan';
+        if (planDot && data.subscription.status === 'active') {
+          planDot.className = 'h-2 w-2 rounded-full bg-cyan-500';
+        } else if (planDot) {
+          planDot.className = 'h-2 w-2 rounded-full bg-warm-500 animate-pulse';
+        }
+      } else {
+        const planDot = document.getElementById('sidebar-plan-dot');
+        if (planDot) planDot.className = 'h-2 w-2 rounded-full bg-slate-custom-400';
       }
     } catch {
-      // Not authenticated — sidebar shows defaults
+      // Not authenticated — show defaults
     }
   }
 
-  loadSidebarUserInfo();
-  document.addEventListener("astro:page-load", loadSidebarUserInfo);
+  loadUserInfo();
+  document.addEventListener('astro:page-load', loadUserInfo);
+
+  // ── Global keyboard shortcuts ──
+  // Ctrl+K → focus search input on current page
+  // Ctrl+N → navigate to new transaction
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Skip when typing in input fields
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const tag = target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
+
+    // Ctrl+K / Cmd+K → Focus search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      // Find the first visible search input on the page
+      const searchInput = document.querySelector<HTMLInputElement>('.search-input input, input[type="search"], [data-search-input]');
+      if (searchInput) {
+        searchInput.focus();
+      }
+      return;
+    }
+
+    // Ctrl+N / Cmd+N → Quick-add transaction
+    if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+      e.preventDefault();
+      // Navigate to transactions page if not already there
+      // Or click the "Add Transaction" button if on the page
+      const addBtn = document.querySelector<HTMLButtonElement>('[data-quick-add-transaction]');
+      if (addBtn) {
+        addBtn.click();
+      } else {
+        window.location.href = '/dashboard/transactions';
+      }
+      return;
+    }
+  });
 </script>

@@ -1,0 +1,17 @@
+---
+/**
+ * Invoice detail page — /dashboard/invoices/[id]
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import InvoiceDetail from "@/components/vue/invoices/InvoiceDetail.vue";
+---
+
+<DashboardLayout title="Invoice Detail — Satta Ledger">
+  <InvoiceDetail client:only="vue" id={Astro.params.id} />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Invoice Detail";
+</script>

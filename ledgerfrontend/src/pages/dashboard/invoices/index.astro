@@ -1,0 +1,17 @@
+---
+/**
+ * Invoices list page — /dashboard/invoices
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import InvoicesPage from "@/components/vue/invoices/InvoicesPage.vue";
+---
+
+<DashboardLayout title="Invoices — Satta Ledger">
+  <InvoicesPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Invoices";
+</script>

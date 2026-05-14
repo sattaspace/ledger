@@ -1,0 +1,17 @@
+---
+/**
+ * Savings Goals list page — /dashboard/goals
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import GoalsPage from "@/components/vue/goals/GoalsPage.vue";
+---
+
+<DashboardLayout title="Savings Goals — Satta Ledger">
+  <GoalsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Savings Goals";
+</script>

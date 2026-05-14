@@ -43,6 +43,9 @@ import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
 
+import { formatCurrency, getBaseCurrency } from "@/lib/currency";
+import { formatDateShort } from "@/lib/timezone";
+
 import type {
   TransactionOut,
   TransactionCreate,
@@ -130,6 +133,57 @@ const showTransferForm = ref(false);
 const transactionFormMode = ref<"create" | "edit">("create");
 const transactionFormItemId = ref<number | undefined>(undefined);
 
+// ─── Bulk Operations State ───────────────────────────────────────────────────
+
+const selectedIds = ref<number[]>([]);
+const showBulkAction = ref(false);
+const bulkActionLoading = ref(false);
+const bulkAction = ref<"delete" | "void" | "clear" | "">("");
+
+function handleSelectionChange(ids: number[]) {
+  selectedIds.value = ids;
+  showBulkAction.value = ids.length > 0;
+}
+
+async function executeBulkAction() {
+  if (selectedIds.value.length === 0 || !bulkAction.value) return;
+
+  bulkActionLoading.value = true;
+  try {
+    if (bulkAction.value === "delete") {
+      // Delete one by one (no bulk delete API endpoint)
+      for (const id of selectedIds.value) {
+        await transactionStore.remove(id);
+      }
+    } else if (bulkAction.value === "void") {
+      // Set status to VOID for selected transactions
+      for (const id of selectedIds.value) {
+        await transactionStore.update(id, { status: "VOID" });
+      }
+    } else if (bulkAction.value === "clear") {
+      // Set status to CLEARED for selected transactions
+      for (const id of selectedIds.value) {
+        await transactionStore.update(id, { status: "CLEARED" });
+      }
+    }
+    // Reset selection and refresh
+    selectedIds.value = [];
+    showBulkAction.value = false;
+    bulkAction.value = "";
+    transactionStore.fetchList();
+  } catch (err) {
+    // Error handled by store
+  } finally {
+    bulkActionLoading.value = false;
+  }
+}
+
+function cancelBulkAction() {
+  selectedIds.value = [];
+  showBulkAction.value = false;
+  bulkAction.value = "";
+}
+
 // ─── Category Tree ───────────────────────────────────────────────────────────
 
 const categoryTree = ref<typeof categoryStore.tree>([]);
@@ -164,7 +218,6 @@ const filterAmountMax = ref("");
 // ─── Amount Formatting ───────────────────────────────────────────────────────
 
 function formatAmount(tx: TransactionOut) {
-  const amount = parseFloat(tx.amount_original);
   const prefix = tx.transaction_type === "EXPENSE" ? "-" : tx.transaction_type === "INCOME" ? "+" : "";
   const color =
     tx.transaction_type === "EXPENSE"
@@ -172,7 +225,8 @@ function formatAmount(tx: TransactionOut) {
       : tx.transaction_type === "INCOME"
         ? "text-credit"
         : "text-slate-custom-700 dark:text-slate-custom-300";
-  return { formatted: `${prefix}${amount.toFixed(2)}`, color, currency: tx.currency_original };
+  const formatted = `${prefix}${formatCurrency(tx.amount_original, tx.currency_original, { displayMode: "symbol" })}`;
+  return { formatted, color, currency: tx.currency_original };
 }
 
 // ─── Account Lookup ──────────────────────────────────────────────────────────
@@ -184,7 +238,7 @@ function getAccountName(accountId: number): string {
 
 function getAccountCurrency(accountId: number): string {
   const account = accountStore.dropdown.find((a) => a.id === accountId);
-  return account?.currency ?? "USD";
+  return account?.currency ?? getBaseCurrency();
 }
 
 // ─── Category Lookup ─────────────────────────────────────────────────────────
@@ -550,15 +604,19 @@ onMounted(async () => {
       :total="transactionStore.total"
       :limit="pagination.limit.value"
       :offset="pagination.offset.value"
+      :selectable="true"
+      :selected-ids="selectedIds"
+      row-key="id"
       empty-text="No transactions found. Add your first transaction to get started."
       @page-change="handlePageChange"
       @sort-change="handleSortChange"
       @row-click="handleRowClick"
+      @selection-change="handleSelectionChange"
     >
       <!-- Date Column -->
       <template #cell-date="{ row }">
         <span class="text-sm whitespace-nowrap">
-          {{ (row as unknown as TransactionOut).date }}
+          {{ formatDateShort((row as unknown as TransactionOut).date) }}
         </span>
       </template>
 
@@ -590,7 +648,7 @@ onMounted(async () => {
             {{ formatAmount(row as unknown as TransactionOut).formatted }}
           </span>
           <span
-            v-if="formatAmount(row as unknown as TransactionOut).currency !== 'USD'"
+            v-if="formatAmount(row as unknown as TransactionOut).currency !== getBaseCurrency()"
             class="ml-1 text-xs text-slate-custom-500"
           >
             {{ formatAmount(row as unknown as TransactionOut).currency }}
@@ -635,6 +693,43 @@ onMounted(async () => {
         </div>
       </template>
     </DataTable>
+
+    <!-- Bulk Action Bar -->
+    <div
+      v-if="showBulkAction"
+      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-xl bg-navy-900 dark:bg-navy-800 px-5 py-3 shadow-2xl border border-navy-700"
+    >
+      <span class="text-sm font-medium text-white">
+        {{ selectedIds.length }} selected
+      </span>
+      <div class="h-5 w-px bg-navy-700" />
+      <select
+        v-model="bulkAction"
+        class="rounded-lg bg-navy-700 text-white text-sm px-3 py-1.5 border border-navy-600 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+      >
+        <option value="">Choose action...</option>
+        <option value="clear">Mark Cleared</option>
+        <option value="void">Mark Void</option>
+        <option value="delete">Delete</option>
+      </select>
+      <button
+        class="btn-primary text-sm px-4 py-1.5"
+        :disabled="!bulkAction || bulkActionLoading"
+        @click="executeBulkAction"
+      >
+        <svg v-if="bulkActionLoading" class="h-4 w-4 animate-spin mr-1" viewBox="0 0 24 24" fill="none">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        Apply
+      </button>
+      <button
+        class="btn-ghost text-sm text-slate-custom-400 hover:text-white px-3 py-1.5"
+        @click="cancelBulkAction"
+      >
+        Cancel
+      </button>
+    </div>
 
     <!-- Empty State (shown when no items and not loading and no active filters) -->
     <EmptyState

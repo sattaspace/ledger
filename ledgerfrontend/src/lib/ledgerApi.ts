@@ -18,6 +18,7 @@
 import config from "../../sattabase.config";
 import { getAccessToken, refreshAccessToken, clearTokens } from "./api";
 import type { ApiError } from "./types";
+import { useToast } from "@/composables/useToast";
 
 // ─── Ledger-specific type imports ────────────────────────────────────────────
 
@@ -270,7 +271,19 @@ async function ledgerRequest<T>(path: string, options: LedgerRequestOptions = {}
     cache: "no-store",
   };
 
-  let response = await fetch(url, fetchOptions);
+  let response: Response;
+  try {
+    response = await fetch(url, fetchOptions);
+  } catch (fetchError) {
+    // Network error (offline, DNS failure, CORS, etc.)
+    try {
+      useToast().error("Network error. Please check your connection.");
+    } catch {}
+    throw {
+      status: 0,
+      message: fetchError instanceof Error ? fetchError.message : "Network error",
+    } as ApiError;
+  }
 
   // ── 401 → try token refresh ──
   if (response.status === 401) {
@@ -290,6 +303,31 @@ async function ledgerRequest<T>(path: string, options: LedgerRequestOptions = {}
         message: "Session expired. Please sign in again.",
       } as ApiError;
     }
+  }
+
+  // ── 403 Forbidden ──
+  if (response.status === 403) {
+    // Lazily get toast to avoid circular dependency issues at module load
+    try {
+      useToast().error("You don't have access to this resource");
+    } catch {}
+    throw await createApiErrorFromResponse(response);
+  }
+
+  // ── 429 Rate Limited ──
+  if (response.status === 429) {
+    try {
+      useToast().warning("Too many requests. Please wait a moment.");
+    } catch {}
+    throw await createApiErrorFromResponse(response);
+  }
+
+  // ── 5xx Server Error ──
+  if (response.status >= 500) {
+    try {
+      useToast().error("Something went wrong. Please try again.");
+    } catch {}
+    throw await createApiErrorFromResponse(response);
   }
 
   // ── Non-OK → throw ──

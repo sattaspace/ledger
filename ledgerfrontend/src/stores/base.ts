@@ -43,6 +43,7 @@
 import { defineStore } from "pinia";
 import type { PaginationIn, PaginatedResponse, MessageOut } from "@/lib/ledgerTypes";
 import type { ApiError } from "@/lib/types";
+import { useToast } from "@/composables/useToast";
 
 // =============================================================================
 // Constants
@@ -152,6 +153,15 @@ export interface CrudStoreConfig<
   defaultFilters?: Partial<TFilter>;
   /** Staleness threshold in ms. Data older than this is considered stale. */
   staleThresholdMs?: number;
+  /** Toast messages for CRUD mutations. Set to false to disable toasts for a given action. */
+  toastMessages?: Partial<{
+    created: string | false;
+    updated: string | false;
+    removed: string | false;
+    restored: string | false;
+    activated: string | false;
+    deactivated: string | false;
+  }>;
 }
 
 // ─── Utility Types ────────────────────────────────────────────────────────────
@@ -325,8 +335,25 @@ export function crudActions<
   TFilter extends PaginationIn = PaginationIn,
   TDropdown = { id: number; [key: string]: unknown },
 >(config: CrudStoreConfig<T, TCreate, TUpdate, TFilter>) {
-  const { api, defaultFilters, staleThresholdMs } = config;
+  const { api, defaultFilters, staleThresholdMs, toastMessages, storeId } = config;
   const staleThreshold = staleThresholdMs ?? DEFAULT_STALE_THRESHOLD_MS;
+
+  // ── Toast helper ──────────────────────────────────────────────────────────
+
+  /** Show a success toast if the message is enabled (not false). */
+  function showToast(
+    type: keyof NonNullable<CrudStoreConfig<T, TCreate, TUpdate, TFilter>["toastMessages"]>,
+    fallback: string,
+  ) {
+    const msg = toastMessages?.[type];
+    if (msg === false) return; // explicitly disabled
+    try {
+      const toast = useToast();
+      toast.success(msg ?? fallback);
+    } catch {
+      // Toast store not initialized yet (e.g. during SSR) — silently skip
+    }
+  }
 
   return {
     // ─── Data Fetching ──────────────────────────────────────────────
@@ -457,7 +484,12 @@ export function crudActions<
         return this.fetchList();
       }
       if (Date.now() - self.lastFetched > staleThreshold) {
-        return this.fetchList();
+        window?.dispatchEvent(new CustomEvent("ledger:refresh-start"));
+        try {
+          return await this.fetchList();
+        } finally {
+          window?.dispatchEvent(new CustomEvent("ledger:refresh-end"));
+        }
       }
       return null;
     },
@@ -485,6 +517,10 @@ export function crudActions<
         const item = await api.create(data);
         self.items.unshift(item);
         self.total += 1;
+        showToast(
+          "created",
+          `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} created successfully`,
+        );
         return item;
       } catch (err: unknown) {
         self.error = extractErrorMessage(err);
@@ -528,6 +564,10 @@ export function crudActions<
           self.current = item;
         }
 
+        showToast(
+          "updated",
+          `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} updated successfully`,
+        );
         return item;
       } catch (err: unknown) {
         self.error = extractErrorMessage(err);
@@ -569,6 +609,7 @@ export function crudActions<
           self.current = null;
         }
 
+        showToast("removed", `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} deleted`);
         return result;
       } catch (err: unknown) {
         self.error = extractErrorMessage(err);
@@ -599,6 +640,7 @@ export function crudActions<
         const result = api.restore
           ? await api.restore(id)
           : ({ detail: "Restore not supported" } as MessageOut);
+        showToast("restored", `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} restored`);
         return result;
       } catch (err: unknown) {
         self.error = extractErrorMessage(err);
@@ -637,6 +679,7 @@ export function crudActions<
         const result = api.activate
           ? await api.activate(id)
           : ({ detail: "Activate not supported" } as MessageOut);
+        showToast("activated", `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} activated`);
         return result;
       } catch (err: unknown) {
         // Revert optimistic update
@@ -676,6 +719,10 @@ export function crudActions<
         const result = api.deactivate
           ? await api.deactivate(id)
           : ({ detail: "Deactivate not supported" } as MessageOut);
+        showToast(
+          "deactivated",
+          `${storeId.charAt(0).toUpperCase() + storeId.slice(1)} deactivated`,
+        );
         return result;
       } catch (err: unknown) {
         // Revert optimistic update

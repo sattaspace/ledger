@@ -30,6 +30,7 @@ import { useTransactionStore } from "@/stores/transaction";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
+import { useCardStore } from "@/stores/card";
 
 import type {
   TransactionOut,
@@ -64,6 +65,7 @@ const transactionStore = useTransactionStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const tagStore = useTagStore();
+const cardStore = useCardStore();
 
 // ─── Dropdown Loader ─────────────────────────────────────────────────────────
 
@@ -85,6 +87,7 @@ const transactionTypeOptions: { value: TransactionType; label: string }[] = [
 const statusOptions: { value: TransactionStatus; label: string }[] = [
   { value: "PENDING", label: "Pending" },
   { value: "CLEARED", label: "Cleared" },
+  { value: "VOID", label: "Void" },
 ];
 
 // ─── Form State ──────────────────────────────────────────────────────────────
@@ -94,12 +97,24 @@ const accountId = ref<number | string>("");
 const transactionType = ref<TransactionType>("EXPENSE");
 const amountOriginal = ref("");
 const currencyOriginal = ref("USD");
+const exchangeRate = ref("");
+const amountBase = ref("");
 const categoryId = ref<number | null>(null);
 const payee = ref("");
 const description = ref("");
 const referenceNumber = ref("");
 const status = ref<TransactionStatus>("PENDING");
+const cardId = ref<number | null>(null);
+const isRecurring = ref(false);
 const selectedTagIds = ref<number[]>([]);
+
+// ─── Multi-currency Detection ────────────────────────────────────────────────
+
+const baseCurrency = ref("USD");
+
+const isCrossCurrency = computed(() => {
+  return currencyOriginal.value !== baseCurrency.value;
+});
 
 // ─── Split Mode State ────────────────────────────────────────────────────────
 
@@ -151,6 +166,18 @@ watch(accountId, (newAccountId) => {
     const account = accountStore.dropdown.find((a) => a.id === Number(newAccountId));
     if (account) {
       currencyOriginal.value = account.currency || "USD";
+      baseCurrency.value = account.currency || "USD";
+    }
+  }
+});
+
+// Auto-calculate amount_base when exchange_rate or amount_original changes
+watch([exchangeRate, amountOriginal], () => {
+  if (isCrossCurrency.value && exchangeRate.value && amountOriginal.value) {
+    const rate = parseFloat(exchangeRate.value);
+    const amount = parseFloat(amountOriginal.value);
+    if (!isNaN(rate) && !isNaN(amount) && rate > 0) {
+      amountBase.value = (amount * rate).toFixed(2);
     }
   }
 });
@@ -212,11 +239,15 @@ async function loadTransaction() {
     transactionType.value = tx.transaction_type as TransactionType;
     amountOriginal.value = tx.amount_original;
     currencyOriginal.value = tx.currency_original;
+    exchangeRate.value = tx.exchange_rate && tx.exchange_rate !== "1.000000" ? tx.exchange_rate : "";
+    amountBase.value = tx.amount_base && tx.currency_original !== "USD" ? tx.amount_base : "";
     categoryId.value = tx.category_id;
     payee.value = tx.payee || "";
     description.value = tx.description || "";
     referenceNumber.value = tx.reference_number || "";
     status.value = tx.status as TransactionStatus;
+    cardId.value = tx.card_id;
+    isRecurring.value = tx.is_recurring;
 
     // Load tags for this transaction
     await transactionStore.fetchTags(tx.id);
@@ -286,14 +317,18 @@ async function handleSubmit() {
     const payload: TransactionCreate = {
       date: date.value,
       account_id: Number(accountId.value),
+      card_id: cardId.value,
       transaction_type: transactionType.value,
       amount_original: amountOriginal.value,
       currency_original: currencyOriginal.value,
+      exchange_rate: isCrossCurrency.value && exchangeRate.value ? exchangeRate.value : null,
+      amount_base: isCrossCurrency.value && amountBase.value ? amountBase.value : null,
       category_id: formMode.value === "simple" ? categoryId.value : null,
       payee: payee.value || null,
       description: description.value || null,
       reference_number: referenceNumber.value || null,
       status: status.value,
+      is_recurring: isRecurring.value,
     };
 
     let result: TransactionOut;
@@ -344,6 +379,7 @@ onMounted(async () => {
     dropdownLoader.loadDropdown("accounts", accountStore),
     dropdownLoader.loadDropdown("categories", categoryStore),
     dropdownLoader.loadDropdown("tags", tagStore),
+    dropdownLoader.loadDropdown("cards", cardStore),
   ]);
 
   // Load category tree
@@ -469,6 +505,47 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- Multi-currency Fields (shown when currency differs from account's base) -->
+      <div v-if="isCrossCurrency" class="rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-4">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="h-4 w-4 text-amber-600 dark:text-amber-400" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M17.707 9.293a1 1 0 010 1.414l-7 7a1 1 0 01-1.414 0l-7-7A.997.997 0 012 10V5a3 3 0 013-3h5c.256 0 .512.098.707.293l7 7zM5 6a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+          </svg>
+          <span class="text-sm font-medium text-amber-800 dark:text-amber-300">Foreign Currency Transaction</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="label-text mb-1.5 block">Exchange Rate</label>
+            <input
+              v-model="exchangeRate"
+              type="number"
+              step="0.0001"
+              min="0"
+              class="input-field w-full"
+              placeholder="e.g. 1.2500"
+            />
+            <p class="mt-1 text-xs text-slate-custom-500">1 {{ currencyOriginal }} = ? {{ baseCurrency }}</p>
+          </div>
+          <div>
+            <label class="label-text mb-1.5 block">Base Amount ({{ baseCurrency }})</label>
+            <input
+              v-model="amountBase"
+              type="number"
+              step="0.01"
+              min="0"
+              class="input-field w-full"
+              placeholder="Auto-calculated"
+            />
+            <p class="mt-1 text-xs text-slate-custom-500">Amount in {{ baseCurrency }}</p>
+          </div>
+          <div class="flex items-end">
+            <p v-if="exchangeRate && amountOriginal" class="text-sm text-amber-700 dark:text-amber-400 mb-2">
+              {{ parseFloat(amountOriginal).toFixed(2) }} {{ currencyOriginal }} &times; {{ parseFloat(exchangeRate).toFixed(4) }} = {{ amountBase || '—' }} {{ baseCurrency }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Simple Mode Fields -->
       <template v-if="formMode === 'simple'">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -515,6 +592,22 @@ onMounted(async () => {
             />
           </div>
 
+          <!-- Card -->
+          <div>
+            <label class="label-text mb-1.5 block">Card</label>
+            <select v-model="cardId" class="input-field w-full">
+              <option :value="null">No card</option>
+              <option
+                v-for="card in dropdownLoader.getDropdown<{ id: number; card_name: string; last_four: string; account_id: number }>('cards')
+                  .filter(c => !accountId || c.account_id === Number(accountId))"
+                :key="card.id"
+                :value="card.id"
+              >
+                {{ card.card_name }} (•••• {{ card.last_four }})
+              </option>
+            </select>
+          </div>
+
           <!-- Status -->
           <div>
             <label class="label-text mb-1.5 block">Status</label>
@@ -523,6 +616,19 @@ onMounted(async () => {
                 {{ st.label }}
               </option>
             </select>
+          </div>
+
+          <!-- Recurring Toggle -->
+          <div class="flex items-center gap-3">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="isRecurring"
+                class="sr-only peer"
+              />
+              <div class="w-9 h-5 bg-navy-200 dark:bg-navy-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-navy-300 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+            </label>
+            <span class="text-sm text-navy-900 dark:text-navy-100">Recurring transaction</span>
           </div>
 
           <!-- Tags -->
@@ -685,6 +791,22 @@ onMounted(async () => {
             />
           </div>
 
+          <!-- Card -->
+          <div>
+            <label class="label-text mb-1.5 block">Card</label>
+            <select v-model="cardId" class="input-field w-full">
+              <option :value="null">No card</option>
+              <option
+                v-for="card in dropdownLoader.getDropdown<{ id: number; card_name: string; last_four: string; account_id: number }>('cards')
+                  .filter(c => !accountId || c.account_id === Number(accountId))"
+                :key="card.id"
+                :value="card.id"
+              >
+                {{ card.card_name }} (•••• {{ card.last_four }})
+              </option>
+            </select>
+          </div>
+
           <!-- Status -->
           <div>
             <label class="label-text mb-1.5 block">Status</label>
@@ -693,6 +815,19 @@ onMounted(async () => {
                 {{ st.label }}
               </option>
             </select>
+          </div>
+
+          <!-- Recurring Toggle -->
+          <div class="flex items-center gap-3">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="isRecurring"
+                class="sr-only peer"
+              />
+              <div class="w-9 h-5 bg-navy-200 dark:bg-navy-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-navy-300 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+            </label>
+            <span class="text-sm text-navy-900 dark:text-navy-100">Recurring transaction</span>
           </div>
 
           <!-- Tags -->

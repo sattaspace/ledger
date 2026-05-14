@@ -17,6 +17,11 @@ import { cacheExchangeRates, clearExchangeRates, cacheCurrenciesMeta } from "@/l
 import { cacheUserTimezone, clearUserTimezone } from "@/lib/timezone";
 import type { User, SubscriptionInfo, AuthMeResponse } from "@/lib/types";
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** sessionStorage key for caching access data (used by Sidebar.astro feature gating). */
+const ACCESS_CACHE_KEY = "sattabase:auth_access";
+
 // ─── Module-level shared state (singleton across all components) ────────────
 
 const sharedUser = ref<User | null>(null);
@@ -26,6 +31,36 @@ const sharedLoading = ref(false);
 const sharedError = ref<Error | null>(null);
 const sharedInitialized = ref(false);
 let fetchPromise: Promise<User | null> | null = null;
+
+// ─── Access data cache helpers (for Astro sidebar feature gating) ─────────
+
+function cacheAccessData(access: Record<string, string | boolean | number>): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(ACCESS_CACHE_KEY, JSON.stringify(access));
+  } catch {
+    /* sessionStorage full or unavailable */
+  }
+}
+
+function clearAccessCache(): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(ACCESS_CACHE_KEY);
+  } catch {
+    /* sessionStorage unavailable */
+  }
+}
+
+/** Dispatch a custom event so Astro sidebar scripts can re-run feature gating. */
+function dispatchAuthStateChanged(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("auth-state-changed"));
+  } catch {
+    /* dispatch not available */
+  }
+}
 
 // ─── Auto-invalidation on billing updates ──────────────────────────────────
 
@@ -57,6 +92,10 @@ async function fetchAuthMe(): Promise<User | null> {
     sharedSubscription.value = data.subscription as unknown as SubscriptionInfo;
     sharedAccess.value = data.access as Record<string, string | boolean | number>;
     sharedInitialized.value = true;
+
+    // ── Cache access data for sidebar feature gating ───────────────────
+    cacheAccessData(sharedAccess.value);
+    dispatchAuthStateChanged();
 
     // ── Cache currency & timezone for this session ──────────────────────
     cacheExchangeRates(data);
@@ -109,8 +148,10 @@ export function useAuth() {
     sharedAccess.value = {};
     sharedInitialized.value = false;
     fetchPromise = null;
+    clearAccessCache();
     clearExchangeRates();
     clearUserTimezone();
+    dispatchAuthStateChanged();
     await authLogout();
   }
 
@@ -128,6 +169,8 @@ export function useAuth() {
     sharedAccess.value = {};
     sharedInitialized.value = false;
     fetchPromise = null;
+    clearAccessCache();
+    dispatchAuthStateChanged();
   }
 
   async function refetch(): Promise<User | null> {

@@ -157,6 +157,19 @@ export function getCurrencyName(currencyCode: string): string {
  * decimal digits. Falls back to Intl.NumberFormat if no metadata
  * is cached.
  *
+ * Display modes (`displayMode` option):
+ *   - `'auto'` (default): If the currency matches the base currency, show
+ *     symbol only (e.g. "$1,250.00"). If different from base, show symbol +
+ *     code (e.g. "€89.50 EUR"). Unknown currencies (where symbol === code)
+ *     always show the code with a space (e.g. "XYZ 100.00").
+ *   - `'symbol'`: Always show symbol only — preserves the previous default
+ *     behavior for backward compatibility (e.g. "€89.50").
+ *   - `'code'`: Always show the currency code after the amount
+ *     (e.g. "€89.50 EUR").
+ *
+ * The legacy `includeCode` option is still supported: when true, it forces
+ * the code to appear after the amount regardless of `displayMode`.
+ *
  * @param amount - The numeric amount (major units, e.g. 10985.00)
  * @param currencyCode - ISO 4217 currency code (e.g. "BDT")
  * @param options - Formatting options
@@ -170,23 +183,37 @@ export function formatCurrency(
     includeCode?: boolean;
     /** Show "N/A" when amount is null/undefined */
     showNA?: boolean;
+    /**
+     * Display mode for currency symbol/code:
+     *   - `'auto'` (default): symbol only for base currency, symbol + code for non-base
+     *   - `'symbol'`: always symbol only (backward compat)
+     *   - `'code'`: always include currency code after amount
+     */
+    displayMode?: "auto" | "symbol" | "code";
   } = {},
 ): string {
-  const { includeCode = false, showNA = false } = options;
+  const { includeCode = false, showNA = false, displayMode = "auto" } = options;
+
+  const symbol = getCurrencySymbol(currencyCode);
+  const code = currencyCode.toUpperCase();
+  const decimalDigits = getCurrencyDecimalDigits(code);
+
+  // Determine whether the symbol is unknown (falls back to the code itself)
+  const isUnknownCurrency = symbol === code;
 
   if (amount === null || amount === undefined || amount === "") {
-    return showNA ? "N/A" : `${getCurrencySymbol(currencyCode)}0.00`;
+    if (showNA) return "N/A";
+    const zeroFormatted = decimalDigits === 0 ? "0" : `0.${"0".repeat(decimalDigits)}`;
+    return buildResult(symbol, code, zeroFormatted, isUnknownCurrency, displayMode, includeCode);
   }
 
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
 
   if (isNaN(num)) {
-    return showNA ? "N/A" : `${getCurrencySymbol(currencyCode)}0.00`;
+    if (showNA) return "N/A";
+    const zeroFormatted = decimalDigits === 0 ? "0" : `0.${"0".repeat(decimalDigits)}`;
+    return buildResult(symbol, code, zeroFormatted, isUnknownCurrency, displayMode, includeCode);
   }
-
-  const symbol = getCurrencySymbol(currencyCode);
-  const code = currencyCode.toUpperCase();
-  const decimalDigits = getCurrencyDecimalDigits(code);
 
   let formatted: string;
 
@@ -199,13 +226,106 @@ export function formatCurrency(
     });
   }
 
-  let result = `${symbol}${formatted}`;
+  return buildResult(symbol, code, formatted, isUnknownCurrency, displayMode, includeCode);
+}
 
+/**
+ * Internal helper that assembles the final formatted string based on
+ * displayMode, unknown-currency detection, and the legacy includeCode flag.
+ */
+function buildResult(
+  symbol: string,
+  code: string,
+  formattedAmount: string,
+  isUnknownCurrency: boolean,
+  displayMode: "auto" | "symbol" | "code",
+  includeCode: boolean,
+): string {
+  const baseCurrency = getBaseCurrency().toUpperCase();
+  const isBase = code === baseCurrency;
+
+  // For unknown currencies (symbol === code), add a space separator
+  // e.g. "XYZ 100.00" instead of "XYZ100.00"
+  const separator = isUnknownCurrency ? " " : "";
+  let result = `${symbol}${separator}${formattedAmount}`;
+
+  // Determine whether to append the currency code based on displayMode
+  let shouldAppendCode = false;
+
+  if (displayMode === "code") {
+    // 'code' mode always shows the code
+    shouldAppendCode = true;
+  } else if (displayMode === "auto") {
+    // 'auto' mode: show code for non-base currencies or unknown currencies
+    if (!isBase || isUnknownCurrency) {
+      shouldAppendCode = true;
+    }
+  }
+  // 'symbol' mode never appends the code (unless includeCode is set)
+
+  // Legacy includeCode overrides the displayMode decision
   if (includeCode) {
+    shouldAppendCode = true;
+  }
+
+  if (shouldAppendCode) {
     result = `${result} ${code}`;
   }
 
   return result;
+}
+
+// ─── Transaction Amount Display ─────────────────────────────────────────────
+
+/**
+ * Format a transaction amount showing original currency, base equivalent,
+ * and exchange rate.
+ *
+ * For foreign currency transactions where currency_original !== base currency.
+ *
+ * Example output: "€89.50 EUR (~$97.23 @ 1.0864)"
+ * If same as base currency, just returns the formatted amount: "$97.23"
+ *
+ * @param amountOriginal - Original transaction amount
+ * @param currencyOriginal - Original currency code
+ * @param amountBase - Amount converted to base currency
+ * @param exchangeRate - Exchange rate used for conversion
+ * @returns Formatted string with original, base equivalent, and rate
+ */
+export function formatTransactionAmount(
+  amountOriginal: number | string,
+  currencyOriginal: string,
+  amountBase?: number | string | null,
+  exchangeRate?: number | string | null,
+): string {
+  const baseCurrency = getBaseCurrency();
+  const originalCode = currencyOriginal.toUpperCase();
+
+  // If same as base currency, just return the formatted amount
+  if (originalCode === baseCurrency.toUpperCase()) {
+    return formatCurrency(amountOriginal, currencyOriginal);
+  }
+
+  // Format the original amount (non-base currency)
+  const originalFormatted = formatCurrency(amountOriginal, currencyOriginal);
+
+  // If base amount or rate is missing, just return the original formatted amount
+  if (amountBase == null || exchangeRate == null) {
+    return originalFormatted;
+  }
+
+  const rateNum = typeof exchangeRate === "string" ? parseFloat(exchangeRate) : exchangeRate;
+  if (isNaN(rateNum)) {
+    return originalFormatted;
+  }
+
+  // Format the base equivalent with symbol-only display (it's the user's base)
+  const baseFormatted = formatCurrency(amountBase, baseCurrency, { displayMode: "symbol" });
+
+  // Show rate to 4 decimal places
+  const rateFormatted = rateNum.toFixed(4);
+
+  return `${originalFormatted} (~${baseFormatted} @ ${rateFormatted})`;
 }
 
 // ─── Currency Conversion ────────────────────────────────────────────────────

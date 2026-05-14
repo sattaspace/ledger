@@ -33,6 +33,10 @@ import { useTransactionStore } from "@/stores/transaction";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
+import { useCardStore } from "@/stores/card";
+
+import { formatCurrency, formatTransactionAmount, getBaseCurrency } from "@/lib/currency";
+import { formatDateTime, formatInUserTimezone } from "@/lib/timezone";
 
 import type {
   TransactionOut,
@@ -57,6 +61,7 @@ const transactionStore = useTransactionStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const tagStore = useTagStore();
+const cardStore = useCardStore();
 
 // ─── Dropdown Loader ─────────────────────────────────────────────────────────
 
@@ -90,7 +95,6 @@ const deleter = useSoftDelete<TransactionOut>({
 // ─── Amount Formatting ───────────────────────────────────────────────────────
 
 function formatAmount(tx: TransactionOut) {
-  const amount = parseFloat(tx.amount_original);
   const prefix = tx.transaction_type === "EXPENSE" ? "-" : tx.transaction_type === "INCOME" ? "+" : "";
   const color =
     tx.transaction_type === "EXPENSE"
@@ -98,8 +102,21 @@ function formatAmount(tx: TransactionOut) {
       : tx.transaction_type === "INCOME"
         ? "text-credit"
         : "text-slate-custom-700 dark:text-slate-custom-300";
-  return { formatted: `${prefix}${amount.toFixed(2)}`, color, currency: tx.currency_original };
+  const formatted = `${prefix}${formatCurrency(tx.amount_original, tx.currency_original, { displayMode: "symbol" })}`;
+  return { formatted, color, currency: tx.currency_original };
 }
+
+// ─── Date Badge Computed ──────────────────────────────────────────────────────
+
+const dateBadgeMonth = computed(() => {
+  if (!transaction.value) return "";
+  return formatInUserTimezone(transaction.value.date + "T00:00:00", { month: "short" });
+});
+
+const dateBadgeDay = computed(() => {
+  if (!transaction.value) return "";
+  return formatInUserTimezone(transaction.value.date + "T00:00:00", { day: "numeric" });
+});
 
 // ─── Lookups ─────────────────────────────────────────────────────────────────
 
@@ -112,6 +129,12 @@ function getCategoryName(categoryId: number | null): string {
   if (!categoryId) return "—";
   const category = categoryStore.dropdown.find((c) => c.id === categoryId);
   return category?.name ?? `Category #${categoryId}`;
+}
+
+function getCardName(cardId: number | null): string {
+  if (!cardId) return "—";
+  const card = cardStore.dropdown.find((c) => c.id === cardId);
+  return card ? `${card.card_name} (•••• ${card.last_four})` : `Card #${cardId}`;
 }
 
 // ─── Status Change ───────────────────────────────────────────────────────────
@@ -216,6 +239,7 @@ onMounted(async () => {
     dropdownLoader.loadDropdown("accounts", accountStore),
     dropdownLoader.loadDropdown("categories", categoryStore),
     dropdownLoader.loadDropdown("tags", tagStore),
+    dropdownLoader.loadDropdown("cards", cardStore),
   ]);
 
   // Load the transaction
@@ -264,10 +288,10 @@ onMounted(async () => {
             <!-- Date Badge -->
             <div class="flex-shrink-0 rounded-lg bg-navy-100 dark:bg-navy-800 p-3 text-center min-w-[60px]">
               <div class="text-xs font-medium text-slate-custom-500 uppercase">
-                {{ new Date(transaction.date + 'T00:00:00').toLocaleDateString('en', { month: 'short' }) }}
+                {{ dateBadgeMonth }}
               </div>
               <div class="text-lg font-bold text-navy-900 dark:text-navy-100">
-                {{ new Date(transaction.date + 'T00:00:00').getDate() }}
+                {{ dateBadgeDay }}
               </div>
             </div>
 
@@ -288,7 +312,7 @@ onMounted(async () => {
               {{ formatAmount(transaction).formatted }}
             </div>
             <div
-              v-if="formatAmount(transaction).currency !== 'USD'"
+              v-if="formatAmount(transaction).currency !== getBaseCurrency()"
               class="text-sm text-slate-custom-500 mt-0.5"
             >
               {{ formatAmount(transaction).currency }}
@@ -372,6 +396,14 @@ onMounted(async () => {
             </dd>
           </div>
 
+          <!-- Card -->
+          <div v-if="transaction.card_id">
+            <dt class="text-sm font-medium text-slate-custom-500">Card</dt>
+            <dd class="mt-1 text-sm text-navy-900 dark:text-navy-100">
+              {{ getCardName(transaction.card_id) }}
+            </dd>
+          </div>
+
           <!-- Description -->
           <div v-if="transaction.description" class="sm:col-span-2">
             <dt class="text-sm font-medium text-slate-custom-500">Description</dt>
@@ -403,10 +435,21 @@ onMounted(async () => {
           </div>
 
           <!-- Base Amount -->
-          <div v-if="transaction.amount_base && transaction.currency_original !== 'USD'">
-            <dt class="text-sm font-medium text-slate-custom-500">Base Amount</dt>
+          <div v-if="transaction.amount_base && transaction.currency_original !== getBaseCurrency()">
+            <dt class="text-sm font-medium text-slate-custom-500">Base Amount ({{ getBaseCurrency() }})</dt>
             <dd class="mt-1 text-sm text-navy-900 dark:text-navy-100">
-              {{ parseFloat(transaction.amount_base).toFixed(2) }}
+              {{ formatCurrency(transaction.amount_base, getBaseCurrency()) }}
+            </dd>
+          </div>
+
+          <!-- Current Value (for foreign currency transactions) -->
+          <div v-if="transaction.currency_original !== getBaseCurrency() && transaction.exchange_rate && transaction.exchange_rate !== '1.000000'">
+            <dt class="text-sm font-medium text-slate-custom-500">
+              Value at Recording
+              <span class="text-xs ml-1">(historical)</span>
+            </dt>
+            <dd class="mt-1 text-sm font-medium text-navy-900 dark:text-navy-100">
+              {{ formatTransactionAmount(transaction.amount_original, transaction.currency_original, transaction.amount_base, transaction.exchange_rate) }}
             </dd>
           </div>
 
@@ -422,7 +465,7 @@ onMounted(async () => {
           <div>
             <dt class="text-sm font-medium text-slate-custom-500">Created</dt>
             <dd class="mt-1 text-sm text-navy-900 dark:text-navy-100">
-              {{ new Date(transaction.created_at).toLocaleString() }}
+              {{ formatDateTime(transaction.created_at) }}
             </dd>
           </div>
 
@@ -430,7 +473,7 @@ onMounted(async () => {
           <div>
             <dt class="text-sm font-medium text-slate-custom-500">Last Updated</dt>
             <dd class="mt-1 text-sm text-navy-900 dark:text-navy-100">
-              {{ new Date(transaction.updated_at).toLocaleString() }}
+              {{ formatDateTime(transaction.updated_at) }}
             </dd>
           </div>
         </dl>
@@ -458,7 +501,7 @@ onMounted(async () => {
                   {{ getCategoryName(split.category_id) }}
                 </td>
                 <td class="px-4 py-2 text-right font-medium text-navy-900 dark:text-navy-100">
-                  {{ parseFloat(split.amount).toFixed(2) }}
+                  {{ formatCurrency(split.amount, transaction.currency_original, { displayMode: "symbol" }) }}
                 </td>
                 <td class="px-4 py-2 text-slate-custom-600 dark:text-slate-custom-400">
                   {{ split.notes || "—" }}
@@ -469,7 +512,7 @@ onMounted(async () => {
               <tr class="border-t-2 border-navy-200 dark:border-navy-700">
                 <td class="px-4 py-2 font-semibold text-navy-900 dark:text-navy-100">Total</td>
                 <td class="px-4 py-2 text-right font-semibold text-navy-900 dark:text-navy-100">
-                  {{ splits.reduce((sum, s) => sum + parseFloat(s.amount), 0).toFixed(2) }}
+                  {{ formatCurrency(splits.reduce((sum, s) => sum + parseFloat(s.amount), 0), transaction.currency_original, { displayMode: "symbol" }) }}
                 </td>
                 <td></td>
               </tr>

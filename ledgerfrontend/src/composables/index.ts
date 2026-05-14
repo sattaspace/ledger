@@ -48,3 +48,9 @@ export type { ActivatorAction, UseActivatorConfig, ActivatorHandler } from "./us
 
 export { useDropdownLoader } from "./useDropdownLoader";
 export type { UseDropdownLoaderConfig, DropdownLoader } from "./useDropdownLoader";
+
+export { useToast } from "./useToast";
+export type { ToastComposable, Toast, ToastVariant, ToastOptions } from "./useToast";
+
+export { useHotkeys } from "./useHotkeys";
+export type { HotkeysComposable } from "./useHotkeys";

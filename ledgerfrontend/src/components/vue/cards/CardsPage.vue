@@ -78,6 +78,34 @@ function getAccountName(accountId: number): string {
   return acct?.name ?? "Unknown Account";
 }
 
+function getAccountBillingCycle(accountId: number): {
+  statementClosingDay: number | null;
+  dueDay: number | null;
+  nextDueDate: string | null;
+} {
+  const acct = accountDropdown.value.find((a) => a.id === accountId) as
+    { id: number; name: string; statement_closing_day?: number | null; due_day?: number | null } | undefined;
+  const closingDay = acct?.statement_closing_day ?? null;
+  const dueDay = acct?.due_day ?? null;
+  let nextDueDate: string | null = null;
+  if (dueDay) {
+    const now = new Date();
+    let dueDate = new Date(now.getFullYear(), now.getMonth(), dueDay);
+    if (dueDate <= now) {
+      dueDate = new Date(now.getFullYear(), now.getMonth() + 1, dueDay);
+    }
+    nextDueDate = dueDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return { statementClosingDay: closingDay, dueDay, nextDueDate };
+}
+
+function isDueSoon(dateStr: string): boolean {
+  const dueDate = new Date(dateStr);
+  const now = new Date();
+  const diffDays = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays >= 0 && diffDays <= 7;
+}
+
 function getExpiryClass(date: string | null): string {
   if (!date) return "text-slate-custom-500 dark:text-slate-custom-400";
   const now = new Date();
@@ -399,6 +427,37 @@ const hasItems = computed(() => store.items.length > 0);
                 {{ formatCurrency(card.annual_fee) }}
               </p>
             </div>
+          </div>
+
+          <!-- Billing Cycle (for credit cards) -->
+          <div v-if="card.card_type === 'CREDIT'" class="mt-2 pt-2 border-t border-white/10">
+            <p class="text-[10px] uppercase tracking-wider text-white/50 mb-1">Billing Cycle</p>
+            <div class="flex items-center gap-3 text-xs text-white/70">
+              <span
+                v-if="getAccountBillingCycle(card.account_id).statementClosingDay"
+                class="flex items-center gap-1"
+              >
+                <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+                </svg>
+                Closes: {{ getAccountBillingCycle(card.account_id).statementClosingDay }}th
+              </span>
+              <span
+                v-if="getAccountBillingCycle(card.account_id).dueDay"
+                class="flex items-center gap-1"
+              >
+                <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+                </svg>
+                Due: {{ getAccountBillingCycle(card.account_id).dueDay }}th
+              </span>
+              <span v-if="!getAccountBillingCycle(card.account_id).statementClosingDay && !getAccountBillingCycle(card.account_id).dueDay" class="text-white/40">
+                Not configured
+              </span>
+            </div>
+            <p v-if="getAccountBillingCycle(card.account_id).nextDueDate" class="text-xs mt-1" :class="isDueSoon(getAccountBillingCycle(card.account_id).nextDueDate) ? 'text-amber-300' : 'text-white/50'">
+              Next due: {{ getAccountBillingCycle(card.account_id).nextDueDate }}
+            </p>
           </div>
 
           <!-- Account Link -->

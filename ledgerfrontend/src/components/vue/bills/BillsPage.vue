@@ -357,6 +357,52 @@ function onReactivateClick(event: Event, item: BillOut) {
 
 const isLoading = computed(() => store.loading || filtersLoading.value);
 const hasItems = computed(() => store.items.length > 0);
+
+// ─── View Mode ────────────────────────────────────────────────────────────────
+
+const viewMode = ref<"grid" | "calendar">("grid");
+
+// ─── Calendar Computed ────────────────────────────────────────────────────────
+
+const calendarMonth = ref(new Date().getMonth());
+const calendarYear = ref(new Date().getFullYear());
+
+const calendarDays = computed(() => {
+  const daysInMonth = new Date(calendarYear.value, calendarMonth.value + 1, 0).getDate();
+  const firstDayOfWeek = new Date(calendarYear.value, calendarMonth.value, 1).getDay();
+  const days: Array<{ day: number; bills: BillOut[] }> = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${calendarYear.value}-${String(calendarMonth.value + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const billsForDay = store.items.filter((b) => {
+      if (!b.next_due_date) return false;
+      return b.next_due_date === dateStr;
+    });
+    days.push({ day: d, bills: billsForDay });
+  }
+  return { firstDayOfWeek, days };
+});
+
+const monthName = computed(() => {
+  return new Date(calendarYear.value, calendarMonth.value).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+});
+
+function prevMonth() {
+  if (calendarMonth.value === 0) {
+    calendarMonth.value = 11;
+    calendarYear.value--;
+  } else {
+    calendarMonth.value--;
+  }
+}
+
+function nextMonth() {
+  if (calendarMonth.value === 11) {
+    calendarMonth.value = 0;
+    calendarYear.value++;
+  } else {
+    calendarMonth.value++;
+  }
+}
 </script>
 
 <template>
@@ -369,13 +415,43 @@ const hasItems = computed(() => store.items.length > 0);
           Track recurring bills, subscriptions, and upcoming payments
         </p>
       </div>
-      <button class="btn-primary" @click="openCreateForm">
-        <!-- Plus Icon -->
-        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
-        </svg>
-        Add Bill
-      </button>
+      <div class="flex items-center gap-3">
+        <!-- View Mode Toggle -->
+        <div class="flex items-center rounded-lg border border-navy-200 dark:border-navy-700 overflow-hidden">
+          <button
+            :class="[
+              'px-3 py-1.5 text-sm font-medium transition-colors',
+              viewMode === 'grid'
+                ? 'bg-cyan-600 text-white'
+                : 'bg-white dark:bg-navy-800 text-navy-900 dark:text-navy-100 hover:bg-cyan-50 dark:hover:bg-navy-700',
+            ]"
+            @click="viewMode = 'grid'"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+          </button>
+          <button
+            :class="[
+              'px-3 py-1.5 text-sm font-medium transition-colors',
+              viewMode === 'calendar'
+                ? 'bg-cyan-600 text-white'
+                : 'bg-white dark:bg-navy-800 text-navy-900 dark:text-navy-100 hover:bg-cyan-50 dark:hover:bg-navy-700',
+            ]"
+            @click="viewMode = 'calendar'"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+            </svg>
+          </button>
+        </div>
+        <button class="btn-primary" @click="openCreateForm">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          Add Bill
+        </button>
+      </div>
     </div>
 
     <!-- ── Search + Filters ───────────────────────────────────────────────── -->
@@ -410,9 +486,76 @@ const hasItems = computed(() => store.items.length > 0);
       @action="openCreateForm"
     />
 
+    <!-- ── Calendar View ────────────────────────────────────────────────────── -->
+    <div v-if="viewMode === 'calendar' && hasItems" class="card overflow-hidden">
+      <!-- Month Navigation -->
+      <div class="flex items-center justify-between p-4 border-b border-navy-100 dark:border-navy-800">
+        <button class="btn-ghost text-sm" @click="prevMonth">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
+          </svg>
+        </button>
+        <h2 class="text-lg font-semibold text-navy-900 dark:text-navy-100">{{ monthName }}</h2>
+        <button class="btn-ghost text-sm" @click="nextMonth">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Calendar Grid -->
+      <div class="grid grid-cols-7">
+        <!-- Day Headers -->
+        <div v-for="day in ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']" :key="day"
+          class="border-b border-r border-navy-100 dark:border-navy-800 p-2 text-center text-xs font-medium text-slate-custom-500"
+        >
+          {{ day }}
+        </div>
+
+        <!-- Empty cells before first day -->
+        <div
+          v-for="n in calendarDays.firstDayOfWeek"
+          :key="'empty-' + n"
+          class="border-b border-r border-navy-100 dark:border-navy-800 p-2 min-h-[80px] bg-navy-50/50 dark:bg-navy-900/30"
+        />
+
+        <!-- Day cells -->
+        <div
+          v-for="dayInfo in calendarDays.days"
+          :key="dayInfo.day"
+          class="border-b border-r border-navy-100 dark:border-navy-800 p-1.5 min-h-[80px]"
+          :class="{
+            'bg-cyan-50/50 dark:bg-cyan-950/10': dayInfo.day === new Date().getDate() && calendarMonth === new Date().getMonth() && calendarYear === new Date().getFullYear(),
+          }"
+        >
+          <div class="text-xs font-medium mb-1"
+            :class="dayInfo.day === new Date().getDate() && calendarMonth === new Date().getMonth() && calendarYear === new Date().getFullYear()
+              ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-custom-500'"
+          >
+            {{ dayInfo.day }}
+          </div>
+          <div class="space-y-0.5">
+            <div
+              v-for="bill in dayInfo.bills"
+              :key="bill.id"
+              class="text-[10px] leading-tight rounded px-1 py-0.5 cursor-pointer hover:opacity-80 transition-opacity truncate"
+              :class="bill.status === 'ACTIVE'
+                ? 'bg-cyan-100 dark:bg-cyan-950/30 text-cyan-800 dark:text-cyan-300'
+                : bill.status === 'PAUSED'
+                  ? 'bg-amber-100 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300'
+                  : 'bg-slate-100 dark:bg-slate-800/30 text-slate-600 dark:text-slate-400'"
+              @click="navigateToDetail(bill)"
+            >
+              {{ bill.payee }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Card Grid ──────────────────────────────────────────────────────── -->
     <div
-      v-else
+      v-if="viewMode === 'grid' && hasItems"
       class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
     >
       <div

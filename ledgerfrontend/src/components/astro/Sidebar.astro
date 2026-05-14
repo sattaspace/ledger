@@ -13,6 +13,8 @@ interface NavItem {
   label: string;
   href: string;
   icon: string; // SVG path data
+  /** Feature key for gating (undefined = always visible). */
+  feature?: string;
 }
 
 interface NavSection {
@@ -30,34 +32,9 @@ const navSections: NavSection[] = [
         icon: "M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 12a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z",
       },
       {
-        label: "Financial Calendar",
-        href: "/dashboard/calendar",
-        icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z",
-      },
-    ],
-  },
-  {
-    title: "Money",
-    items: [
-      {
-        label: "Income",
-        href: "/dashboard/income",
-        icon: "M12 4v16m8-8H4",
-      },
-      {
-        label: "Expense",
-        href: "/dashboard/expense",
-        icon: "M20 12H4",
-      },
-      {
-        label: "Budget",
-        href: "/dashboard/budget",
-        icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
-      },
-      {
-        label: "Bills",
-        href: "/dashboard/bills",
-        icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01",
+        label: "Transactions",
+        href: "/dashboard/transactions",
+        icon: "M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z",
       },
     ],
   },
@@ -65,39 +42,35 @@ const navSections: NavSection[] = [
     title: "Accounts",
     items: [
       {
-        label: "Bank Accounts",
-        href: "/dashboard/bank-accounts",
+        label: "Accounts",
+        href: "/dashboard/accounts",
         icon: "M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z",
+      },
+      {
+        label: "Institutions",
+        href: "/dashboard/institutions",
+        icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4",
       },
       {
         label: "Cards",
         href: "/dashboard/cards",
         icon: "M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z",
+        feature: "cards",
       },
     ],
   },
   {
-    title: "Lending",
+    title: "Organize",
     items: [
       {
-        label: "Loans",
-        href: "/dashboard/loans",
-        icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4",
+        label: "Categories",
+        href: "/dashboard/categories",
+        icon: "M4 6h16M4 10h16M4 14h16M4 18h16",
       },
       {
-        label: "Lending",
-        href: "/dashboard/lending",
-        icon: "M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4",
-      },
-      {
-        label: "Mortgage",
-        href: "/dashboard/mortgage",
-        icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6",
-      },
-      {
-        label: "Mortgage Held",
-        href: "/dashboard/mortgage-held",
-        icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4",
+        label: "Tags",
+        href: "/dashboard/tags",
+        icon: "M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z",
       },
     ],
   },
@@ -105,19 +78,49 @@ const navSections: NavSection[] = [
     title: "Planning",
     items: [
       {
-        label: "Savings Goals",
-        href: "/dashboard/savings",
-        icon: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+        label: "Bills",
+        href: "/dashboard/bills",
+        icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01",
       },
       {
-        label: "Investment",
-        href: "/dashboard/investment",
+        label: "Budgets",
+        href: "/dashboard/budgets",
+        icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
+        feature: "budgets",
+      },
+      {
+        label: "Investments",
+        href: "/dashboard/investments",
         icon: "M13 7h8m0 0v8m0-8l-8 8-4-4-6 6",
+        feature: "investments",
+      },
+    ],
+  },
+  {
+    title: "Debt",
+    items: [
+      {
+        label: "Debts",
+        href: "/dashboard/debts",
+        icon: "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z",
+        feature: "debts",
+      },
+    ],
+  },
+  {
+    title: "Goals & Insurance",
+    items: [
+      {
+        label: "Savings Goals",
+        href: "/dashboard/goals",
+        icon: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+        feature: "goals",
       },
       {
         label: "Insurance",
         href: "/dashboard/insurance",
         icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
+        feature: "insurance",
       },
     ],
   },
@@ -128,14 +131,31 @@ const navSections: NavSection[] = [
         label: "Invoices",
         href: "/dashboard/invoices",
         icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+        feature: "invoices",
       },
       {
-        label: "Documents Vault",
-        href: "/dashboard/documents",
+        label: "Document Vault",
+        href: "/dashboard/vault",
         icon: "M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4",
+        feature: "vault",
       },
     ],
   },
+  // ── Phase 6+ links (coming soon) ──
+  // Uncomment as pages are developed:
+  // {
+  //   title: "Lending",
+  //   items: [
+  //     { label: "Loans", href: "/dashboard/loans", icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" },
+  //     { label: "Mortgage", href: "/dashboard/mortgage", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
+  //   ],
+  // },
+  // {
+  //   title: "Calendar",
+  //   items: [
+  //     { label: "Financial Calendar", href: "/dashboard/calendar", icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" },
+  //   ],
+  // },
 ];
 ---
 
@@ -185,6 +205,7 @@ const navSections: NavSection[] = [
               href={item.href}
               class="sidebar-nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-custom-700 dark:text-slate-custom-400 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 transition-all duration-150"
               data-nav-href={item.href}
+              data-feature={item.feature || undefined}
             >
               <!-- Active indicator (left bar) -->
               <span class="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-cyan-500 scale-y-0 transition-transform duration-150 sidebar-active-bar"></span>
@@ -376,4 +397,68 @@ const navSections: NavSection[] = [
       if (prev) prev.focus();
     }
   });
+</script>
+
+<script>
+  /**
+   * Feature gating — hide sidebar nav items the user doesn't have access to.
+   *
+   * Reads cached access data from sessionStorage (written by useAuth composable).
+   * Items without a data-feature attribute are always visible.
+   * If all items in a section are hidden, the section header is also hidden.
+   */
+
+  const ACCESS_CACHE_KEY = 'sattabase:auth_access';
+
+  function applyFeatureGating() {
+    let access: Record<string, unknown> = {};
+
+    try {
+      const raw = sessionStorage.getItem(ACCESS_CACHE_KEY);
+      if (raw) {
+        access = JSON.parse(raw);
+      }
+    } catch {
+      // Auth data not available — show all features
+      return;
+    }
+
+    // ── Hide individual nav items based on access ──
+    const gatedItems = document.querySelectorAll<HTMLElement>('.sidebar-nav-item[data-feature]');
+    gatedItems.forEach((item) => {
+      const feature = item.getAttribute('data-feature');
+      if (!feature) return;
+
+      const value = access[feature];
+      const hasAccess = value === true || (typeof value === 'number' && value > 0)
+        || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
+
+      item.style.display = hasAccess ? '' : 'none';
+    });
+
+    // ── Hide section headers when all items are hidden ──
+    const sections = document.querySelectorAll<HTMLElement>('[data-sidebar-section]');
+    sections.forEach((section) => {
+      const items = section.querySelectorAll<HTMLElement>('.sidebar-nav-item');
+      const visibleItems = Array.from(items).filter(
+        (item) => item.style.display !== 'none'
+      );
+
+      if (items.length > 0 && visibleItems.length === 0) {
+        section.style.display = 'none';
+      } else {
+        section.style.display = '';
+      }
+    });
+  }
+
+  // Run on load
+  applyFeatureGating();
+
+  // Re-run when auth state changes (login, logout, billing update)
+  window.addEventListener('auth-state-changed', applyFeatureGating);
+  document.addEventListener('astro:page-load', applyFeatureGating);
+
+  // Also listen for the billing-updated event that useAuth dispatches
+  window.addEventListener('sattabase:billing-updated', applyFeatureGating);
 </script>

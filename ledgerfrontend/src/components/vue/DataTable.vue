@@ -75,6 +75,8 @@ const props = withDefaults(
     stickyHeader?: boolean;
     /** Compact row padding. */
     compact?: boolean;
+    /** Show card layout on mobile instead of scrollable table. */
+    mobileCardMode?: boolean;
   }>(),
   {
     loading: false,
@@ -88,6 +90,7 @@ const props = withDefaults(
     emptyText: "No records found",
     stickyHeader: false,
     compact: false,
+    mobileCardMode: true,
   },
 );
 
@@ -183,6 +186,19 @@ function goToPage(page: number) {
   emit("page-change", page);
 }
 
+// ─── Mobile Card View ──────────────────────────────────────────────────────────
+
+const isMobile = ref(false);
+
+onMounted(() => {
+  const checkMobile = () => { isMobile.value = window.innerWidth < 640; };
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
+  onUnmounted(() => window.removeEventListener('resize', checkMobile));
+});
+
+const showCardView = computed(() => isMobile.value && props.mobileCardMode && !props.loading && props.rows.length > 0);
+
 function pageNumbers(): (number | string)[] {
   const total = totalPages.value;
   const current = currentPage.value;
@@ -210,7 +226,7 @@ function pageNumbers(): (number | string)[] {
 <template>
   <div class="data-table-wrapper w-full">
     <!-- Table Container -->
-    <div class="overflow-x-auto rounded-xl border border-navy-200 dark:border-navy-700">
+    <div :class="['overflow-x-auto rounded-xl border border-navy-200 dark:border-navy-700', { 'hidden sm:block': showCardView }]">
       <table class="w-full text-sm">
         <!-- Header -->
         <thead :class="[stickyHeader ? 'sticky top-0 z-10' : '', 'bg-navy-50 dark:bg-navy-900']">
@@ -323,6 +339,30 @@ function pageNumbers(): (number | string)[] {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Mobile Card View -->
+    <div v-if="showCardView" class="space-y-3 sm:hidden">
+      <div
+        v-for="row in rows"
+        :key="(row[rowKey] as number)"
+        class="rounded-xl border border-navy-200 dark:border-navy-700 bg-white dark:bg-navy-900 p-4 space-y-2"
+        @click="emit('row-click', row)"
+        :class="$attrs['onRow-click'] ? 'cursor-pointer' : ''"
+      >
+        <div
+          v-for="col in columns"
+          :key="col.key"
+          class="flex justify-between items-start gap-2"
+        >
+          <span class="text-xs font-medium text-slate-custom-500 dark:text-slate-custom-400">{{ col.label }}</span>
+          <span class="text-sm text-navy-900 dark:text-navy-100 text-right">
+            <slot :name="`cell-${col.key}`" :row="row" :value="row[col.key]">
+              {{ row[col.key] }}
+            </slot>
+          </span>
+        </div>
+      </div>
     </div>
 
     <!-- Pagination Footer -->

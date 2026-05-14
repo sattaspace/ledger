@@ -30,6 +30,8 @@ export { default as Modal } from "./Modal.vue";
 
 export { default as ConfirmDialog } from "./ConfirmDialog.vue";
 
+export { default as ToastContainer } from "./ToastContainer.vue";
+
 // ─── Form Controls ────────────────────────────────────────────────────────────
 export { default as SearchInput } from "./SearchInput.vue";
 
@@ -46,3 +48,8 @@ export { default as CategoryTreeSelect } from "./CategoryTreeSelect.vue";
 export type { TreeNode } from "./CategoryTreeSelect.vue";
 
 export { default as FormErrors } from "./FormErrors.vue";
+
+// ─── Feature Gating ───────────────────────────────────────────────────────────
+export { default as FeatureGate } from "./FeatureGate.vue";
+
+export { default as UpgradePrompt } from "./UpgradePrompt.vue";
