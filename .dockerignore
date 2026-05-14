@@ -169,3 +169,9 @@ prompt
 
 SattaAddressBackend/
 SattaAddressFrontend/
+# dealerbackend/
+# dealerfrontend/
+addressbackend/
+addressfrontend/
+meridianbackend/
+meridianfrontend/

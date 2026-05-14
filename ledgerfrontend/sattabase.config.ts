@@ -32,6 +32,11 @@ export default {
   // Token storage key prefix (domain-specific to avoid collisions)
   tokenKeyPrefix: import.meta.env.PUBLIC_TOKEN_KEY_PREFIX_SL || "sattabase-ledger:",
 
+  // Ledger backend API base URL (Django Ninja — separate from Sattabase Core)
+  ledgerApiUrl: isDev
+    ? "http://localhost:8087/api/v1"
+    : import.meta.env.SL_LEDGER_API_URL || "https://ledgerapi.sattaspace.com/api/v1",
+
   // JWT access token lifetime in minutes (for proactive refresh)
   accessTokenLifetimeMinutes: 60,
 };

@@ -1,0 +1,17 @@
+---
+/**
+ * Transaction detail page — /dashboard/transactions/[id]
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import TransactionDetail from "@/components/vue/transactions/TransactionDetail.vue";
+---
+
+<DashboardLayout title="Transaction Detail — Satta Ledger">
+  <TransactionDetail client:only="vue" id={Astro.params.id} />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Transaction Detail";
+</script>

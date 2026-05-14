@@ -1,0 +1,138 @@
+"""Account controller — CRUD for accounts + balance recalculation."""
+
+import logging
+
+from decimal import Decimal
+
+from ninja import Query
+from ninja_extra import api_controller, route
+
+from api.models import Account, Institution
+from api.schemas.core import (
+    AccountCreate,
+    AccountFilter,
+    AccountListOut,
+    AccountOut,
+    AccountUpdate,
+    BalanceRecalculateOut,
+)
+from api.schemas.common import MessageOut, PaginatedResponse
+
+from .base import LedgerControllerBase
+
+logger = logging.getLogger(__name__)
+
+
+@api_controller("/accounts", tags=["Accounts"])
+class AccountController(LedgerControllerBase):
+
+    # ── List ──────────────────────────────────────────────────────────────
+
+    @route.get("", response=PaginatedResponse[AccountOut])
+    def list_accounts(self, request, filters: AccountFilter = Query(...)):
+        """List all accounts for the authenticated user, with pagination and filters."""
+        user_id = self.require_user_id(request)
+        qs = Account.objects.filter(user_id=user_id).select_related("institution")
+        qs, limit, offset = self.apply_filters(qs, filters)
+        return self.paginate(qs, limit, offset)
+
+    @route.get("/dropdown", response=list[AccountListOut])
+    def list_dropdown(self, request):
+        """Lightweight list for dropdown/select components."""
+        user_id = self.require_user_id(request)
+        return list(Account.objects.filter(user_id=user_id).select_related("institution"))
+
+    # ── Get ───────────────────────────────────────────────────────────────
+
+    @route.get("/{int:account_id}", response=AccountOut)
+    def get_account(self, request, account_id: int):
+        """Get a single account by ID."""
+        user_id = self.require_user_id(request)
+        return self.get_or_404(Account, user_id, account_id)
+
+    # ── Create ────────────────────────────────────────────────────────────
+
+    @route.post("", response=AccountOut)
+    def create_account(self, request, payload: AccountCreate):
+        """Create a new account linked to an institution."""
+        user_id = self.require_user_id(request)
+        data = payload.model_dump()
+        data["institution_id"] = data.pop("institution_id")
+        obj = Account.objects.create(user_id=user_id, **data)
+        logger.info("Account created: id=%s user_id=%s name=%s", obj.id, user_id, obj.name)
+        return obj
+
+    # ── Update ────────────────────────────────────────────────────────────
+
+    @route.patch("/{int:account_id}", response=AccountOut)
+    def update_account(self, request, account_id: int, payload: AccountUpdate):
+        """Update an existing account. Only provided fields are changed."""
+        user_id = self.require_user_id(request)
+        obj = self.get_or_404(Account, user_id, account_id)
+        self.update_object(obj, payload)
+        return obj
+
+    # ── Balance Recalculation ─────────────────────────────────────────────
+
+    @route.post("/{int:account_id}/recalculate-balance", response=BalanceRecalculateOut)
+    def recalculate_balance(self, request, account_id: int):
+        """Recalculate account balance from transactions.
+
+        Should be called after bulk operations or as a periodic integrity check.
+        Normal single-transaction saves update the balance incrementally.
+        """
+        user_id = self.require_user_id(request)
+        obj = self.get_or_404(Account, user_id, account_id)
+        old_balance = obj.current_balance
+        obj.recalculate_balance()
+        obj.refresh_from_db()
+        logger.info(
+            "Balance recalculated: account=%s old=%s new=%s",
+            obj.id, old_balance, obj.current_balance,
+        )
+        return {
+            "account_id": obj.id,
+            "old_balance": old_balance,
+            "new_balance": obj.current_balance,
+            "detail": "Balance recalculated successfully.",
+        }
+
+    # ── Soft Delete ───────────────────────────────────────────────────────
+
+    @route.delete("/{int:account_id}", response=MessageOut)
+    def soft_delete_account(self, request, account_id: int):
+        """Soft-delete an account (sets is_deleted=True)."""
+        user_id = self.require_user_id(request)
+        obj = self.get_or_404(Account, user_id, account_id)
+        obj.soft_delete()
+        logger.info("Account soft-deleted: id=%s user_id=%s", obj.id, user_id)
+        return {"detail": "Account deleted."}
+
+    # ── Restore ───────────────────────────────────────────────────────────
+
+    @route.post("/{int:account_id}/restore", response=MessageOut)
+    def restore_account(self, request, account_id: int):
+        """Restore a soft-deleted account."""
+        user_id = self.require_user_id(request)
+        obj = self.get_with_deleted_or_404(Account, user_id, account_id)
+        obj.restore()
+        logger.info("Account restored: id=%s user_id=%s", obj.id, user_id)
+        return {"detail": "Account restored."}
+
+    # ── Activate / Deactivate ─────────────────────────────────────────────
+
+    @route.post("/{int:account_id}/activate", response=MessageOut)
+    def activate_account(self, request, account_id: int):
+        """Activate an account."""
+        user_id = self.require_user_id(request)
+        obj = self.get_or_404(Account, user_id, account_id)
+        obj.activate()
+        return {"detail": "Account activated."}
+
+    @route.post("/{int:account_id}/deactivate", response=MessageOut)
+    def deactivate_account(self, request, account_id: int):
+        """Deactivate an account."""
+        user_id = self.require_user_id(request)
+        obj = self.get_or_404(Account, user_id, account_id)
+        obj.deactivate()
+        return {"detail": "Account deactivated."}

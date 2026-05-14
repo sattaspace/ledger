@@ -1,0 +1,17 @@
+---
+/**
+ * Categories list page — /dashboard/categories
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import CategoriesPage from "@/components/vue/categories/CategoriesPage.vue";
+---
+
+<DashboardLayout title="Categories — Satta Ledger">
+  <CategoriesPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Categories";
+</script>

@@ -1,0 +1,17 @@
+---
+/**
+ * Tags list page — /dashboard/tags
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import TagsPage from "@/components/vue/tags/TagsPage.vue";
+---
+
+<DashboardLayout title="Tags — Satta Ledger">
+  <TagsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Tags";
+</script>

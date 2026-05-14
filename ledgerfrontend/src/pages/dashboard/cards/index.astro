@@ -1,0 +1,17 @@
+---
+/**
+ * Cards list page — /dashboard/cards
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import CardsPage from "@/components/vue/cards/CardsPage.vue";
+---
+
+<DashboardLayout title="Cards — Satta Ledger">
+  <CardsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Cards";
+</script>

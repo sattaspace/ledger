@@ -1,0 +1,17 @@
+---
+/**
+ * Bills list page — /dashboard/bills
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import BillsPage from "@/components/vue/bills/BillsPage.vue";
+---
+
+<DashboardLayout title="Bills — Satta Ledger">
+  <BillsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Bills";
+</script>
