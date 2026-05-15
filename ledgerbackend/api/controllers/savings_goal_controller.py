@@ -77,6 +77,8 @@ class SavingsGoalController(LedgerControllerBase):
         """Create a new savings goal."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "goals")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_goals", SavingsGoal.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id", None)
         obj = SavingsGoal.objects.create(user_id=user_id, **data)
@@ -105,6 +107,9 @@ class SavingsGoalController(LedgerControllerBase):
         """
         user_id = self.require_user_id(request)
         self.require_feature(request, "goals")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
         goal = self.get_or_404(SavingsGoal, user_id, goal_id)
 
         old_amount = goal.current_amount
@@ -162,6 +167,9 @@ class SavingsGoalController(LedgerControllerBase):
         """Restore a soft-deleted savings goal."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "goals")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_goals",
+                            SavingsGoal.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(SavingsGoal, user_id, goal_id)
         obj.restore()
         return {"detail": "Savings goal restored."}

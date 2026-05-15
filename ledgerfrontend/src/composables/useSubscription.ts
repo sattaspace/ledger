@@ -1,5 +1,8 @@
 /**
  * useSubscription — shared subscription state across Vue components.
+ *
+ * Auto-invalidates when billing updates are detected (e.g. user returns
+ * from SattaBase billing portal with ?billing_updated=1).
  */
 
 import { ref } from "vue";
@@ -12,6 +15,18 @@ const sharedSubscriptions = ref<SubscriptionOutput[]>([]);
 const sharedLoading = ref(false);
 const sharedInitialized = ref(false);
 let fetchPromise: Promise<SubscriptionOutput[]> | null = null;
+
+// ─── Auto-invalidation on billing updates ──────────────────────────────────
+
+const BILLING_EVENT = "sattabase:billing-updated";
+
+if (typeof window !== "undefined") {
+  window.addEventListener(BILLING_EVENT, () => {
+    sharedInitialized.value = false;
+    sharedSubscriptions.value = [];
+    fetchPromise = null;
+  });
+}
 
 export function useSubscription() {
   const subscriptions = sharedSubscriptions;

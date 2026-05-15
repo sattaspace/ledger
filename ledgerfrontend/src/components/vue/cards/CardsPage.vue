@@ -28,6 +28,8 @@ import {
   EmptyState,
   LoadingSkeleton,
   FilterBar,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { FilterConfig } from "@/components/vue";
 import {
@@ -313,6 +315,7 @@ const hasItems = computed(() => store.items.length > 0);
 </script>
 
 <template>
+  <FeatureGate feature="cards" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -617,4 +620,8 @@ const hasItems = computed(() => store.items.length > 0);
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="cards" />
+  </template>
+  </FeatureGate>
 </template>

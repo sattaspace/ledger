@@ -27,6 +27,8 @@ import {
   LoadingSkeleton,
   FilterBar,
   FormErrors,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn, SortChangePayload, FilterConfig, StatusColorMap } from "@/components/vue";
 import {
@@ -403,6 +405,7 @@ const hasItems = computed(() => store.items.length > 0);
 </script>
 
 <template>
+  <FeatureGate feature="invoices" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -792,4 +795,8 @@ const hasItems = computed(() => store.items.length > 0);
       @cancel="deleter.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="invoices" />
+  </template>
+  </FeatureGate>
 </template>

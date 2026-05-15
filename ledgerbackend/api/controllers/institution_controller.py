@@ -29,6 +29,7 @@ class InstitutionController(LedgerControllerBase):
     def list_institutions(self, request, filters: InstitutionFilter = Query(...)):
         """List all institutions for the authenticated user, with pagination and filters."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         qs = Institution.objects.filter(user_id=user_id)
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -37,6 +38,7 @@ class InstitutionController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for dropdown/select components."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         return list(Institution.objects.filter(user_id=user_id))
 
     # ── Get ───────────────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ class InstitutionController(LedgerControllerBase):
     def get_institution(self, request, institution_id: int):
         """Get a single institution by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         return self.get_or_404(Institution, user_id, institution_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -53,6 +56,10 @@ class InstitutionController(LedgerControllerBase):
     def create_institution(self, request, payload: InstitutionCreate):
         """Create a new financial institution."""
         user_id = self.require_user_id(request)
+        self.require_subscription_active(request)
+        self.require_feature(request, "institutions")
+        self.check_plan_limit(request, "max_institutions",
+                            Institution.objects.filter(user_id=user_id).count())
         obj = Institution.objects.create(user_id=user_id, **payload.model_dump())
         logger.info("Institution created: id=%s user_id=%s name=%s", obj.id, user_id, obj.name)
         return obj
@@ -63,6 +70,7 @@ class InstitutionController(LedgerControllerBase):
     def update_institution(self, request, institution_id: int, payload: InstitutionUpdate):
         """Update an existing institution. Only provided fields are changed."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         obj = self.get_or_404(Institution, user_id, institution_id)
         self.update_object(obj, payload)
         return obj
@@ -73,6 +81,7 @@ class InstitutionController(LedgerControllerBase):
     def soft_delete_institution(self, request, institution_id: int):
         """Soft-delete an institution (sets is_deleted=True)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         obj = self.get_or_404(Institution, user_id, institution_id)
         obj.soft_delete()
         logger.info("Institution soft-deleted: id=%s user_id=%s", obj.id, user_id)
@@ -84,6 +93,10 @@ class InstitutionController(LedgerControllerBase):
     def restore_institution(self, request, institution_id: int):
         """Restore a soft-deleted institution."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_institutions",
+                            Institution.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Institution, user_id, institution_id)
         obj.restore()
         logger.info("Institution restored: id=%s user_id=%s", obj.id, user_id)
@@ -95,6 +108,7 @@ class InstitutionController(LedgerControllerBase):
     def activate_institution(self, request, institution_id: int):
         """Activate an institution."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         obj = self.get_or_404(Institution, user_id, institution_id)
         obj.activate()
         return {"detail": "Institution activated."}
@@ -103,6 +117,7 @@ class InstitutionController(LedgerControllerBase):
     def deactivate_institution(self, request, institution_id: int):
         """Deactivate an institution (keeps data, excludes from default views)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "institutions")
         obj = self.get_or_404(Institution, user_id, institution_id)
         obj.deactivate()
         return {"detail": "Institution deactivated."}

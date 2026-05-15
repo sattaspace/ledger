@@ -22,6 +22,8 @@ import {
   EmptyState,
   LoadingSkeleton,
   FilterBar,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn, FilterConfig } from "@/components/vue";
 import {
@@ -268,6 +270,7 @@ onMounted(async () => {
 </script>
 
 <template>
+  <FeatureGate feature="accounts" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -522,4 +525,8 @@ onMounted(async () => {
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="accounts" />
+  </template>
+  </FeatureGate>
 </template>

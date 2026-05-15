@@ -24,6 +24,8 @@ import {
   EmptyState,
   LoadingSkeleton,
   FilterBar,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn, FilterConfig } from "@/components/vue";
 import {
@@ -246,6 +248,7 @@ const isLoading = computed(() => store.loading);
 </script>
 
 <template>
+  <FeatureGate feature="categories" show-fallback>
   <div class="space-y-6">
     <!-- ─── Page Header ──────────────────────────────────────────────── -->
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -731,4 +734,8 @@ const isLoading = computed(() => store.loading);
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="categories" />
+  </template>
+  </FeatureGate>
 </template>

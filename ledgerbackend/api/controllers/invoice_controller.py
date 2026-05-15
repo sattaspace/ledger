@@ -109,6 +109,8 @@ class InvoiceController(LedgerControllerBase):
         """Create a new invoice."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "invoices")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_invoices", Invoice.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["transaction_id"] = data.pop("transaction_id", None)
         obj = Invoice.objects.create(user_id=user_id, **data)
@@ -136,6 +138,9 @@ class InvoiceController(LedgerControllerBase):
         """
         user_id = self.require_user_id(request)
         self.require_feature(request, "invoices")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
         obj = self.get_or_404(Invoice, user_id, invoice_id)
 
         paid_amount = payload.amount_paid or obj.amount_due
@@ -183,6 +188,9 @@ class InvoiceController(LedgerControllerBase):
         """Restore a soft-deleted invoice."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "invoices")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_invoices",
+                            Invoice.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Invoice, user_id, invoice_id)
         obj.restore()
         return {"detail": "Invoice restored."}
@@ -204,6 +212,9 @@ class InvoiceController(LedgerControllerBase):
         """Add a line item to an invoice."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "invoices")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_invoices",
+                            InvoiceLineItem.objects.filter(user_id=user_id).count())
         invoice = self.get_or_404(Invoice, user_id, invoice_id)
         data = payload.model_dump()
         data.pop("invoice_id", None)

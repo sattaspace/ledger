@@ -48,6 +48,7 @@ class TransactionController(LedgerControllerBase):
         date range, amount range, search, and recurring flag.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         qs = Transaction.objects.filter(user_id=user_id).select_related("account", "category")
 
         # Apply filters manually for date/amount range
@@ -79,6 +80,11 @@ class TransactionController(LedgerControllerBase):
         if amount_max is not None:
             qs = qs.filter(amount_original__lte=amount_max)
 
+        # Data retention enforcement
+        cutoff = self.get_retention_cutoff(request)
+        if cutoff:
+            qs = qs.filter(date__gte=cutoff)
+
         # Search on payee and description
         if search:
             from django.db.models import Q
@@ -90,8 +96,33 @@ class TransactionController(LedgerControllerBase):
     def list_recent(self, request, limit: int = 10):
         """Get the most recent transactions (for dashboard)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         qs = Transaction.objects.filter(user_id=user_id).select_related("account", "category")
+        # Data retention enforcement
+        cutoff = self.get_retention_cutoff(request)
+        if cutoff:
+            qs = qs.filter(date__gte=cutoff)
         return list(qs[:limit])
+
+    # ── Reports ───────────────────────────────────────────────────────────
+
+    @route.get("/reports/summary", response=dict)
+    def get_report_summary(self, request):
+        """Get transaction summary report. Requires 'reports' feature."""
+        user_id = self.require_user_id(request)
+        self.require_feature(request, "reports")
+        from django.db.models import Sum, Count, Q
+        qs = Transaction.objects.filter(user_id=user_id)
+        # Data retention enforcement
+        cutoff = self.get_retention_cutoff(request)
+        if cutoff:
+            qs = qs.filter(date__gte=cutoff)
+        summary = qs.aggregate(
+            total_transactions=Count("id"),
+            total_income=Sum("amount_base", filter=Q(transaction_type="INCOME")),
+            total_expense=Sum("amount_base", filter=Q(transaction_type="EXPENSE")),
+        )
+        return summary
 
     # ── Get ───────────────────────────────────────────────────────────────
 
@@ -99,6 +130,7 @@ class TransactionController(LedgerControllerBase):
     def get_transaction(self, request, transaction_id: int):
         """Get a single transaction by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         return self.get_or_404(Transaction, user_id, transaction_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -111,6 +143,10 @@ class TransactionController(LedgerControllerBase):
         exchange rates from the base backend.
         """
         user_id = self.require_user_id(request)
+        self.require_subscription_active(request)
+        self.require_feature(request, "transactions")
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         data["card_id"] = data.pop("card_id", None)
@@ -129,6 +165,7 @@ class TransactionController(LedgerControllerBase):
     def update_transaction(self, request, transaction_id: int, payload: TransactionUpdate):
         """Update an existing transaction. Only provided fields are changed."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         obj = self.get_or_404(Transaction, user_id, transaction_id)
         self.update_object(obj, payload)
         return obj
@@ -146,6 +183,10 @@ class TransactionController(LedgerControllerBase):
         Both are linked via transfer_pair (OneToOneField).
         """
         user_id = self.require_user_id(request)
+        self.require_subscription_active(request)
+        self.require_feature(request, "transactions")
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
 
         # Validate both accounts exist and belong to the user
         from_acct = self.get_or_404(Account, user_id, payload.from_account_id)
@@ -203,6 +244,7 @@ class TransactionController(LedgerControllerBase):
     def soft_delete_transaction(self, request, transaction_id: int):
         """Soft-delete a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         obj = self.get_or_404(Transaction, user_id, transaction_id)
         obj.soft_delete()
         logger.info("Transaction soft-deleted: id=%s user_id=%s", obj.id, user_id)
@@ -214,6 +256,10 @@ class TransactionController(LedgerControllerBase):
     def restore_transaction(self, request, transaction_id: int):
         """Restore a soft-deleted transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Transaction, user_id, transaction_id)
         obj.restore()
         return {"detail": "Transaction restored."}
@@ -224,6 +270,7 @@ class TransactionController(LedgerControllerBase):
     def list_splits(self, request, transaction_id: int):
         """List all splits for a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         # Verify transaction ownership
         self.get_or_404(Transaction, user_id, transaction_id)
         return list(
@@ -240,6 +287,10 @@ class TransactionController(LedgerControllerBase):
         The sum of all splits must not exceed the transaction's amount_original.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_transactions",
+                            TransactionSplit.objects.filter(user_id=user_id).count())
         txn = self.get_or_404(Transaction, user_id, transaction_id)
         data = payload.model_dump()
         data.pop("transaction_id", None)  # Use the URL param instead
@@ -255,6 +306,7 @@ class TransactionController(LedgerControllerBase):
     def update_split(self, request, transaction_id: int, split_id: int, payload: TransactionSplitUpdate):
         """Update an existing split."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         self.get_or_404(Transaction, user_id, transaction_id)
         try:
             split = TransactionSplit.objects.get(
@@ -270,6 +322,7 @@ class TransactionController(LedgerControllerBase):
     def delete_split(self, request, transaction_id: int, split_id: int):
         """Delete a split from a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
         self.get_or_404(Transaction, user_id, transaction_id)
         try:
             split = TransactionSplit.objects.get(

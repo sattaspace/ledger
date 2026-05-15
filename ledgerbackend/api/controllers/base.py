@@ -2,6 +2,11 @@
 
 Provides:
     - Auth helper: require_user_id() — extracts Sattabase user_id or 401
+    - Feature gate: require_feature() — checks access map for feature boolean
+    - Subscription: require_subscription_active() — checks subscription status
+    - Plan limit: check_plan_limit() — enforces numeric record limits
+    - Retention: get_retention_cutoff() — returns date cutoff for data_retention_days
+    - API access: require_api_access() — gates external API access
     - Object lookup: get_or_404() — scoped by user_id, excludes soft-deleted
     - Object lookup: get_with_deleted_or_404() — includes soft-deleted (for restore)
     - Pagination: paginate() — consistent paginated list responses
@@ -9,9 +14,11 @@ Provides:
 """
 
 import logging
+from datetime import datetime, timedelta
 from typing import Type
 
 from django.http import Http404
+from django.utils import timezone
 from ninja_extra import ControllerBase
 
 from api.schemas.common import PaginatedResponse
@@ -86,6 +93,79 @@ class LedgerControllerBase(ControllerBase):
         )
         if not has_access:
             raise FeatureRequiredError(feature)
+
+    def require_subscription_active(self, request) -> None:
+        """Verify the user has an active subscription (not expired/cancelled).
+
+        Raises SubscriptionInactiveError (403) if subscription is not active.
+        Must be called after require_user_id() to ensure authentication first.
+        """
+        subscription = getattr(request, "sattabase_subscription", None)
+        if subscription is None or not getattr(subscription, "is_active", False):
+            raise SubscriptionInactiveError()
+
+    def check_plan_limit(self, request, limit_key: str, current_count: int) -> int:
+        """Check a numeric plan limit from the access map.
+
+        Args:
+            limit_key: Access map key (e.g. "max_accounts", "max_transactions").
+            current_count: Current number of items the user has.
+
+        Returns:
+            The maximum allowed count from the access map.
+
+        Raises PlanLimitReachedError (403) if current_count >= limit.
+        """
+        access = self.get_access(request)
+        max_allowed = access.get(limit_key)
+        if max_allowed is not None:
+            try:
+                max_allowed = int(max_allowed)
+            except (ValueError, TypeError):
+                max_allowed = None
+        if max_allowed is not None and current_count >= max_allowed:
+            raise PlanLimitReachedError(limit_key, max_allowed)
+        return max_allowed or 0
+
+    # ── Data retention helper ─────────────────────────────────────────────
+
+    def get_retention_cutoff(self, request) -> datetime | None:
+        """Return the date cutoff for data retention enforcement.
+
+        Reads `data_retention_days` from the access map. Returns a datetime
+        such that records older than it should be excluded from queries.
+        Returns None if retention is unlimited (0 or missing).
+
+        Plan values: Free=90 days, Standard=365 days, Pro=0 (forever)
+
+        Usage in list endpoints:
+            cutoff = self.get_retention_cutoff(request)
+            if cutoff:
+                qs = qs.filter(date__gte=cutoff)
+        """
+        access = self.get_access(request)
+        days = access.get("data_retention_days")
+        if days is not None:
+            try:
+                days = int(days)
+                if days > 0:  # 0 means unlimited
+                    return timezone.now() - timedelta(days=days)
+            except (ValueError, TypeError):
+                pass
+        return None  # No retention limit
+
+    # ── API access helper ──────────────────────────────────────────────────
+
+    def require_api_access(self, request) -> None:
+        """Verify the user's subscription includes API access.
+
+        Raises FeatureRequiredError (403) if api_access is not enabled.
+        Use this on endpoints that should only be accessible via
+        programmatic API (not browser-based requests).
+
+        Plan values: Free=false, Standard=true, Pro=true
+        """
+        self.require_feature(request, "api_access")
 
     # ── Object lookup helpers ─────────────────────────────────────────────
 
@@ -216,4 +296,27 @@ class FeatureRequiredError(Exception):
         self.status_code = 403
         self.feature = feature
         self.detail = f"Your subscription does not include the '{feature}' feature. Please upgrade your plan."
+        super().__init__(self.detail)
+
+
+class SubscriptionInactiveError(Exception):
+    """Raised when the user's subscription is not active."""
+
+    def __init__(self):
+        self.status_code = 403
+        self.detail = "Your subscription is not active. Please reactivate your plan."
+        super().__init__(self.detail)
+
+
+class PlanLimitReachedError(Exception):
+    """Raised when the user has reached a numeric plan limit."""
+
+    def __init__(self, limit_key: str, max_allowed: int):
+        self.status_code = 403
+        self.limit_key = limit_key
+        self.max_allowed = max_allowed
+        self.detail = (
+            f"Plan limit reached for '{limit_key}' ({max_allowed}). "
+            "Please upgrade your plan for more."
+        )
         super().__init__(self.detail)

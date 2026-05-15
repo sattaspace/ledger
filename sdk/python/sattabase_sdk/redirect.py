@@ -26,12 +26,14 @@ class BillingRedirectModule:
 
     def _build_url(self, path: str, return_url: str | None = None) -> str:
         """Build a redirect URL with optional return_url parameter."""
+        from urllib.parse import quote
+
         base = self._client.config.app_base_url
         url = f"{base}{path}"
 
         if return_url:
             sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}return_url={return_url}"
+            url = f"{url}{sep}return_url={quote(return_url, safe='')}"
 
         return url
 

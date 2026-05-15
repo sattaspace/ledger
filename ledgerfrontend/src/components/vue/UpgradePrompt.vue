@@ -5,12 +5,16 @@
  * Displays a visually distinct card prompting the user to upgrade their
  * plan when they've hit the maximum allowed items for a feature.
  *
+ * Clicking "Upgrade Plan" redirects to SattaBase billing via auth code SSO.
+ *
  * Usage:
  *   <UpgradePrompt feature="budgets" :current="5" :maximum="5" />
  *   <UpgradePrompt feature="investments" :current="3" :maximum="3" />
  */
 
-withDefaults(defineProps<{
+import { billingRedirect } from "@/lib/billing";
+
+const props = withDefaults(defineProps<{
   /** Feature name to display (e.g. "budgets", "investments"). */
   feature?: string
   /** Current count of items. */
@@ -22,6 +26,11 @@ withDefaults(defineProps<{
   current: 0,
   maximum: 0,
 })
+
+function handleUpgrade(): void {
+  // Redirect to SattaBase billing portal — sister domains never handle billing directly
+  window.location.href = billingRedirect.portal();
+}
 </script>
 
 <template>
@@ -33,6 +42,6 @@ withDefaults(defineProps<{
     <p class="text-sm text-slate-custom-600 dark:text-slate-custom-400 mb-3">
       You've used {{ current }} of {{ maximum }} {{ feature }}. Upgrade for more.
     </p>
-    <a href="/billing" class="btn-primary text-sm">Upgrade Plan</a>
+    <button type="button" class="btn-primary text-sm" @click="handleUpgrade">Upgrade Plan</button>
   </div>
 </template>

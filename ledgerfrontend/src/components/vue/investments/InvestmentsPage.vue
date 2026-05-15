@@ -21,6 +21,8 @@ import {
   EmptyState,
   LoadingSkeleton,
   TypeBadge,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import {
   useSoftDelete,
@@ -213,6 +215,7 @@ const hasItems = computed(() => store.items.length > 0);
 </script>
 
 <template>
+  <FeatureGate feature="investments" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -430,4 +433,8 @@ const hasItems = computed(() => store.items.length > 0);
       @cancel="deleter.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="investments" />
+  </template>
+  </FeatureGate>
 </template>

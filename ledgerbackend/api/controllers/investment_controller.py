@@ -75,6 +75,8 @@ class InvestmentController(LedgerControllerBase):
         """Create an investment profile for an existing account."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "investments")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_investments", InvestmentAccount.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         obj = InvestmentAccount.objects.create(user_id=user_id, **data)
@@ -108,6 +110,9 @@ class InvestmentController(LedgerControllerBase):
         """Restore a soft-deleted investment account."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "investments")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_investments",
+                            InvestmentAccount.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(InvestmentAccount, user_id, investment_id)
         obj.restore()
         return {"detail": "Investment account restored."}
@@ -129,6 +134,13 @@ class InvestmentController(LedgerControllerBase):
         """Add a holding to an investment account."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "investments")
+        self.require_subscription_active(request)
+        # Holdings share the investment account quota; count both types
+        combined_count = (
+            InvestmentAccount.objects.filter(user_id=user_id).count()
+            + Holding.objects.filter(user_id=user_id).count()
+        )
+        self.check_plan_limit(request, "max_investments", combined_count)
         inv = self.get_or_404(InvestmentAccount, user_id, investment_id)
         data = payload.model_dump()
         data.pop("investment_account_id", None)

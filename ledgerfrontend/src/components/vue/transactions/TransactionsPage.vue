@@ -28,6 +28,8 @@ import {
   CurrencyInput,
   CategoryTreeSelect,
   TagChips,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn, SortChangePayload, TagItem } from "@/components/vue";
 
@@ -435,6 +437,7 @@ onMounted(async () => {
 </script>
 
 <template>
+  <FeatureGate feature="transactions" show-fallback>
   <div class="ldgr-transactions-page space-y-6">
     <!-- Page Header -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -785,6 +788,10 @@ onMounted(async () => {
       @cancel="deleter.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="transactions" />
+  </template>
+  </FeatureGate>
 </template>
 
 <script lang="ts">

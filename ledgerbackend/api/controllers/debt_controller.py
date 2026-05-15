@@ -75,6 +75,8 @@ class DebtController(LedgerControllerBase):
         """Create a new debt facility."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "debts")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_debts", DebtFacility.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         data["account_id"] = data.pop("account_id", None)
@@ -109,6 +111,9 @@ class DebtController(LedgerControllerBase):
         """Restore a soft-deleted debt facility."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "debts")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_debts",
+                            DebtFacility.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(DebtFacility, user_id, debt_id)
         obj.restore()
         return {"detail": "Debt restored."}
@@ -154,6 +159,9 @@ class DebtController(LedgerControllerBase):
         """
         user_id = self.require_user_id(request)
         self.require_feature(request, "debts")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_debts",
+                            DebtPayment.objects.filter(user_id=user_id).count())
         debt = self.get_or_404(DebtFacility, user_id, debt_id)
         data = payload.model_dump()
         data.pop("debt_id", None)

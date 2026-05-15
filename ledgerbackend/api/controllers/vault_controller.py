@@ -96,6 +96,8 @@ class VaultController(LedgerControllerBase):
         """
         user_id = self.require_user_id(request)
         self.require_feature(request, "vault")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_vault_documents", DocumentVault.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["content_type_id"] = data.pop("content_type_id")
         obj = DocumentVault.objects.create(user_id=user_id, **data)
@@ -129,6 +131,9 @@ class VaultController(LedgerControllerBase):
         """Restore a soft-deleted document."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "vault")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_vault_documents",
+                            DocumentVault.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(DocumentVault, user_id, document_id)
         obj.restore()
         return {"detail": "Document restored."}

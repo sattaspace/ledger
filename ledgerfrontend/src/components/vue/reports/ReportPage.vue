@@ -25,6 +25,8 @@ import {
   LoadingSkeleton,
   DateRangePicker,
   StatusBadge,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DateRange } from "@/components/vue";
 import { useReportsStore } from "@/stores/reports";
@@ -183,6 +185,7 @@ const tagMax = computed(() => {
 </script>
 
 <template>
+  <FeatureGate feature="reports" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -772,4 +775,8 @@ const tagMax = computed(() => {
 
     </div>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="reports" />
+  </template>
+  </FeatureGate>
 </template>

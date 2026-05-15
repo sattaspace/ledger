@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Bill, BillPayment
+from api.models import Bill, BillPayment, Transaction
 from api.schemas.bills import (
     BillCreate,
     BillFilter,
@@ -34,6 +34,7 @@ class BillController(LedgerControllerBase):
     def list_bills(self, request, filters: BillFilter = Query(...)):
         """List all bills for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         qs = Bill.objects.filter(user_id=user_id).select_related("account", "category")
 
         # Handle due_within_days special filter
@@ -65,6 +66,7 @@ class BillController(LedgerControllerBase):
     def list_upcoming(self, request, days: int = 30):
         """Get bills due within the next N days (for dashboard)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         from django.utils import timezone
         from datetime import timedelta
 
@@ -84,6 +86,7 @@ class BillController(LedgerControllerBase):
     def get_bill(self, request, bill_id: int):
         """Get a single bill by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         return self.get_or_404(Bill, user_id, bill_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -92,6 +95,10 @@ class BillController(LedgerControllerBase):
     def create_bill(self, request, payload: BillCreate):
         """Create a new bill/subscription."""
         user_id = self.require_user_id(request)
+        self.require_subscription_active(request)
+        self.require_feature(request, "bills")
+        self.check_plan_limit(request, "max_bills",
+                            Bill.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id", None)
         data["category_id"] = data.pop("category_id", None)
@@ -105,6 +112,7 @@ class BillController(LedgerControllerBase):
     def update_bill(self, request, bill_id: int, payload: BillUpdate):
         """Update an existing bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         self.update_object(obj, payload)
         return obj
@@ -118,6 +126,10 @@ class BillController(LedgerControllerBase):
         Also auto-called by Celery on the due date.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "transactions")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_transactions",
+                            Transaction.objects.filter(user_id=user_id).count())
         obj = self.get_or_404(Bill, user_id, bill_id)
         txn = obj.generate_transaction()
         if txn is None:
@@ -138,6 +150,7 @@ class BillController(LedgerControllerBase):
     def soft_delete_bill(self, request, bill_id: int):
         """Soft-delete a bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.soft_delete()
         return {"detail": "Bill deleted."}
@@ -146,6 +159,10 @@ class BillController(LedgerControllerBase):
     def restore_bill(self, request, bill_id: int):
         """Restore a soft-deleted bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_bills",
+                            Bill.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Bill, user_id, bill_id)
         obj.restore()
         return {"detail": "Bill restored."}
@@ -156,6 +173,7 @@ class BillController(LedgerControllerBase):
     def pause_bill(self, request, bill_id: int):
         """Pause a bill (stops auto-generation)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "PAUSED"
         obj.save(update_fields=["status", "updated_at"])
@@ -165,6 +183,7 @@ class BillController(LedgerControllerBase):
     def cancel_bill(self, request, bill_id: int):
         """Cancel a bill permanently."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "CANCELLED"
         obj.save(update_fields=["status", "updated_at"])
@@ -174,6 +193,7 @@ class BillController(LedgerControllerBase):
     def reactivate_bill(self, request, bill_id: int):
         """Reactivate a paused or cancelled bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "ACTIVE"
         obj.save(update_fields=["status", "updated_at"])
@@ -185,6 +205,7 @@ class BillController(LedgerControllerBase):
     def list_payments(self, request, bill_id: int):
         """List all payments for a bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         self.get_or_404(Bill, user_id, bill_id)
         return list(
             BillPayment.objects.filter(user_id=user_id, bill_id=bill_id)
@@ -194,6 +215,10 @@ class BillController(LedgerControllerBase):
     def create_payment(self, request, bill_id: int, payload: BillPaymentCreate):
         """Record a payment for a bill."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_bills",
+                            BillPayment.objects.filter(user_id=user_id).count())
         bill = self.get_or_404(Bill, user_id, bill_id)
         data = payload.model_dump()
         data.pop("bill_id", None)  # Use URL param
@@ -206,6 +231,7 @@ class BillController(LedgerControllerBase):
     def update_payment(self, request, bill_id: int, payment_id: int, payload: BillPaymentUpdate):
         """Update a bill payment."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "bills")
         self.get_or_404(Bill, user_id, bill_id)
         try:
             payment = BillPayment.objects.get(id=payment_id, user_id=user_id, bill_id=bill_id)

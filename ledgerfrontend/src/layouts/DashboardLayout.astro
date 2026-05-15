@@ -280,9 +280,48 @@ const {
     }
   });
 
+  // ── Apply feature gating to sidebar items ──
+  function applyFeatureGating(access) {
+    const gatedItems = document.querySelectorAll<HTMLElement>('.sidebar-nav-item[data-feature]');
+    gatedItems.forEach((item) => {
+      const feature = item.getAttribute('data-feature');
+      if (!feature) return;
+      const value = (access || {})[feature];
+      const hasAccess = value === true || (typeof value === 'number' && value > 0)
+        || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
+      item.style.display = hasAccess ? '' : 'none';
+    });
+
+    const sections = document.querySelectorAll<HTMLElement>('[data-sidebar-section]');
+    sections.forEach((section) => {
+      const items = section.querySelectorAll<HTMLElement>('.sidebar-nav-item');
+      const visibleItems = Array.from(items).filter(
+        (item) => item.style.display !== 'none'
+      );
+      if (items.length > 0 && visibleItems.length === 0) {
+        section.style.display = 'none';
+      } else {
+        section.style.display = '';
+      }
+    });
+  }
+
   // ── Load user info into sidebar & navbar ──
   async function loadUserInfo() {
     try {
+      // Check if useAuth composable has already fetched the profile
+      // (avoid duplicate API call when Vue components are hydrated)
+      const accessCache = sessionStorage.getItem('sattabase:auth_access');
+      const userInfoEl = document.getElementById('sidebar-user-name');
+      if (accessCache && userInfoEl?.textContent && userInfoEl.textContent !== 'User') {
+        // Profile already loaded — skip API call, just re-apply feature gating
+        try {
+          const access = JSON.parse(accessCache);
+          applyFeatureGating(access);
+        } catch { /* ignore parse errors */ }
+        return;
+      }
+
       const { apiClient } = await import('@/lib/api');
       const data = await apiClient.get<{ user: any; subscription: any; access?: Record<string, unknown>; exchange_rates?: unknown; currencies?: unknown }>('/billing/auth/me');
 
@@ -293,29 +332,7 @@ const {
         } catch { /* sessionStorage full or unavailable */ }
 
         // Re-apply feature gating now that access data is available
-        const gatedItems = document.querySelectorAll<HTMLElement>('.sidebar-nav-item[data-feature]');
-        gatedItems.forEach((item) => {
-          const feature = item.getAttribute('data-feature');
-          if (!feature) return;
-          const value = (data.access as Record<string, unknown>)[feature];
-          const hasAccess = value === true || (typeof value === 'number' && value > 0)
-            || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
-          item.style.display = hasAccess ? '' : 'none';
-        });
-
-        // Hide section headers when all items are hidden
-        const sections = document.querySelectorAll<HTMLElement>('[data-sidebar-section]');
-        sections.forEach((section) => {
-          const items = section.querySelectorAll<HTMLElement>('.sidebar-nav-item');
-          const visibleItems = Array.from(items).filter(
-            (item) => item.style.display !== 'none'
-          );
-          if (items.length > 0 && visibleItems.length === 0) {
-            section.style.display = 'none';
-          } else {
-            section.style.display = '';
-          }
-        });
+        applyFeatureGating(data.access);
       }
 
       // ── Cache currency metadata & exchange rates for Vue components ──

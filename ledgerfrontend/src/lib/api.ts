@@ -66,6 +66,29 @@ function initTokens(): void {
 // Recover tokens immediately so they're available before middleware runs
 initTokens();
 
+// ─── Proactive Token Refresh ────────────────────────────────────────────────
+
+/** Refresh the access token before it expires to avoid 401 latency. */
+function startProactiveRefresh(): void {
+  if (typeof window === "undefined") return;
+
+  // Refresh 5 minutes before expiry (access token lifetime = 60 min)
+  const REFRESH_BEFORE_EXPIRY_MS = 55 * 60 * 1000; // 55 minutes
+
+  setInterval(async () => {
+    const token = getAccessToken();
+    if (token) {
+      try {
+        await refreshAccessToken();
+      } catch {
+        // Silent failure — the reactive 401 handler will catch it
+      }
+    }
+  }, REFRESH_BEFORE_EXPIRY_MS);
+}
+
+startProactiveRefresh();
+
 // ─── Token Accessors ─────────────────────────────────────────────────────────
 
 /** Get the current access token from memory. */

@@ -63,6 +63,8 @@ class BudgetController(LedgerControllerBase):
         """Create a new budget for a category."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "budgets")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_budgets", Budget.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["category_id"] = data.pop("category_id")
         obj = Budget.objects.create(user_id=user_id, **data)
@@ -96,6 +98,9 @@ class BudgetController(LedgerControllerBase):
         """Restore a soft-deleted budget."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "budgets")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_budgets",
+                            Budget.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Budget, user_id, budget_id)
         obj.restore()
         return {"detail": "Budget restored."}

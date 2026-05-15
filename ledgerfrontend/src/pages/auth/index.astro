@@ -22,11 +22,12 @@
     <script is:inline>
       (function () {
         const tokenKeyPrefix = "sattabase-ledger:";
-        const sessionKey = tokenKeyPrefix + "access_token";
-        const localKey = tokenKeyPrefix + "access_token_long";
+        const accessKey = tokenKeyPrefix + "access_token";
 
-        const hasSession = !!sessionStorage.getItem(sessionKey);
-        const hasLocal = !!localStorage.getItem(localKey);
+        // "Remember me" stores the token in localStorage under the same key name
+        // (only the storage backend changes, not the key). Check both storages.
+        const hasSession = !!sessionStorage.getItem(accessKey);
+        const hasLocal = !!localStorage.getItem(accessKey);
 
         if (hasSession || hasLocal) {
           window.location.replace("/dashboard");

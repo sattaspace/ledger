@@ -28,6 +28,15 @@ const FEATURE_GATED_PATHS: Record<string, string> = {
   "/dashboard/insurance": "insurance",
   "/dashboard/invoices": "invoices",
   "/dashboard/vault": "vault",
+  "/dashboard/transactions": "transactions",
+  "/dashboard/institutions": "institutions",
+  "/dashboard/accounts": "accounts",
+  "/dashboard/categories": "categories",
+  "/dashboard/tags": "tags",
+  "/dashboard/bills": "bills",
+  "/dashboard/reports": "reports",
+  // TODO: Gate export_pdf when export functionality is added
+  // "/dashboard/export": "export_pdf",
 };
 
 export const onRequest = defineMiddleware(async (context, next) => {

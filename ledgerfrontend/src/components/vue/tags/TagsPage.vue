@@ -20,6 +20,8 @@ import {
   SearchInput,
   EmptyState,
   LoadingSkeleton,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import {
   useLedgerFilters,
@@ -175,6 +177,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <FeatureGate feature="tags" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ──────────────────────────────────────────────────────── -->
     <div class="flex items-center justify-between">
@@ -357,4 +360,8 @@ onMounted(() => {
       @cancel="deleter.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="tags" />
+  </template>
+  </FeatureGate>
 </template>

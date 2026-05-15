@@ -32,6 +32,7 @@ class AccountController(LedgerControllerBase):
     def list_accounts(self, request, filters: AccountFilter = Query(...)):
         """List all accounts for the authenticated user, with pagination and filters."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         qs = Account.objects.filter(user_id=user_id).select_related("institution")
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -40,6 +41,7 @@ class AccountController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for dropdown/select components."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         return list(Account.objects.filter(user_id=user_id).select_related("institution"))
 
     # ── Get ───────────────────────────────────────────────────────────────
@@ -48,6 +50,7 @@ class AccountController(LedgerControllerBase):
     def get_account(self, request, account_id: int):
         """Get a single account by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         return self.get_or_404(Account, user_id, account_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -56,6 +59,10 @@ class AccountController(LedgerControllerBase):
     def create_account(self, request, payload: AccountCreate):
         """Create a new account linked to an institution."""
         user_id = self.require_user_id(request)
+        self.require_subscription_active(request)
+        self.require_feature(request, "accounts")
+        self.check_plan_limit(request, "max_accounts",
+                            Account.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id")
         obj = Account.objects.create(user_id=user_id, **data)
@@ -68,6 +75,7 @@ class AccountController(LedgerControllerBase):
     def update_account(self, request, account_id: int, payload: AccountUpdate):
         """Update an existing account. Only provided fields are changed."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
         self.update_object(obj, payload)
         return obj
@@ -82,6 +90,7 @@ class AccountController(LedgerControllerBase):
         Normal single-transaction saves update the balance incrementally.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
         old_balance = obj.current_balance
         obj.recalculate_balance()
@@ -103,6 +112,7 @@ class AccountController(LedgerControllerBase):
     def soft_delete_account(self, request, account_id: int):
         """Soft-delete an account (sets is_deleted=True)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
         obj.soft_delete()
         logger.info("Account soft-deleted: id=%s user_id=%s", obj.id, user_id)
@@ -114,6 +124,10 @@ class AccountController(LedgerControllerBase):
     def restore_account(self, request, account_id: int):
         """Restore a soft-deleted account."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_accounts",
+                            Account.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Account, user_id, account_id)
         obj.restore()
         logger.info("Account restored: id=%s user_id=%s", obj.id, user_id)
@@ -125,6 +139,7 @@ class AccountController(LedgerControllerBase):
     def activate_account(self, request, account_id: int):
         """Activate an account."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
         obj.activate()
         return {"detail": "Account activated."}
@@ -133,6 +148,7 @@ class AccountController(LedgerControllerBase):
     def deactivate_account(self, request, account_id: int):
         """Deactivate an account."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
         obj.deactivate()
         return {"detail": "Account deactivated."}

@@ -1,0 +1,161 @@
+---
+/**
+ * /auth/callback — SSO landing page for cross-domain authentication.
+ *
+ * When a user is redirected here from SattaBase (e.g. after billing or
+ * registration), the URL contains:
+ *   - `code`: One-time authorization code to exchange for JWT tokens
+ *   - `return_to`: Path to redirect to after successful authentication
+ *
+ * This page exchanges the code for tokens and redirects the user.
+ * Since the exchange is a client-side operation (needs JWT storage),
+ * the logic runs as an inline script.
+ */
+---
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Authenticating... — Satta Ledger</title>
+    <style>
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #f8fafc;
+      }
+      .callback-container {
+        text-align: center;
+        padding: 2rem;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #e2e8f0;
+        border-top-color: #0891b2;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto 1rem;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .error-message {
+        color: #dc2626;
+        margin-top: 1rem;
+      }
+      .retry-link {
+        display: inline-block;
+        margin-top: 1rem;
+        color: #0891b2;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="callback-container">
+      <div class="spinner"></div>
+      <p id="status">Authenticating with SattaBase...</p>
+      <p id="error" class="error-message" style="display: none;"></p>
+      <a id="retry" class="retry-link" href="/auth/login" style="display: none;">Return to login</a>
+    </div>
+
+    <script is:inline>
+      (async function () {
+        var statusEl = document.getElementById('status');
+        var errorEl = document.getElementById('error');
+        var retryEl = document.getElementById('retry');
+
+        // Parse query params
+        var params = new URLSearchParams(window.location.search);
+        var code = params.get('code');
+        var returnTo = params.get('return_to') || '/dashboard';
+
+        if (!code) {
+          statusEl.textContent = '';
+          errorEl.textContent = 'Missing authorization code. Please try logging in again.';
+          errorEl.style.display = 'block';
+          retryEl.style.display = 'inline-block';
+          return;
+        }
+
+        try {
+          // Exchange auth code for JWT tokens via the SattaBase API
+          var apiBase = window.__SATTABASE_CONFIG__?.apiBaseUrl || 'http://localhost:8086/api/v1';
+          var serviceDomain = window.__SATTABASE_CONFIG__?.serviceDomain || 'ledger.sattaspace.com';
+          var tokenPrefix = window.__SATTABASE_CONFIG__?.tokenKeyPrefix || 'sattabase-ledger:';
+
+          var response = await fetch(apiBase + '/auth/token/exchange', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Service-Domain': serviceDomain,
+            },
+            body: JSON.stringify({ code: code }),
+          });
+
+          if (!response.ok) {
+            var errBody = await response.json().catch(function () { return {}; });
+            throw new Error(errBody.detail || 'Authentication failed (status ' + response.status + ')');
+          }
+
+          var data = await response.json();
+
+          if (!data.access || !data.refresh) {
+            throw new Error('Invalid token response from server.');
+          }
+
+          // Store tokens (use sessionStorage by default — same as login flow)
+          sessionStorage.setItem(tokenPrefix + 'access_token', data.access);
+          sessionStorage.setItem(tokenPrefix + 'refresh_token', data.refresh);
+
+          // Also store in memory via the auth helpers if available
+          // This ensures the apiClient picks them up immediately
+          try {
+            var { authHelpers } = await import('/src/lib/api.ts');
+            authHelpers.setTokens(data.access, data.refresh, false);
+          } catch (e) {
+            // Dynamic import may not work in all contexts — sessionStorage is sufficient
+          }
+
+          // Fetch user profile to cache access data for middleware
+          try {
+            var meResponse = await fetch(apiBase + '/billing/auth/me', {
+              headers: {
+                'Authorization': 'Bearer ' + data.access,
+                'X-Service-Domain': serviceDomain,
+              },
+            });
+            if (meResponse.ok) {
+              var meData = await meResponse.json();
+              if (meData.access) {
+                sessionStorage.setItem('sattabase:auth_access', JSON.stringify(meData.access));
+              }
+              // Cache currency metadata
+              if (meData.currencies) {
+                localStorage.setItem('ledger:currencies_meta', JSON.stringify(meData.currencies));
+              }
+            }
+          } catch (e) {
+            // Profile fetch failure is non-critical
+          }
+
+          // Redirect to the return URL
+          statusEl.textContent = 'Authentication successful! Redirecting...';
+          window.location.replace(returnTo);
+
+        } catch (err) {
+          statusEl.textContent = '';
+          errorEl.textContent = err.message || 'An unexpected error occurred during authentication.';
+          errorEl.style.display = 'block';
+          retryEl.style.display = 'inline-block';
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -33,6 +33,7 @@ class TagController(LedgerControllerBase):
     def list_tags(self, request, filters: TagFilter = Query(...)):
         """List all tags for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         qs = Tag.objects.filter(user_id=user_id)
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -41,18 +42,23 @@ class TagController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for tag chips/autocomplete."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         return list(Tag.objects.filter(user_id=user_id))
 
     @route.get("/{int:tag_id}", response=TagOut)
     def get_tag(self, request, tag_id: int):
         """Get a single tag by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         return self.get_or_404(Tag, user_id, tag_id)
 
     @route.post("", response=TagOut)
     def create_tag(self, request, payload: TagCreate):
         """Create a new tag. Name must be unique per user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_tags", Tag.objects.filter(user_id=user_id).count())
         obj = Tag.objects.create(user_id=user_id, **payload.model_dump())
         logger.info("Tag created: id=%s user_id=%s name=%s", obj.id, user_id, obj.name)
         return obj
@@ -61,6 +67,7 @@ class TagController(LedgerControllerBase):
     def update_tag(self, request, tag_id: int, payload: TagUpdate):
         """Update an existing tag."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         obj = self.get_or_404(Tag, user_id, tag_id)
         self.update_object(obj, payload)
         return obj
@@ -69,6 +76,7 @@ class TagController(LedgerControllerBase):
     def soft_delete_tag(self, request, tag_id: int):
         """Soft-delete a tag."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         obj = self.get_or_404(Tag, user_id, tag_id)
         obj.soft_delete()
         return {"detail": "Tag deleted."}
@@ -77,6 +85,10 @@ class TagController(LedgerControllerBase):
     def restore_tag(self, request, tag_id: int):
         """Restore a soft-deleted tag."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_tags",
+                            Tag.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Tag, user_id, tag_id)
         obj.restore()
         return {"detail": "Tag restored."}
@@ -95,6 +107,7 @@ class TransactionTagController(LedgerControllerBase):
     def list_transaction_tags(self, request, transaction_id: int):
         """List all tags attached to a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         return list(
             TransactionTag.objects.filter(
                 user_id=user_id,
@@ -108,6 +121,8 @@ class TransactionTagController(LedgerControllerBase):
     def attach_tag(self, request, transaction_id: int, payload: TransactionTagCreate):
         """Attach a tag to a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
+        self.require_subscription_active(request)
         obj = TransactionTag.objects.create(
             user_id=user_id,
             transaction_id=transaction_id,
@@ -128,6 +143,11 @@ class TransactionTagController(LedgerControllerBase):
         Deletes existing tag links and creates new ones.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
+        self.require_subscription_active(request)
+        # Check per-transaction tag limit
+        self.check_plan_limit(request, "max_tags",
+                            TransactionTag.objects.filter(user_id=user_id, transaction_id=transaction_id).count())
         # Remove existing tags
         TransactionTag.objects.filter(
             user_id=user_id,
@@ -156,6 +176,7 @@ class TransactionTagController(LedgerControllerBase):
     def detach_tag(self, request, transaction_id: int, tag_id: int):
         """Detach a tag from a transaction."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "tags")
         try:
             link = TransactionTag.objects.get(
                 user_id=user_id,

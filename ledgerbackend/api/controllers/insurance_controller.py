@@ -94,6 +94,8 @@ class InsuranceController(LedgerControllerBase):
         """Create a new insurance policy."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "insurance")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_insurance", InsurancePolicy.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         obj = InsurancePolicy.objects.create(user_id=user_id, **data)
@@ -127,6 +129,9 @@ class InsuranceController(LedgerControllerBase):
         """Restore a soft-deleted insurance policy."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "insurance")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_insurance",
+                            InsurancePolicy.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(InsurancePolicy, user_id, policy_id)
         obj.restore()
         return {"detail": "Insurance policy restored."}

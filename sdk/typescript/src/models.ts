@@ -57,17 +57,29 @@ export class AuthMeResponse {
   account_status: string;
   subscription: SubscriptionInfo | null;
   access: Record<string, boolean | number | string>;
+  exchange_rates: Record<string, string> | null;
+  currencies: Record<
+    string,
+    { symbol: string; name: string; decimal_digits: number }
+  > | null;
 
   constructor(data: {
     user: User;
     account_status?: string;
     subscription?: SubscriptionInfo | null;
     access?: Record<string, boolean | number | string>;
+    exchange_rates?: Record<string, string> | null;
+    currencies?: Record<
+      string,
+      { symbol: string; name: string; decimal_digits: number }
+    > | null;
   }) {
     this.user = data.user;
     this.account_status = data.account_status ?? "active";
     this.subscription = data.subscription ?? null;
     this.access = data.access ?? {};
+    this.exchange_rates = data.exchange_rates ?? null;
+    this.currencies = data.currencies ?? null;
   }
 
   /**

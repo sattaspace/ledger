@@ -29,6 +29,8 @@ import {
   LoadingSkeleton,
   FilterBar,
   ProgressBar,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { FilterConfig } from "@/components/vue";
 import {
@@ -298,6 +300,7 @@ const progressColor = (percent: number): string => {
 </script>
 
 <template>
+  <FeatureGate feature="debts" show-fallback>
   <div class="space-y-6">
     <!-- ── Page Header ────────────────────────────────────────────────────── -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -648,4 +651,8 @@ const progressColor = (percent: number): string => {
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="debts" />
+  </template>
+  </FeatureGate>
 </template>

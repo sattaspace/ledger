@@ -28,12 +28,11 @@ export class AuthModule {
     const data = await this.client.request<TokenPair>("POST", "/auth/login", {
       json: { email, password },
     });
-    // Auto-store tokens if a token store is configured
-    if (this.client.tokenStore) {
-      // We don't have userId yet — use "default" key for single-user scenarios
-      // Multi-user apps should store tokens manually after login
-      this.client.tokenStore.setTokens("default", data);
-    }
+    // NOTE: Tokens are NOT auto-stored here. The caller is responsible for
+    // storing tokens after login — this avoids hardcoded keys and supports
+    // both single-user and multi-user scenarios. For example:
+    //   const tokens = await client.auth.login(email, password);
+    //   client.tokenStore?.setTokens(String(userId), tokens);
     return data;
   }
 

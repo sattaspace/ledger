@@ -57,6 +57,8 @@ class CardController(LedgerControllerBase):
         """Create a new card linked to an account."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "cards")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_cards", Card.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         obj = Card.objects.create(user_id=user_id, **data)
@@ -90,6 +92,9 @@ class CardController(LedgerControllerBase):
         """Restore a soft-deleted card."""
         user_id = self.require_user_id(request)
         self.require_feature(request, "cards")
+        self.require_subscription_active(request)
+        self.check_plan_limit(request, "max_cards",
+                            Card.objects.filter(user_id=user_id).count())
         obj = self.get_with_deleted_or_404(Card, user_id, card_id)
         obj.restore()
         return {"detail": "Card restored."}
