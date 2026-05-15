@@ -6,14 +6,24 @@
  * and selects a currency from a dropdown. Supports formatting and
  * validation of monetary amounts.
  *
+ * Currency list: Dynamically loaded from the base backend's currency
+ * metadata (cached in localStorage by useAuth). Falls back to a common
+ * set if no metadata is cached yet. The `currencies` prop can still
+ * override the list for special cases.
+ *
+ * Currency symbols: Resolved via the currency.ts library (single source
+ * of truth from base backend metadata), NOT hardcoded.
+ *
  * Usage:
  *   <CurrencyInput
  *     :amount="form.amount"
  *     :currency="form.currency"
- *     :currencies="['USD', 'EUR', 'GBP', 'BDT']"
  *     @update="handleUpdate"
  *   />
  */
+
+import { ref, watch, computed, onMounted } from "vue";
+import { getAvailableCurrencies, getCurrencySymbol } from "@/lib/currency";
 
 export interface CurrencyInputValue {
   amount: string;
@@ -26,7 +36,7 @@ const props = withDefaults(
     amount?: string;
     /** Current currency code (3-letter). */
     currency?: string;
-    /** Available currency codes. */
+    /** Available currency codes. Overrides dynamic list from backend. */
     currencies?: string[];
     /** Placeholder for amount input. */
     placeholder?: string;
@@ -42,7 +52,7 @@ const props = withDefaults(
   {
     amount: "",
     currency: "USD",
-    currencies: () => ["USD", "EUR", "GBP", "BDT", "INR", "AUD", "CAD", "JPY"],
+    currencies: undefined,
     placeholder: "0.00",
     disabled: false,
     showCurrencySelect: true,
@@ -62,6 +72,16 @@ const localCurrency = ref(props.currency);
 watch(() => props.amount, (v) => { localAmount.value = v; });
 watch(() => props.currency, (v) => { localCurrency.value = v; });
 
+// ─── Dynamic Currency List ────────────────────────────────────────────────────
+
+/** Resolved currency list: prop override > backend metadata > fallback. */
+const currencyList = computed(() => {
+  if (props.currencies && props.currencies.length > 0) {
+    return props.currencies;
+  }
+  return getAvailableCurrencies();
+});
+
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 function handleAmountInput(event: Event) {
@@ -78,18 +98,10 @@ function handleCurrencyChange(event: Event) {
   emit("update", { amount: localAmount.value, currency: val });
 }
 
-// ─── Currency Symbols ─────────────────────────────────────────────────────────
-
-const currencySymbols: Record<string, string> = {
-  USD: "$", EUR: "\u20AC", GBP: "\u00A3", BDT: "\u09F3",
-  INR: "\u20B9", AUD: "A$", CAD: "C$", JPY: "\u00A5",
-  CHF: "CHF", CNY: "\u00A5", KRW: "\u20A9", SGD: "S$",
-  NZD: "NZ$", HKD: "HK$", SEK: "kr", NOK: "kr",
-  MXN: "MX$", BRL: "R$", ZAR: "R", AED: "AED",
-};
+// ─── Currency Symbol (from backend metadata, not hardcoded) ───────────────────
 
 function getSymbol(code: string): string {
-  return currencySymbols[code] ?? code;
+  return getCurrencySymbol(code);
 }
 </script>
 
@@ -106,7 +118,7 @@ function getSymbol(code: string): string {
         class="bg-transparent border-0 text-sm font-medium text-navy-900 dark:text-navy-100 focus:outline-none focus:ring-0 p-0 cursor-pointer"
         @change="handleCurrencyChange"
       >
-        <option v-for="c in currencies" :key="c" :value="c">
+        <option v-for="c in currencyList" :key="c" :value="c">
           {{ getSymbol(c) }} {{ c }}
         </option>
       </select>

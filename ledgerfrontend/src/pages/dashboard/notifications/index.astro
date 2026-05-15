@@ -1,0 +1,19 @@
+---
+/**
+ * Notifications hub page — /dashboard/notifications
+ * Central hub for all bill reminders, insurance renewals,
+ * document expiry, credit card due dates, annual fees, and goal deadlines.
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import NotificationsPage from "@/components/vue/notifications/NotificationsPage.vue";
+---
+
+<DashboardLayout title="Notifications — Satta Ledger">
+  <NotificationsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Notifications";
+</script>

@@ -16,7 +16,7 @@
  *
  * Registers as `ldgr-budget-detail` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   ConfirmDialog,
   StatusBadge,

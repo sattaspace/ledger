@@ -19,7 +19,7 @@
  *
  * Registers as `ldgr-report-page` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   ProgressBar,
   LoadingSkeleton,

@@ -33,6 +33,7 @@ class DebtController(LedgerControllerBase):
     def list_debts(self, request, filters: DebtFacilityFilter = Query(...)):
         """List all debt facilities for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         qs = DebtFacility.objects.filter(user_id=user_id).select_related("institution", "account")
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -41,6 +42,7 @@ class DebtController(LedgerControllerBase):
     def debt_summary(self, request):
         """Get a summary of total borrowed vs lent amounts."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         from django.db.models import Sum
 
         borrowed = DebtFacility.objects.filter(
@@ -63,6 +65,7 @@ class DebtController(LedgerControllerBase):
     def get_debt(self, request, debt_id: int):
         """Get a single debt facility by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         return self.get_or_404(DebtFacility, user_id, debt_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -71,6 +74,7 @@ class DebtController(LedgerControllerBase):
     def create_debt(self, request, payload: DebtFacilityCreate):
         """Create a new debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         data["account_id"] = data.pop("account_id", None)
@@ -84,6 +88,7 @@ class DebtController(LedgerControllerBase):
     def update_debt(self, request, debt_id: int, payload: DebtFacilityUpdate):
         """Update an existing debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         self.update_object(obj, payload)
         return obj
@@ -94,6 +99,7 @@ class DebtController(LedgerControllerBase):
     def soft_delete_debt(self, request, debt_id: int):
         """Soft-delete a debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.soft_delete()
         return {"detail": "Debt deleted."}
@@ -102,6 +108,7 @@ class DebtController(LedgerControllerBase):
     def restore_debt(self, request, debt_id: int):
         """Restore a soft-deleted debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         obj = self.get_with_deleted_or_404(DebtFacility, user_id, debt_id)
         obj.restore()
         return {"detail": "Debt restored."}
@@ -112,6 +119,7 @@ class DebtController(LedgerControllerBase):
     def activate_debt(self, request, debt_id: int):
         """Activate a debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.activate()
         return {"detail": "Debt activated."}
@@ -120,6 +128,7 @@ class DebtController(LedgerControllerBase):
     def deactivate_debt(self, request, debt_id: int):
         """Deactivate a debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.deactivate()
         return {"detail": "Debt deactivated."}
@@ -130,6 +139,7 @@ class DebtController(LedgerControllerBase):
     def list_payments(self, request, debt_id: int):
         """List all payments for a debt facility."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         self.get_or_404(DebtFacility, user_id, debt_id)
         return list(
             DebtPayment.objects.filter(user_id=user_id, debt_id=debt_id)
@@ -143,6 +153,7 @@ class DebtController(LedgerControllerBase):
         principal_portion + extra_payment.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         debt = self.get_or_404(DebtFacility, user_id, debt_id)
         data = payload.model_dump()
         data.pop("debt_id", None)
@@ -167,6 +178,7 @@ class DebtController(LedgerControllerBase):
     def update_payment(self, request, debt_id: int, payment_id: int, payload: DebtPaymentUpdate):
         """Update a debt payment."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "debts")
         self.get_or_404(DebtFacility, user_id, debt_id)
         try:
             payment = DebtPayment.objects.get(id=payment_id, user_id=user_id, debt_id=debt_id)

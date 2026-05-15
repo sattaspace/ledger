@@ -465,9 +465,19 @@ SL_SATTABASE_AUTH_CACHE_TTL = env.int(
     "SL_SATTABASE_AUTH_CACHE_TTL",
     default=60,
 )
+# ── Map SL_-prefixed settings to the names the SDK middleware expects ──
+# The middleware reads: SATTABASE_BASE_URL, SATTABASE_API_KEY, etc.
+SATTABASE_BASE_URL = SL_SATTABASE_BASE_URL
+SATTABASE_SERVICE_DOMAIN = SL_SATTABASE_SERVICE_DOMAIN
+SATTABASE_API_KEY = SL_SATTABASE_API_KEY
+SATTABASE_AUTH_TIMEOUT = SL_SATTABASE_AUTH_TIMEOUT
+SATTABASE_AUTH_CACHE_TTL = SL_SATTABASE_AUTH_CACHE_TTL
+
 if DEBUG:
     SL_SATTABASE_BASE_URL = "http://localhost:8086/api/v1"
-    SL_SATTABASE_API_KEY = "sdsd"
+    SATTABASE_BASE_URL = SL_SATTABASE_BASE_URL
+    # Keep the API key from .env even in DEBUG mode — do NOT override
+    # with a placeholder that fails sb_live_ validation.
     
     
 # ── Currency caching (used by api/currency.py) ──

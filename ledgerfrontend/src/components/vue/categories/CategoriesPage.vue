@@ -14,7 +14,7 @@
  * Registered as: ldgr-categories-page
  */
 
-import { ref, computed, onMounted, reactive } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   DataTable,
   Modal,

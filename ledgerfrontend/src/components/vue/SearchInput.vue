@@ -9,7 +9,7 @@
  * Usage:
  *   <SearchInput v-model="search" placeholder="Search transactions..." @search="handleSearch" />
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 const props = withDefaults(
   defineProps<{
     /** Current search value (v-model). */

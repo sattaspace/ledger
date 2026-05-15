@@ -59,6 +59,34 @@ class LedgerControllerBase(ControllerBase):
             raise AuthRequiredError()
         return user_id
 
+    # ── Feature / subscription helpers ─────────────────────────────────────
+
+    def get_access(self, request) -> dict:
+        """Extract the access map from the Sattabase middleware attributes.
+
+        Returns empty dict if access data is not available.
+        """
+        return getattr(request, "sattabase_access", {}) or {}
+
+    def require_feature(self, request, feature: str) -> None:
+        """Verify the user's subscription includes the specified feature.
+
+        Raises FeatureRequiredError (403) if the feature is not enabled.
+        Must be called after require_user_id() to ensure authentication first.
+
+        Truthy heuristic matches sidebar: value === true, number > 0,
+        non-empty/non-false/non-zero string.
+        """
+        access = self.get_access(request)
+        value = access.get(feature)
+        has_access = (
+            value is True
+            or (isinstance(value, (int, float)) and value > 0)
+            or (isinstance(value, str) and value not in ("", "false", "0"))
+        )
+        if not has_access:
+            raise FeatureRequiredError(feature)
+
     # ── Object lookup helpers ─────────────────────────────────────────────
 
     def get_or_404(self, model_class: Type, user_id: int, pk: int):
@@ -178,4 +206,14 @@ class AuthRequiredError(Exception):
     def __init__(self):
         self.status_code = 401
         self.detail = "Authentication required via Sattabase."
+        super().__init__(self.detail)
+
+
+class FeatureRequiredError(Exception):
+    """Raised when the user's subscription doesn't include a required feature."""
+
+    def __init__(self, feature: str):
+        self.status_code = 403
+        self.feature = feature
+        self.detail = f"Your subscription does not include the '{feature}' feature. Please upgrade your plan."
         super().__init__(self.detail)

@@ -14,7 +14,7 @@
  *
  * Registers as `ldgr-debt-detail` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   ConfirmDialog,
   TypeBadge,

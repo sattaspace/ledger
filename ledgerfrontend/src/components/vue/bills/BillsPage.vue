@@ -17,6 +17,8 @@
  * Registers as `ldgr-bills-page` custom element.
  */
 
+import { computed, ref } from "vue";
+
 import {
   Modal,
   ConfirmDialog,
@@ -783,21 +785,13 @@ function nextMonth() {
     </div>
 
     <!-- ── Create / Edit Modal ────────────────────────────────────────────── -->
-    <Modal
+    <BillForm
+      :mode="formMode"
+      :item-id="editingItemId"
       :open="showFormModal"
-      :title="formMode === 'create' ? 'Add Bill' : 'Edit Bill'"
-      size="lg"
-      @close="closeFormModal"
-    >
-      <template #body>
-        <BillForm
-          :mode="formMode"
-          :item-id="editingItemId"
-          @saved="handleFormSaved"
-          @cancel="closeFormModal"
-        />
-      </template>
-    </Modal>
+      @saved="handleFormSaved"
+      @cancel="closeFormModal"
+    />
 
     <!-- ── Soft Delete / Restore Confirm ──────────────────────────────────── -->
     <ConfirmDialog

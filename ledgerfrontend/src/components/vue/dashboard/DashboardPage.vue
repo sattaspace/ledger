@@ -23,10 +23,12 @@
  * Registers as `ldgr-dashboard-page` custom element.
  */
 
+import { onMounted, computed } from "vue";
 import { ProgressBar, LoadingSkeleton, StatusBadge } from "@/components/vue";
 import { formatCurrency, getBaseCurrency } from "@/lib/currency";
 import { formatDateShort, formatRelativeTime } from "@/lib/timezone";
 import { useDashboardStore } from "@/stores/dashboard";
+import { useAuth } from "@/composables/useAuth";
 import type {
   AccountOut,
   TransactionListOut,
@@ -48,6 +50,8 @@ defineOptions({
 // ─── Store ───────────────────────────────────────────────────────────────────
 
 const store = useDashboardStore();
+
+const { hasFeature } = useAuth();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -139,49 +143,67 @@ const topGoals = computed(() =>
     .slice(0, 5),
 );
 
+// Feature access flags for conditional rendering
+const canViewBudgets = computed(() => hasFeature("budgets"));
+const canViewGoals = computed(() => hasFeature("goals"));
+const canViewInvestments = computed(() => hasFeature("investments"));
+const canViewDebts = computed(() => hasFeature("debts"));
+const canViewInsurance = computed(() => hasFeature("insurance"));
+const canViewInvoices = computed(() => hasFeature("invoices"));
+const canViewVault = computed(() => hasFeature("vault"));
+const canViewCards = computed(() => hasFeature("cards"));
+
 // Alert items combined for notification summary
 const alertItems = computed(() => {
   const items: Array<{ type: string; label: string; date: string; route: string; urgent?: boolean }> = [];
-  for (const inv of store.overdueInvoices.slice(0, 3)) {
-    items.push({
-      type: "invoice",
-      label: (inv as InvoiceListOut).invoice_number || `Invoice #${(inv as InvoiceListOut).id}`,
-      date: (inv as InvoiceListOut).due_date || "",
-      route: "/dashboard/invoices",
-      urgent: true,
-    });
+  if (hasFeature("invoices")) {
+    for (const inv of store.overdueInvoices.slice(0, 3)) {
+      items.push({
+        type: "invoice",
+        label: (inv as InvoiceListOut).invoice_number || `Invoice #${(inv as InvoiceListOut).id}`,
+        date: (inv as InvoiceListOut).due_date || "",
+        route: "/dashboard/invoices",
+        urgent: true,
+      });
+    }
   }
-  for (const r of store.insuranceRenewals.slice(0, 3)) {
-    items.push({
-      type: "insurance",
-      label: (r as InsurancePolicyListOut).policy_name,
-      date: (r as InsurancePolicyListOut).renewal_date || "",
-      route: "/dashboard/insurance",
-    });
+  if (hasFeature("insurance")) {
+    for (const r of store.insuranceRenewals.slice(0, 3)) {
+      items.push({
+        type: "insurance",
+        label: (r as InsurancePolicyListOut).policy_name,
+        date: (r as InsurancePolicyListOut).renewal_date || "",
+        route: "/dashboard/insurance",
+      });
+    }
   }
-  for (const d of store.expiringDocuments.slice(0, 3)) {
-    items.push({
-      type: "vault",
-      label: (d as DocumentVaultListOut).title,
-      date: (d as DocumentVaultListOut).expiry_date || "",
-      route: "/dashboard/vault",
-    });
+  if (hasFeature("vault")) {
+    for (const d of store.expiringDocuments.slice(0, 3)) {
+      items.push({
+        type: "vault",
+        label: (d as DocumentVaultListOut).title,
+        date: (d as DocumentVaultListOut).expiry_date || "",
+        route: "/dashboard/vault",
+      });
+    }
   }
-  for (const c of store.upcomingAnnualFees.slice(0, 3)) {
-    items.push({
-      type: "card-fee",
-      label: (c as CardListOut).name || `Card #${(c as CardListOut).id}`,
-      date: (c as CardListOut).annual_fee_date || "",
-      route: "/dashboard/cards",
-    });
-  }
-  for (const a of store.creditCardDueAlerts.slice(0, 3)) {
-    items.push({
-      type: "card-due",
-      label: a.name,
-      date: "",
-      route: "/dashboard/cards",
-    });
+  if (hasFeature("cards")) {
+    for (const c of store.upcomingAnnualFees.slice(0, 3)) {
+      items.push({
+        type: "card-fee",
+        label: (c as CardListOut).name || `Card #${(c as CardListOut).id}`,
+        date: (c as CardListOut).annual_fee_date || "",
+        route: "/dashboard/cards",
+      });
+    }
+    for (const a of store.creditCardDueAlerts.slice(0, 3)) {
+      items.push({
+        type: "card-due",
+        label: a.name,
+        date: "",
+        route: "/dashboard/cards",
+      });
+    }
   }
   return items;
 });
@@ -374,7 +396,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <!-- ── Budget Status ───────────────────────────────────────────────── -->
-        <div class="card p-6">
+        <div v-if="canViewBudgets" class="card p-6">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-100 dark:bg-cyan-950">
@@ -476,7 +498,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
         </div>
 
         <!-- ── Investment Snapshot ─────────────────────────────────────────── -->
-        <div class="card p-6">
+        <div v-if="canViewInvestments" class="card p-6">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-100 dark:bg-cyan-950">
@@ -707,7 +729,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- ── Savings Goals ───────────────────────────────────────────────── -->
-        <div class="card p-6">
+        <div v-if="canViewGoals" class="card p-6">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-100 dark:bg-cyan-950">
@@ -771,7 +793,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
         </div>
 
         <!-- ── Debt Progress ───────────────────────────────────────────────── -->
-        <div class="card p-6">
+        <div v-if="canViewDebts" class="card p-6">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-100 dark:bg-cyan-950">
@@ -877,7 +899,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <!-- ── Insurance Renewals ─────────────────────────────────────────── -->
-          <div v-if="store.insuranceRenewals.length > 0" class="card p-5 border-amber-200 dark:border-amber-800/50">
+          <div v-if="canViewInsurance && store.insuranceRenewals.length > 0" class="card p-5 border-amber-200 dark:border-amber-800/50">
             <div class="flex items-center gap-2 mb-3">
               <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-950">
                 <svg class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -902,7 +924,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
           </div>
 
           <!-- ── Overdue Invoices ───────────────────────────────────────────── -->
-          <div v-if="store.overdueInvoices.length > 0" class="card p-5 border-red-300 dark:border-red-700 bg-red-50/30 dark:bg-red-950/10">
+          <div v-if="canViewInvoices && store.overdueInvoices.length > 0" class="card p-5 border-red-300 dark:border-red-700 bg-red-50/30 dark:bg-red-950/10">
             <div class="flex items-center gap-2 mb-3">
               <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-red-100 dark:bg-red-950">
                 <svg class="h-3.5 w-3.5 text-debit" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -932,7 +954,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
           </div>
 
           <!-- ── Expiring Documents ─────────────────────────────────────────── -->
-          <div v-if="store.expiringDocuments.length > 0" class="card p-5 border-amber-200 dark:border-amber-800/50">
+          <div v-if="canViewVault && store.expiringDocuments.length > 0" class="card p-5 border-amber-200 dark:border-amber-800/50">
             <div class="flex items-center gap-2 mb-3">
               <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-950">
                 <svg class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -957,7 +979,7 @@ function getGoalDeadlineClass(goal: SavingsGoalListOut): string {
           </div>
 
           <!-- ── Annual Fee & Card Due Alerts ─────────────────────────────── -->
-          <div v-if="store.upcomingAnnualFees.length > 0 || store.creditCardDueAlerts.length > 0" class="card p-5 border-warm-200 dark:border-warm-800/50">
+          <div v-if="canViewCards && (store.upcomingAnnualFees.length > 0 || store.creditCardDueAlerts.length > 0)" class="card p-5 border-warm-200 dark:border-warm-800/50">
             <div class="flex items-center gap-2 mb-3">
               <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-warm-100 dark:bg-warm-950">
                 <svg class="h-3.5 w-3.5 text-warm-600 dark:text-warm-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -38,6 +38,25 @@ api = NinjaExtraAPI(
     },
 )
 
+# ── Exception handlers for auth & feature gating ─────────────────────────
+
+from django.http import JsonResponse
+from api.controllers.base import AuthRequiredError, FeatureRequiredError
+
+@api.exception_handler(AuthRequiredError)
+def auth_required_handler(request, exc):
+    return JsonResponse(
+        {"detail": exc.detail},
+        status=exc.status_code,
+    )
+
+@api.exception_handler(FeatureRequiredError)
+def feature_required_handler(request, exc):
+    return JsonResponse(
+        {"detail": exc.detail, "feature": exc.feature},
+        status=exc.status_code,
+    )
+
 # ── Import all controllers so auto_discover picks them up ──────────────────
 
 # Legacy test controller

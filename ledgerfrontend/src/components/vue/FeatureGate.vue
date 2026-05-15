@@ -22,7 +22,7 @@
  *     <VaultPage />
  *   </FeatureGate>
  */
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useAccess } from '@/composables/useAccess'
 
 const props = withDefaults(defineProps<{

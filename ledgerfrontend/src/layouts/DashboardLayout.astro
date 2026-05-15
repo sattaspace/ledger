@@ -284,7 +284,50 @@ const {
   async function loadUserInfo() {
     try {
       const { apiClient } = await import('@/lib/api');
-      const data = await apiClient.get<{ user: any; subscription: any }>('/billing/auth/me');
+      const data = await apiClient.get<{ user: any; subscription: any; access?: Record<string, unknown>; exchange_rates?: unknown; currencies?: unknown }>('/billing/auth/me');
+
+      // ── Cache access data for sidebar feature gating ──
+      if (data?.access && typeof data.access === 'object') {
+        try {
+          sessionStorage.setItem('sattabase:auth_access', JSON.stringify(data.access));
+        } catch { /* sessionStorage full or unavailable */ }
+
+        // Re-apply feature gating now that access data is available
+        const gatedItems = document.querySelectorAll<HTMLElement>('.sidebar-nav-item[data-feature]');
+        gatedItems.forEach((item) => {
+          const feature = item.getAttribute('data-feature');
+          if (!feature) return;
+          const value = (data.access as Record<string, unknown>)[feature];
+          const hasAccess = value === true || (typeof value === 'number' && value > 0)
+            || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
+          item.style.display = hasAccess ? '' : 'none';
+        });
+
+        // Hide section headers when all items are hidden
+        const sections = document.querySelectorAll<HTMLElement>('[data-sidebar-section]');
+        sections.forEach((section) => {
+          const items = section.querySelectorAll<HTMLElement>('.sidebar-nav-item');
+          const visibleItems = Array.from(items).filter(
+            (item) => item.style.display !== 'none'
+          );
+          if (items.length > 0 && visibleItems.length === 0) {
+            section.style.display = 'none';
+          } else {
+            section.style.display = '';
+          }
+        });
+      }
+
+      // ── Cache currency metadata & exchange rates for Vue components ──
+      if (data?.currencies || data?.exchange_rates) {
+        try {
+          const { cacheCurrenciesMeta, cacheExchangeRates } = await import('@/lib/currency');
+          if (data.currencies) cacheCurrenciesMeta(data.currencies as Record<string, unknown>);
+          if (data.exchange_rates && data.user) {
+            cacheExchangeRates(data as any);
+          }
+        } catch { /* currency caching failed — non-critical */ }
+      }
 
       if (data?.user) {
         const name =

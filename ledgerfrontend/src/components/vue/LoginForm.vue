@@ -60,7 +60,14 @@ async function handleSubmit(): Promise<void> {
 
   try {
     await login(form.email.trim(), form.password, form.remember);
-    window.location.href = "/dashboard";
+    // Redirect to return_url if provided, otherwise default to dashboard
+    const params = new URLSearchParams(window.location.search);
+    const returnUrl = params.get("return_url");
+    if (returnUrl && returnUrl.startsWith("/")) {
+      window.location.href = returnUrl;
+    } else {
+      window.location.href = "/dashboard";
+    }
   } catch (err: unknown) {
     const apiErr = err as ApiError;
 

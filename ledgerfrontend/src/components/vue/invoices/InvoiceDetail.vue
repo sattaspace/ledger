@@ -18,7 +18,7 @@
  *
  * Registers as `LdgrInvoiceDetail` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   ConfirmDialog,
   StatusBadge,

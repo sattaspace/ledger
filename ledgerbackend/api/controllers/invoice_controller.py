@@ -33,6 +33,7 @@ class InvoiceController(LedgerControllerBase):
     def list_invoices(self, request, filters: InvoiceFilter = Query(...)):
         """List all invoices for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         qs = Invoice.objects.filter(user_id=user_id)
 
         # Handle special filters
@@ -81,6 +82,7 @@ class InvoiceController(LedgerControllerBase):
     def list_overdue(self, request):
         """Get all overdue invoices (for dashboard/alerts)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         from django.utils import timezone
         today = timezone.now().date()
         return list(
@@ -97,6 +99,7 @@ class InvoiceController(LedgerControllerBase):
     def get_invoice(self, request, invoice_id: int):
         """Get a single invoice by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         return self.get_or_404(Invoice, user_id, invoice_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -105,6 +108,7 @@ class InvoiceController(LedgerControllerBase):
     def create_invoice(self, request, payload: InvoiceCreate):
         """Create a new invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         data = payload.model_dump()
         data["transaction_id"] = data.pop("transaction_id", None)
         obj = Invoice.objects.create(user_id=user_id, **data)
@@ -117,6 +121,7 @@ class InvoiceController(LedgerControllerBase):
     def update_invoice(self, request, invoice_id: int, payload: InvoiceUpdate):
         """Update an existing invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
         self.update_object(obj, payload)
         return obj
@@ -130,6 +135,7 @@ class InvoiceController(LedgerControllerBase):
         Optionally creates an INCOME transaction and links it.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
 
         paid_amount = payload.amount_paid or obj.amount_due
@@ -167,6 +173,7 @@ class InvoiceController(LedgerControllerBase):
     def soft_delete_invoice(self, request, invoice_id: int):
         """Soft-delete an invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
         obj.soft_delete()
         return {"detail": "Invoice deleted."}
@@ -175,6 +182,7 @@ class InvoiceController(LedgerControllerBase):
     def restore_invoice(self, request, invoice_id: int):
         """Restore a soft-deleted invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         obj = self.get_with_deleted_or_404(Invoice, user_id, invoice_id)
         obj.restore()
         return {"detail": "Invoice restored."}
@@ -185,6 +193,7 @@ class InvoiceController(LedgerControllerBase):
     def list_line_items(self, request, invoice_id: int):
         """List all line items for an invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         return list(
             InvoiceLineItem.objects.filter(user_id=user_id, invoice_id=invoice_id)
@@ -194,6 +203,7 @@ class InvoiceController(LedgerControllerBase):
     def create_line_item(self, request, invoice_id: int, payload: InvoiceLineItemCreate):
         """Add a line item to an invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         invoice = self.get_or_404(Invoice, user_id, invoice_id)
         data = payload.model_dump()
         data.pop("invoice_id", None)
@@ -209,6 +219,7 @@ class InvoiceController(LedgerControllerBase):
     def update_line_item(self, request, invoice_id: int, item_id: int, payload: InvoiceLineItemUpdate):
         """Update a line item."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         try:
             item = InvoiceLineItem.objects.get(id=item_id, user_id=user_id, invoice_id=invoice_id)
@@ -225,6 +236,7 @@ class InvoiceController(LedgerControllerBase):
     def delete_line_item(self, request, invoice_id: int, item_id: int):
         """Delete a line item from an invoice."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         try:
             item = InvoiceLineItem.objects.get(id=item_id, user_id=user_id, invoice_id=invoice_id)

@@ -1,10 +1,12 @@
-"""Tests for SattabaseAuthMiddleware — token extraction and graceful degradation."""
+"""Tests for SattabaseAuthMiddleware — token extraction, async dispatch, and graceful degradation."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
+from asgiref.sync import iscoroutinefunction
 
 from sattabase_sdk.middleware import SattabaseAuthMiddleware
 
@@ -101,3 +103,104 @@ class TestMiddlewareAttributes:
 
     def test_async_capable(self):
         assert SattabaseAuthMiddleware.async_capable is True
+
+
+class TestASGIDispatch:
+    """Tests for Django 5.2 ASGI middleware dispatch pattern.
+
+    Verifies that the middleware properly dispatches between sync and async
+    paths based on whether ``get_response`` is a coroutine function, and that
+    ``markcoroutinefunction`` is called so Django's middleware chain can
+    correctly await the response.
+    """
+
+    def test_sync_mode_no_markcoroutinefunction(self):
+        """When get_response is sync, _async_mode is False and markcoroutinefunction is NOT called."""
+        middleware = SattabaseAuthMiddleware(get_response=lambda r: r)
+        assert middleware._async_mode is False
+        assert not iscoroutinefunction(middleware)
+
+    def test_async_mode_calls_markcoroutinefunction(self):
+        """When get_response is async, _async_mode is True and markcoroutinefunction is called."""
+        async def async_get_response(r):
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=async_get_response)
+        assert middleware._async_mode is True
+        assert iscoroutinefunction(middleware)
+
+    def test_sync_call_returns_response_directly(self):
+        """Sync __call__ returns the response directly (not a coroutine)."""
+        def sync_get_response(r):
+            r.status_code = 200
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=sync_get_response)
+        request = _make_request()
+        response = middleware(request)
+        # Should be the request itself (since sync_get_response returns it)
+        assert response is request
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_async_call_returns_coroutine(self):
+        """Async __call__ returns a coroutine that Django can await."""
+        async def async_get_response(r):
+            r.status_code = 200
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=async_get_response)
+        request = _make_request()
+
+        # __call__ should return a coroutine when _async_mode is True
+        result = middleware(request)
+        assert asyncio.iscoroutine(result)
+
+        # Awaiting it should give the response
+        response = await result
+        assert response is request
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_async_dispatch_no_token(self):
+        """Async dispatch with no token sets attributes to None."""
+        async def async_get_response(r):
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=async_get_response)
+        request = _make_request()
+        response = await middleware(request)
+        assert request.sattabase_user is None
+        assert request.sattabase_access == {}
+        assert request.sattabase_subscription is None
+        assert request.sattabase_exchange_rates is None
+        assert request.sattabase_currencies is None
+
+    @pytest.mark.asyncio
+    async def test_async_dispatch_uses_acall(self):
+        """Verify __call__ dispatches to __acall__ in async mode."""
+        call_count = 0
+
+        async def async_get_response(r):
+            nonlocal call_count
+            call_count += 1
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=async_get_response)
+        request = _make_request()
+
+        # Calling middleware(request) should go through __acall__
+        await middleware(request)
+        assert call_count == 1
+
+    def test_sync_dispatch_with_no_token(self):
+        """Sync dispatch with no token sets attributes to None."""
+        def sync_get_response(r):
+            return r
+
+        middleware = SattabaseAuthMiddleware(get_response=sync_get_response)
+        request = _make_request()
+        response = middleware(request)
+        assert request.sattabase_user is None
+        assert request.sattabase_access == {}
+        assert request.sattabase_subscription is None

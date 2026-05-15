@@ -18,6 +18,7 @@
  * Registers as `ldgr-cards-page` custom element.
  */
 
+import { ref, computed, onMounted } from "vue";
 import {
   Modal,
   ConfirmDialog,
@@ -584,21 +585,13 @@ const hasItems = computed(() => store.items.length > 0);
     </div>
 
     <!-- ── Create / Edit Modal ────────────────────────────────────────────── -->
-    <Modal
+    <CardForm
+      :mode="formMode"
+      :item-id="editingItemId"
       :open="showFormModal"
-      :title="formMode === 'create' ? 'Add Card' : 'Edit Card'"
-      size="lg"
-      @close="closeFormModal"
-    >
-      <template #body>
-        <CardForm
-          :mode="formMode"
-          :item-id="editingItemId"
-          @saved="handleFormSaved"
-          @cancel="closeFormModal"
-        />
-      </template>
-    </Modal>
+      @saved="handleFormSaved"
+      @cancel="closeFormModal"
+    />
 
     <!-- ── Soft Delete / Restore Confirm ──────────────────────────────────── -->
     <ConfirmDialog

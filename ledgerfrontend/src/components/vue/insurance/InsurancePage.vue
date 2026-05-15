@@ -17,6 +17,7 @@
  * Registers as `LdgrInsurancePage` custom element.
  */
 
+import { ref, computed, onMounted } from "vue";
 import {
   Modal,
   ConfirmDialog,
@@ -658,22 +659,13 @@ const hasItems = computed(() => store.items.length > 0);
     </div>
 
     <!-- ── Create / Edit Modal ────────────────────────────────────────────── -->
-    <Modal
+    <InsurancePolicyForm
+      :mode="formMode"
+      :item-id="editingItemId"
       :open="showFormModal"
-      :title="formMode === 'create' ? 'Add Policy' : 'Edit Policy'"
-      size="lg"
-      @close="closeFormModal"
-    >
-      <template #body>
-        <InsurancePolicyForm
-          :mode="formMode"
-          :item-id="editingItemId"
-          :open="showFormModal"
-          @saved="handleFormSaved"
-          @cancel="closeFormModal"
-        />
-      </template>
-    </Modal>
+      @saved="handleFormSaved"
+      @cancel="closeFormModal"
+    />
 
     <!-- ── Soft Delete / Restore Confirm ──────────────────────────────────── -->
     <ConfirmDialog

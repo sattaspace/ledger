@@ -33,6 +33,7 @@ class BudgetController(LedgerControllerBase):
         dynamically from transactions for accuracy.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         qs = Budget.objects.filter(user_id=user_id).select_related("category")
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -41,6 +42,7 @@ class BudgetController(LedgerControllerBase):
     def budget_overview(self, request):
         """Get all budgets with spending status (for dashboard)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         return list(
             Budget.objects.filter(user_id=user_id).select_related("category")
         )
@@ -51,6 +53,7 @@ class BudgetController(LedgerControllerBase):
     def get_budget(self, request, budget_id: int):
         """Get a single budget by ID with computed spending."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         return self.get_or_404(Budget, user_id, budget_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -59,6 +62,7 @@ class BudgetController(LedgerControllerBase):
     def create_budget(self, request, payload: BudgetCreate):
         """Create a new budget for a category."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         data = payload.model_dump()
         data["category_id"] = data.pop("category_id")
         obj = Budget.objects.create(user_id=user_id, **data)
@@ -71,6 +75,7 @@ class BudgetController(LedgerControllerBase):
     def update_budget(self, request, budget_id: int, payload: BudgetUpdate):
         """Update an existing budget."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         self.update_object(obj, payload)
         return obj
@@ -81,6 +86,7 @@ class BudgetController(LedgerControllerBase):
     def soft_delete_budget(self, request, budget_id: int):
         """Soft-delete a budget."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.soft_delete()
         return {"detail": "Budget deleted."}
@@ -89,6 +95,7 @@ class BudgetController(LedgerControllerBase):
     def restore_budget(self, request, budget_id: int):
         """Restore a soft-deleted budget."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         obj = self.get_with_deleted_or_404(Budget, user_id, budget_id)
         obj.restore()
         return {"detail": "Budget restored."}
@@ -99,6 +106,7 @@ class BudgetController(LedgerControllerBase):
     def activate_budget(self, request, budget_id: int):
         """Activate a budget."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.activate()
         return {"detail": "Budget activated."}
@@ -107,6 +115,7 @@ class BudgetController(LedgerControllerBase):
     def deactivate_budget(self, request, budget_id: int):
         """Deactivate a budget."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.deactivate()
         return {"detail": "Budget deactivated."}

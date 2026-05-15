@@ -105,7 +105,8 @@ export function checkAuth(): boolean {
 export function requireAuth(): boolean {
   if (!checkAuth()) {
     if (typeof window !== "undefined") {
-      window.location.href = "/auth/login";
+      const returnUrl = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/auth/login?return_url=${returnUrl}`;
     }
     return false;
   }

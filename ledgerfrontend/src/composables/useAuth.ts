@@ -178,6 +178,15 @@ export function useAuth() {
     return fetchProfile();
   }
 
+  function hasFeature(key: string): boolean {
+    const value = sharedAccess.value[key];
+    return (
+      value === true ||
+      (typeof value === "number" && value > 0) ||
+      (typeof value === "string" && value !== "" && value !== "false" && value !== "0")
+    );
+  }
+
   return {
     user,
     subscription,
@@ -194,5 +203,6 @@ export function useAuth() {
     invalidateProfile,
     redirectToBaseDomain,
     redirectWithAuthCode,
+    hasFeature,
   };
 }

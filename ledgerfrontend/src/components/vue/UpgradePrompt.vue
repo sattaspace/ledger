@@ -9,6 +9,7 @@
  *   <UpgradePrompt feature="budgets" :current="5" :maximum="5" />
  *   <UpgradePrompt feature="investments" :current="3" :maximum="3" />
  */
+
 withDefaults(defineProps<{
   /** Feature name to display (e.g. "budgets", "investments"). */
   feature?: string

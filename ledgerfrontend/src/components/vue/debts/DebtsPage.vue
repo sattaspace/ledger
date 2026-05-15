@@ -18,6 +18,7 @@
  * Registers as `ldgr-debts-page` custom element.
  */
 
+import { ref, computed, onMounted } from "vue";
 import {
   Modal,
   ConfirmDialog,
@@ -614,22 +615,14 @@ const progressColor = (percent: number): string => {
     </div>
 
     <!-- ── Create / Edit Modal ────────────────────────────────────────────── -->
-    <Modal
+    <DebtForm
+      :mode="formMode"
+      :item-id="editingItemId"
       :open="showFormModal"
-      :title="formMode === 'create' ? 'Add Debt' : 'Edit Debt'"
-      size="lg"
-      @close="closeFormModal"
-    >
-      <template #body>
-        <DebtForm
-          :mode="formMode"
-          :item-id="editingItemId"
-          :default-nature="activeTab === 'borrowed' ? 'MONEY_BORROWED' : 'MONEY_LENT'"
-          @saved="handleFormSaved"
-          @cancel="closeFormModal"
-        />
-      </template>
-    </Modal>
+      :default-nature="activeTab === 'borrowed' ? 'MONEY_BORROWED' : 'MONEY_LENT'"
+      @saved="handleFormSaved"
+      @cancel="closeFormModal"
+    />
 
     <!-- ── Soft Delete / Restore Confirm ──────────────────────────────────── -->
     <ConfirmDialog

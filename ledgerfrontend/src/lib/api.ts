@@ -206,6 +206,27 @@ export async function refreshAccessToken(): Promise<string | null> {
   return refreshPromise;
 }
 
+// ─── Auth Event Dispatch ─────────────────────────────────────────────────────
+
+/**
+ * Dispatch a global `auth-expired` event so UI components (sidebar, navbar,
+ * etc.) can react — e.g., hide user info, show logged-out state.
+ * Also dispatches `auth-state-changed` for backward compatibility.
+ */
+function dispatchAuthExpired(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("auth-expired", { detail: { reason: "session_expired" } }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("auth-state-changed", { detail: { authenticated: false } }),
+    );
+  } catch {
+    // Event dispatch is best-effort
+  }
+}
+
 // ─── URL Builder ─────────────────────────────────────────────────────────────
 
 function buildUrl(path: string, params?: Record<string, string | number | boolean>): string {
@@ -245,18 +266,31 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   let response = await fetch(url, fetchOptions);
 
-  // ── 401 → try token refresh ──
-  if (response.status === 401 && getRefreshToken()) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      const retryHeaders = buildHeaders(options.headers as Record<string, string> | undefined);
-      retryHeaders["Authorization"] = `Bearer ${newToken}`;
-      response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
+  // ── 401 → try token refresh or redirect to login ──
+  if (response.status === 401) {
+    if (getRefreshToken()) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        const retryHeaders = buildHeaders(options.headers as Record<string, string> | undefined);
+        retryHeaders["Authorization"] = `Bearer ${newToken}`;
+        response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
+      } else {
+        // Refresh failed — clear tokens and redirect to login
+        clearTokens();
+        dispatchAuthExpired();
+        if (typeof window !== "undefined") {
+          const returnUrl = encodeURIComponent(window.location.pathname + window.location.search);
+          window.location.href = `/auth/login?return_url=${returnUrl}`;
+        }
+        throw createApiError(response, "Session expired. Please sign in again.");
+      }
     } else {
-      // Refresh failed — clear tokens and redirect to login
+      // No refresh token available — session is expired, redirect to login
       clearTokens();
+      dispatchAuthExpired();
       if (typeof window !== "undefined") {
-        window.location.href = "/auth/login";
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/auth/login?return_url=${returnUrl}`;
       }
       throw createApiError(response, "Session expired. Please sign in again.");
     }

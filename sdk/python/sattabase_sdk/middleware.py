@@ -25,7 +25,7 @@ import atexit
 import logging
 from typing import Any
 
-from asgiref.sync import sync_to_async
+from asgiref.sync import iscoroutinefunction, markcoroutinefunction, sync_to_async
 
 from .client import SattabaseClient
 from .config import SattabaseConfig
@@ -57,6 +57,9 @@ class SattabaseAuthMiddleware:
 
     def __init__(self, get_response: Any) -> None:
         self.get_response = get_response
+        self._async_mode = iscoroutinefunction(self.get_response)
+        if self._async_mode:
+            markcoroutinefunction(self)
         # Lazy init is handled per-request to avoid import-time side effects
 
     @classmethod
@@ -74,6 +77,7 @@ class SattabaseAuthMiddleware:
                 service_domain=getattr(settings, "SATTABASE_SERVICE_DOMAIN", ""),
                 api_key=getattr(settings, "SATTABASE_API_KEY", ""),
                 timeout=getattr(settings, "SATTABASE_AUTH_TIMEOUT", 5),
+                debug=getattr(settings, "DEBUG", False),
             )
             cls._client = SattabaseClient(config)
 
@@ -129,7 +133,22 @@ class SattabaseAuthMiddleware:
         return None
 
     def __call__(self, request: Any) -> Any:
-        """Sync middleware entry point."""
+        """Middleware entry point — dispatches to sync or async path.
+
+        Django 5.2 ASGI middleware pattern: when ``get_response`` is async
+        (Daphne / uvicorn), we *must* return a coroutine so that Django's
+        middleware chain can ``await`` it.  We dispatch to ``__acall__`` for
+        the async path and run the sync path inline.
+
+        ``markcoroutinefunction(self)`` is called in ``__init__`` when
+        ``_async_mode`` is True, which tells Django's
+        ``convert_exception_to_response`` to create an async wrapper instead
+        of wrapping the return value in ``sync_to_async``.
+        """
+        if self._async_mode:
+            return self.__acall__(request)
+
+        # ---- Sync path (WSGI / gunicorn) ----
         token = self._extract_token(request)
         if not token:
             request.sattabase_user = None
@@ -139,11 +158,9 @@ class SattabaseAuthMiddleware:
             request.sattabase_currencies = None
             return self.get_response(request)
 
-        # Run async fetch in sync context
         client = self._get_client()
-        auth_me = sync_to_async(client.auth.me)(token=token)
 
-        # We can't await in sync context, so use a thread
+        # Run async fetch in sync context
         import asyncio
 
         try:

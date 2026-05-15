@@ -13,7 +13,7 @@
  *
  * Registers as `ldgr-vault-upload-form` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { FormErrors } from "@/components/vue";
 import { useVaultStore } from "@/stores/vault";
 import type { DocumentVaultOut, VaultFileType } from "@/lib/ledgerTypes";

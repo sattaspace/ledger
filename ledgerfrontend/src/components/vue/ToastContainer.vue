@@ -14,11 +14,17 @@
  *   - Max 5 visible toasts (oldest dismissed automatically)
  *   - Accessible: role="alert", aria-live="polite"
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useToast } from "@/composables/useToast";
 import type { Toast, ToastVariant } from "@/composables/useToast";
 
 const toast = useToast();
+
+// ─── SSR guard — Teleport can only run client-side ────────────────────────
+// <Teleport to="body"> is a no-op during SSR (renders inline), but on the
+// client it moves the DOM to <body>. This causes a hydration mismatch.
+// Solution: only render the Teleport after mount (client-only).
+const isMounted = ref(false);
 
 // ─── Max visible toasts ────────────────────────────────────────────────────
 
@@ -88,6 +94,7 @@ const now = ref(Date.now());
 let rafId: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
+  isMounted.value = true;
   rafId = setInterval(() => {
     now.value = Date.now();
   }, 100);
@@ -109,7 +116,7 @@ const progressMap = computed(() => {
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport v-if="isMounted" to="body">
     <!-- Toast container — bottom-right, stacked -->
     <div
       class="fixed bottom-4 right-4 z-[100] flex flex-col-reverse gap-2 pointer-events-none"

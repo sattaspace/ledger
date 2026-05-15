@@ -1,0 +1,19 @@
+---
+/**
+ * Settings & Preferences page — /dashboard/settings
+ * User preferences: base currency (from 8086 profile), timezone (from 8086),
+ * date format (local), theme (local).
+ */
+
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import SettingsPage from "@/components/vue/settings/SettingsPage.vue";
+---
+
+<DashboardLayout title="Settings — Satta Ledger">
+  <SettingsPage client:only="vue" />
+</DashboardLayout>
+
+<script>
+  const pageTitle = document.getElementById("page-title");
+  if (pageTitle) pageTitle.textContent = "Settings";
+</script>

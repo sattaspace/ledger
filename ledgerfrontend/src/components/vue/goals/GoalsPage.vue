@@ -20,7 +20,7 @@
  *
  * Registers as `ldgr-goals-page` custom element.
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   Modal,
   ConfirmDialog,

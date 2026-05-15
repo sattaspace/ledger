@@ -20,6 +20,26 @@ import { getAccessToken, refreshAccessToken, clearTokens } from "./api";
 import type { ApiError } from "./types";
 import { useToast } from "@/composables/useToast";
 
+// ─── Auth Event Helper ───────────────────────────────────────────────────────
+
+/**
+ * Dispatch global auth events when the session expires so UI components
+ * (sidebar, navbar, etc.) can react immediately instead of staying stale.
+ */
+function dispatchAuthExpired(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("auth-expired", { detail: { reason: "session_expired" } }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("auth-state-changed", { detail: { authenticated: false } }),
+    );
+  } catch {
+    // Event dispatch is best-effort
+  }
+}
+
 // ─── Ledger-specific type imports ────────────────────────────────────────────
 
 import type {
@@ -293,10 +313,12 @@ async function ledgerRequest<T>(path: string, options: LedgerRequestOptions = {}
       retryHeaders["Authorization"] = `Bearer ${newToken}`;
       response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
     } else {
-      // Refresh failed — clear tokens and redirect to login
+      // Refresh failed — clear tokens, notify UI, and redirect to login
       clearTokens();
+      dispatchAuthExpired();
       if (typeof window !== "undefined") {
-        window.location.href = "/auth/login";
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/auth/login?return_url=${returnUrl}`;
       }
       throw {
         status: 401,
@@ -307,11 +329,28 @@ async function ledgerRequest<T>(path: string, options: LedgerRequestOptions = {}
 
   // ── 403 Forbidden ──
   if (response.status === 403) {
-    // Lazily get toast to avoid circular dependency issues at module load
-    try {
-      useToast().error("You don't have access to this resource");
-    } catch {}
-    throw await createApiErrorFromResponse(response);
+    const apiError = await createApiErrorFromResponse(response);
+    // If the 403 is due to authentication (not authorization), redirect to login
+    const isAuthError =
+      apiError.message?.toLowerCase().includes("authentication") ||
+      apiError.message?.toLowerCase().includes("token") ||
+      apiError.message?.toLowerCase().includes("credentials") ||
+      apiError.message?.toLowerCase().includes("not authenticated");
+
+    if (isAuthError) {
+      clearTokens();
+      dispatchAuthExpired();
+      if (typeof window !== "undefined") {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/auth/login?return_url=${returnUrl}`;
+      }
+    } else {
+      // Authorization error — show toast but don't redirect
+      try {
+        useToast().error("You don't have access to this resource");
+      } catch {}
+    }
+    throw apiError;
   }
 
   // ── 429 Rate Limited ──

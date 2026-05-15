@@ -29,6 +29,7 @@ class CardController(LedgerControllerBase):
     def list_cards(self, request, filters: CardFilter = Query(...)):
         """List all cards for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         qs = Card.objects.filter(user_id=user_id).select_related("account")
         qs, limit, offset = self.apply_filters(qs, filters)
         return self.paginate(qs, limit, offset)
@@ -37,6 +38,7 @@ class CardController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for card selection components."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         return list(Card.objects.filter(user_id=user_id).select_related("account"))
 
     # ── Get ───────────────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ class CardController(LedgerControllerBase):
     def get_card(self, request, card_id: int):
         """Get a single card by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         return self.get_or_404(Card, user_id, card_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -53,6 +56,7 @@ class CardController(LedgerControllerBase):
     def create_card(self, request, payload: CardCreate):
         """Create a new card linked to an account."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         obj = Card.objects.create(user_id=user_id, **data)
@@ -65,6 +69,7 @@ class CardController(LedgerControllerBase):
     def update_card(self, request, card_id: int, payload: CardUpdate):
         """Update an existing card."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         self.update_object(obj, payload)
         return obj
@@ -75,6 +80,7 @@ class CardController(LedgerControllerBase):
     def soft_delete_card(self, request, card_id: int):
         """Soft-delete a card."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.soft_delete()
         return {"detail": "Card deleted."}
@@ -83,6 +89,7 @@ class CardController(LedgerControllerBase):
     def restore_card(self, request, card_id: int):
         """Restore a soft-deleted card."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         obj = self.get_with_deleted_or_404(Card, user_id, card_id)
         obj.restore()
         return {"detail": "Card restored."}
@@ -93,6 +100,7 @@ class CardController(LedgerControllerBase):
     def activate_card(self, request, card_id: int):
         """Activate a card."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.activate()
         return {"detail": "Card activated."}
@@ -101,6 +109,7 @@ class CardController(LedgerControllerBase):
     def deactivate_card(self, request, card_id: int):
         """Deactivate a card."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.deactivate()
         return {"detail": "Card deactivated."}

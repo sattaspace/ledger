@@ -36,6 +36,16 @@ const navSections: NavSection[] = [
         href: "/dashboard/transactions",
         icon: "M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z",
       },
+      {
+        label: "Reports",
+        href: "/dashboard/reports",
+        icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
+      },
+      {
+        label: "Notifications",
+        href: "/dashboard/notifications",
+        icon: "M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9",
+      },
     ],
   },
   {
@@ -125,6 +135,16 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    title: "Calendar",
+    items: [
+      {
+        label: "Financial Calendar",
+        href: "/dashboard/calendar",
+        icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z",
+      },
+    ],
+  },
+  {
     title: "Tools",
     items: [
       {
@@ -141,21 +161,6 @@ const navSections: NavSection[] = [
       },
     ],
   },
-  // ── Phase 6+ links (coming soon) ──
-  // Uncomment as pages are developed:
-  // {
-  //   title: "Lending",
-  //   items: [
-  //     { label: "Loans", href: "/dashboard/loans", icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" },
-  //     { label: "Mortgage", href: "/dashboard/mortgage", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
-  //   ],
-  // },
-  // {
-  //   title: "Calendar",
-  //   items: [
-  //     { label: "Financial Calendar", href: "/dashboard/calendar", icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" },
-  //   ],
-  // },
 ];
 ---
 
@@ -228,6 +233,20 @@ const navSections: NavSection[] = [
 
   <!-- Bottom section -->
   <div class="shrink-0 border-t border-navy-200 dark:border-navy-700 bg-white dark:bg-navy-900">
+    <!-- Settings link -->
+    <a
+      href="/dashboard/settings"
+      class="sidebar-nav-item group relative flex items-center gap-3 px-5 py-2.5 text-sm font-medium text-slate-custom-600 dark:text-slate-custom-500 transition-all duration-200 hover:bg-cyan-50 dark:hover:bg-navy-800 hover:text-navy-900 dark:hover:text-navy-100 border-b border-navy-200 dark:border-navy-700"
+      data-nav-href="/dashboard/settings"
+    >
+      <span class="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-cyan-500 scale-y-0 transition-transform duration-150 sidebar-active-bar"></span>
+      <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+      </svg>
+      <span>Settings</span>
+    </a>
+
     <!-- Subscription status bar -->
     <div class="px-4 py-3 border-b border-navy-200 dark:border-navy-700">
       <div class="flex items-center justify-between">
@@ -412,15 +431,16 @@ const navSections: NavSection[] = [
 
   function applyFeatureGating() {
     let access: Record<string, unknown> = {};
+    let hasAccessData = false;
 
     try {
       const raw = sessionStorage.getItem(ACCESS_CACHE_KEY);
       if (raw) {
         access = JSON.parse(raw);
+        hasAccessData = true;
       }
     } catch {
-      // Auth data not available — show all features
-      return;
+      // Parse error — treat as no access data
     }
 
     // ── Hide individual nav items based on access ──
@@ -429,9 +449,13 @@ const navSections: NavSection[] = [
       const feature = item.getAttribute('data-feature');
       if (!feature) return;
 
-      const value = access[feature];
-      const hasAccess = value === true || (typeof value === 'number' && value > 0)
-        || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
+      // If we don't have access data yet, default to HIDDEN for security
+      let hasAccess = false;
+      if (hasAccessData) {
+        const value = access[feature];
+        hasAccess = value === true || (typeof value === 'number' && value > 0)
+          || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
+      }
 
       item.style.display = hasAccess ? '' : 'none';
     });

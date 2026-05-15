@@ -29,6 +29,7 @@ class VaultController(LedgerControllerBase):
     def list_documents(self, request, filters: DocumentVaultFilter = Query(...)):
         """List all documents for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         qs = DocumentVault.objects.filter(user_id=user_id)
 
         # Handle special filters
@@ -61,6 +62,7 @@ class VaultController(LedgerControllerBase):
     def list_expiring(self, request, days: int = 30):
         """Get documents expiring within N days (for dashboard/alerts)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         from django.utils import timezone
         from datetime import timedelta
 
@@ -80,6 +82,7 @@ class VaultController(LedgerControllerBase):
     def get_document(self, request, document_id: int):
         """Get a single document by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         return self.get_or_404(DocumentVault, user_id, document_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -92,6 +95,7 @@ class VaultController(LedgerControllerBase):
         The file field is set separately from the metadata.
         """
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         data = payload.model_dump()
         data["content_type_id"] = data.pop("content_type_id")
         obj = DocumentVault.objects.create(user_id=user_id, **data)
@@ -104,6 +108,7 @@ class VaultController(LedgerControllerBase):
     def update_document(self, request, document_id: int, payload: DocumentVaultUpdate):
         """Update document metadata. The file itself cannot be updated — delete and re-upload."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         self.update_object(obj, payload)
         return obj
@@ -114,6 +119,7 @@ class VaultController(LedgerControllerBase):
     def soft_delete_document(self, request, document_id: int):
         """Soft-delete a document."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.soft_delete()
         return {"detail": "Document deleted."}
@@ -122,6 +128,7 @@ class VaultController(LedgerControllerBase):
     def restore_document(self, request, document_id: int):
         """Restore a soft-deleted document."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         obj = self.get_with_deleted_or_404(DocumentVault, user_id, document_id)
         obj.restore()
         return {"detail": "Document restored."}
@@ -132,6 +139,7 @@ class VaultController(LedgerControllerBase):
     def activate_document(self, request, document_id: int):
         """Activate a document."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.activate()
         return {"detail": "Document activated."}
@@ -140,6 +148,7 @@ class VaultController(LedgerControllerBase):
     def deactivate_document(self, request, document_id: int):
         """Deactivate a document."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.deactivate()
         return {"detail": "Document deactivated."}

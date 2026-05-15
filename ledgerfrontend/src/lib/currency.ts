@@ -80,6 +80,39 @@ function getCurrenciesMeta(): CurrenciesMeta | null {
 }
 
 /**
+ * Get the list of available currency codes from cached metadata.
+ *
+ * Returns sorted array of ISO 4217 codes from the base backend.
+ * Falls back to a minimal common set if no metadata is cached.
+ */
+export function getAvailableCurrencies(): string[] {
+  const meta = getCurrenciesMeta();
+  if (meta && Object.keys(meta).length > 0) {
+    return Object.keys(meta).sort();
+  }
+  // Fallback: common currencies when no metadata is cached yet
+  return [
+    "AUD",
+    "BDT",
+    "BRL",
+    "CAD",
+    "CHF",
+    "CNY",
+    "EUR",
+    "GBP",
+    "HKD",
+    "INR",
+    "JPY",
+    "KRW",
+    "MXN",
+    "NZD",
+    "SGD",
+    "USD",
+    "ZAR",
+  ];
+}
+
+/**
  * Get metadata for a specific currency.
  * Returns null if no metadata is cached for that currency.
  */

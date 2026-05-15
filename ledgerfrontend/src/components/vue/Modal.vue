@@ -19,7 +19,7 @@
  *     <template #footer>...</template>
  *   </Modal>
  */
-
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 const props = withDefaults(
   defineProps<{
     /** Whether the modal is visible. */

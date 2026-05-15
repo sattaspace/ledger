@@ -29,6 +29,7 @@ class InsuranceController(LedgerControllerBase):
     def list_policies(self, request, filters: InsurancePolicyFilter = Query(...)):
         """List all insurance policies for the authenticated user."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         qs = InsurancePolicy.objects.filter(user_id=user_id).select_related("institution")
 
         # Handle renewal_within_days special filter
@@ -63,6 +64,7 @@ class InsuranceController(LedgerControllerBase):
     def upcoming_renewals(self, request, days: int = 60):
         """Get policies with upcoming renewals (for dashboard)."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         from django.utils import timezone
         from datetime import timedelta
 
@@ -82,6 +84,7 @@ class InsuranceController(LedgerControllerBase):
     def get_policy(self, request, policy_id: int):
         """Get a single insurance policy by ID."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         return self.get_or_404(InsurancePolicy, user_id, policy_id)
 
     # ── Create ────────────────────────────────────────────────────────────
@@ -90,6 +93,7 @@ class InsuranceController(LedgerControllerBase):
     def create_policy(self, request, payload: InsurancePolicyCreate):
         """Create a new insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         obj = InsurancePolicy.objects.create(user_id=user_id, **data)
@@ -102,6 +106,7 @@ class InsuranceController(LedgerControllerBase):
     def update_policy(self, request, policy_id: int, payload: InsurancePolicyUpdate):
         """Update an existing insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         self.update_object(obj, payload)
         return obj
@@ -112,6 +117,7 @@ class InsuranceController(LedgerControllerBase):
     def soft_delete_policy(self, request, policy_id: int):
         """Soft-delete an insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.soft_delete()
         return {"detail": "Insurance policy deleted."}
@@ -120,6 +126,7 @@ class InsuranceController(LedgerControllerBase):
     def restore_policy(self, request, policy_id: int):
         """Restore a soft-deleted insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         obj = self.get_with_deleted_or_404(InsurancePolicy, user_id, policy_id)
         obj.restore()
         return {"detail": "Insurance policy restored."}
@@ -130,6 +137,7 @@ class InsuranceController(LedgerControllerBase):
     def activate_policy(self, request, policy_id: int):
         """Activate an insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.activate()
         return {"detail": "Insurance policy activated."}
@@ -138,6 +146,7 @@ class InsuranceController(LedgerControllerBase):
     def deactivate_policy(self, request, policy_id: int):
         """Deactivate an insurance policy."""
         user_id = self.require_user_id(request)
+        self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.deactivate()
         return {"detail": "Insurance policy deactivated."}
