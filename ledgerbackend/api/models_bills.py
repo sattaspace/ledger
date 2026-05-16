@@ -112,9 +112,25 @@ class Bill(UserOwnedModel):
 
         Uses lazy import to avoid circular references at module level.
         Returns the created Transaction, or None if the bill is not active.
+
+        Ownership guard: verifies that linked account and category belong to
+        the same user as this bill, preventing cross-user data corruption
+        in Celery tasks or admin actions.
         """
         if self.status != "ACTIVE":
             return None
+
+        # Ownership guards — prevent cross-user FK corruption
+        if self.account and self.account.user_id != self.user_id:
+            raise ValueError(
+                f"Bill.account (user_id={self.account.user_id}) does not "
+                f"belong to Bill.user_id={self.user_id}"
+            )
+        if self.category and self.category.user_id != self.user_id:
+            raise ValueError(
+                f"Bill.category (user_id={self.category.user_id}) does not "
+                f"belong to Bill.user_id={self.user_id}"
+            )
 
         from api.models_core import Transaction  # noqa: F811
 

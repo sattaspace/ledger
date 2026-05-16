@@ -53,3 +53,6 @@ export { default as FormErrors } from "./FormErrors.vue";
 export { default as FeatureGate } from "./FeatureGate.vue";
 
 export { default as UpgradePrompt } from "./UpgradePrompt.vue";
+
+// ─── Plan Limits ────────────────────────────────────────────────────────────
+export { default as PlanLimitBadge } from "./PlanLimitBadge.vue";

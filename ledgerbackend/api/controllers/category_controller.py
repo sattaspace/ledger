@@ -101,7 +101,9 @@ class CategoryController(LedgerControllerBase):
         self.check_plan_limit(request, "max_categories",
                             Category.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
+        # Validate FK ownership — parent category must belong to this user
         if "parent_id" in data and data["parent_id"] is not None:
+            self.validate_fk_ownership(request, Category, data["parent_id"])
             data["parent_id"] = data.pop("parent_id")
         else:
             data.pop("parent_id", None)
@@ -117,7 +119,9 @@ class CategoryController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "categories")
         obj = self.get_or_404(Category, user_id, category_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "parent_id": (Category, request),
+        })
         return obj
 
     # ── Soft Delete ───────────────────────────────────────────────────────

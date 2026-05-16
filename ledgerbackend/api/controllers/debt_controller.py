@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import DebtFacility, DebtPayment
+from api.models import Account, Institution, DebtFacility, DebtPayment, Transaction
 from api.schemas.debt import (
     DebtFacilityCreate,
     DebtFacilityFilter,
@@ -77,6 +77,9 @@ class DebtController(LedgerControllerBase):
         self.require_feature(request, "debts")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_debts", DebtFacility.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — institution and account must belong to this user
+        self.validate_fk_ownership(request, Institution, payload.institution_id)
+        self.validate_fk_ownership(request, Account, payload.account_id)
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         data["account_id"] = data.pop("account_id", None)
@@ -92,7 +95,10 @@ class DebtController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "institution_id": (Institution, request),
+            "account_id": (Account, request),
+        })
         return obj
 
     # ── Soft Delete / Restore ─────────────────────────────────────────────
@@ -163,6 +169,8 @@ class DebtController(LedgerControllerBase):
         self.check_plan_limit(request, "max_debts",
                             DebtPayment.objects.filter(user_id=user_id).count())
         debt = self.get_or_404(DebtFacility, user_id, debt_id)
+        # Validate FK ownership — transaction must belong to this user
+        self.validate_fk_ownership(request, Transaction, payload.transaction_id)
         data = payload.model_dump()
         data.pop("debt_id", None)
         data["transaction_id"] = data.pop("transaction_id", None)

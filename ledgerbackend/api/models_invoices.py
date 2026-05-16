@@ -87,7 +87,8 @@ class InvoiceLineItem(UserOwnedModel):
     quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
     unit_price = models.DecimalField(max_digits=15, decimal_places=2)
     total = models.DecimalField(
-        max_digits=15, decimal_places=2, help_text="quantity * unit_price"
+        max_digits=15, decimal_places=2,
+        help_text="Auto-calculated as quantity * unit_price if not provided.",
     )
 
     class Meta:
@@ -96,3 +97,9 @@ class InvoiceLineItem(UserOwnedModel):
 
     def __str__(self) -> str:
         return f"{self.description} — {self.quantity} x {self.unit_price} = {self.total}"
+
+    def save(self, *args, **kwargs):
+        """Auto-calculate total from quantity * unit_price."""
+        if self.quantity is not None and self.unit_price is not None:
+            self.total = self.quantity * self.unit_price
+        super().save(*args, **kwargs)

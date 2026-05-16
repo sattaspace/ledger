@@ -131,6 +131,11 @@ MIDDLEWARE = [
     # request.sattabase_subscription from Sattabase auth/me API.
     # Must be AFTER AuthenticationMiddleware so session is available.
     "sattabase_sdk.middleware.SattabaseAuthMiddleware",
+    # ── Auth Service Unavailable Detection ──
+    # Runs AFTER the SDK middleware. Distinguishes between "not authenticated"
+    # (401) and "auth service unreachable" (503). Sets
+    # request.sattabase_auth_unavailable = True when the base backend is down.
+    "api.middleware.AuthServiceUnavailableMiddleware",
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -320,17 +325,17 @@ if not DEBUG:
 # production.**  Controlled via SB_API_KEY_ENFORCED env var.
 API_KEY_ENFORCED = env("SL_API_KEY_ENFORCED", default=False, cast=bool)
 
-# Production safety check: warn if enforcement is off in production mode.
+
+# Production safety check: API key enforcement MUST be enabled in production.
+# Without it, any request with a valid JWT can call ledger endpoints without
+# an API key, and X-Service-Domain headers can be spoofed.
 if not API_KEY_ENFORCED and not DEBUG:
-    import warnings
-    warnings.warn(
-        "API_KEY_ENFORCED is False in non-debug mode. "
-        "Set SB_API_KEY_ENFORCED=True before deploying to production. "
-        "Invalid API keys will be logged but allowed through.",
-        RuntimeWarning,
-        stacklevel=1,
+    raise environ.ImproperlyConfigured(
+        "SL_API_KEY_ENFORCED must be True in production. "
+        "Without API key enforcement, requests without a valid X-API-Key "
+        "are allowed through with just a warning, which is a security risk. "
+        "Set SL_API_KEY_ENFORCED=True in your production .env file."
     )
-    
 
 
 FORMATTERS = (
@@ -491,3 +496,17 @@ CURRENCY_META_CACHE_TTL = env.int(
     "SL_CURRENCY_META_CACHE_TTL",
     default=24 * 60 * 60,  # 24 hours
 )
+
+
+
+# ── Rate limiting (used by api/rate_limit.py) ──
+# Per-user rate limits for different endpoint categories.
+# Limits are per-window (RATE_LIMIT_WINDOW seconds).
+RATE_LIMIT_WINDOW = env.int("SL_RATE_LIMIT_WINDOW", default=60)  # 1 minute
+RATE_LIMIT_CREATE_ATTEMPTS = env.int("SL_RATE_LIMIT_CREATE_ATTEMPTS", default=30)
+RATE_LIMIT_LIST_ATTEMPTS = env.int("SL_RATE_LIMIT_LIST_ATTEMPTS", default=100)
+RATE_LIMIT_REPORT_ATTEMPTS = env.int("SL_RATE_LIMIT_REPORT_ATTEMPTS", default=10)
+RATE_LIMIT_DELETE_ATTEMPTS = env.int("SL_RATE_LIMIT_DELETE_ATTEMPTS", default=30)
+RATE_LIMIT_DEFAULT_ATTEMPTS = env.int("SL_RATE_LIMIT_DEFAULT_ATTEMPTS", default=60)
+# Trusted proxy IPs for X-Forwarded-For parsing
+TRUSTED_PROXIES = env.list("SL_TRUSTED_PROXIES", default=["127.0.0.1", "::1"])

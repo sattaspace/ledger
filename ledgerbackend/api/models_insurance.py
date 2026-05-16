@@ -1,6 +1,7 @@
 """Insurance model — Policy tracking for all insurance types."""
 
 from django.db import models
+from django.contrib.contenttypes.fields import GenericRelation
 
 from common.models import UserOwnedModel
 
@@ -74,6 +75,12 @@ class InsurancePolicy(UserOwnedModel):
     # ── Reminders ─────────────────────────────────────────────────────
     remind_renewal = models.BooleanField(default=True)
     days_before_renewal_reminder = models.IntegerField(default=30)
+
+    # ── Generic relation for DocumentVault ────────────────────────────
+    documents = GenericRelation(
+        "api.DocumentVault",
+        related_query_name="insurance_policy",
+    )
 
     class Meta:
         db_table = "insurance_insurance_policy"

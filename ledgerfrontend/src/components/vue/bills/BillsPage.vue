@@ -30,6 +30,7 @@ import {
   FilterBar,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { FilterConfig } from "@/components/vue";
 import {
@@ -456,6 +457,7 @@ function nextMonth() {
           </svg>
           Add Bill
         </button>
+        <PlanLimitBadge max-key="max_bills" feature-key="bills" :current="store.items.length" />
       </div>
     </div>
 

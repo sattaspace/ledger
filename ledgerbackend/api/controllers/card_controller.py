@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Card
+from api.models import Account, Card
 from api.schemas.cards import (
     CardCreate,
     CardFilter,
@@ -15,7 +15,7 @@ from api.schemas.cards import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
-from .base import LedgerControllerBase
+from .base import LedgerControllerBase, FkOwnershipError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,10 @@ class CardController(LedgerControllerBase):
         self.require_feature(request, "cards")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_cards", Card.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — account must belong to this user
+        account = self.validate_fk_ownership(request, Account, payload.account_id)
+        if account is None:
+            raise FkOwnershipError("Account", payload.account_id)
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         obj = Card.objects.create(user_id=user_id, **data)
@@ -73,7 +77,9 @@ class CardController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "account_id": (Account, request),
+        })
         return obj
 
     # ── Soft Delete / Restore ─────────────────────────────────────────────

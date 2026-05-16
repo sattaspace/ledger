@@ -35,6 +35,7 @@ const FEATURE_GATED_PATHS: Record<string, string> = {
   "/dashboard/tags": "tags",
   "/dashboard/bills": "bills",
   "/dashboard/reports": "reports",
+  "/dashboard/calendar": "bills",
   // TODO: Gate export_pdf when export functionality is added
   // "/dashboard/export": "export_pdf",
 };

@@ -210,6 +210,65 @@ async function fetchNotifications(): Promise<void> {
       // Goals not available — skip
     }
 
+    // Fetch credit card due date alerts
+    try {
+      const accountsResp = await ledgerApi.accounts.list({ is_active: true, limit: 100 });
+      const liabilityAccounts = accountsResp.items.filter(
+        (acct) => acct.account_type === "LIABILITY" && acct.due_day
+      );
+      for (const acct of liabilityAccounts) {
+        const now = new Date();
+        let dueDate = new Date(now.getFullYear(), now.getMonth(), acct.due_day!);
+        // If the due day has passed this month, use next month
+        if (dueDate < now) {
+          dueDate = new Date(now.getFullYear(), now.getMonth() + 1, acct.due_day!);
+        }
+        const dateStr = dueDate.toISOString().split("T")[0];
+        const daysLeft = daysBetween(dateStr);
+        if (daysLeft <= 30) {
+          items.push({
+            id: `card-due-${acct.id}`,
+            type: "card_due",
+            title: `${acct.name} — Payment Due`,
+            description: `Credit card payment due on day ${acct.due_day}`,
+            date: dateStr,
+            daysLeft,
+            link: `/dashboard/accounts/${acct.id}`,
+            icon: getTypeIcon("card_due"),
+            priority: getPriority(daysLeft),
+          });
+        }
+      }
+    } catch {
+      // Accounts not available — skip
+    }
+
+    // Fetch annual fee alerts
+    try {
+      const cardsResp = await ledgerApi.cards.list({ limit: 100 });
+      const cardsWithFees = cardsResp.items.filter(
+        (card) => card.is_active && card.annual_fee_date && parseFloat(card.annual_fee || "0") > 0
+      );
+      for (const card of cardsWithFees) {
+        const daysLeft = daysBetween(card.annual_fee_date!);
+        if (daysLeft <= 60) {
+          items.push({
+            id: `annual-fee-${card.id}`,
+            type: "annual_fee",
+            title: `${card.card_name} (•••• ${card.last_four}) — Annual Fee`,
+            description: `$${parseFloat(card.annual_fee || "0").toFixed(2)} annual fee coming up`,
+            date: card.annual_fee_date!,
+            daysLeft,
+            link: `/dashboard/cards`,
+            icon: getTypeIcon("annual_fee"),
+            priority: getPriority(daysLeft),
+          });
+        }
+      }
+    } catch {
+      // Cards not available — skip
+    }
+
     // Sort by priority (urgent first), then by daysLeft
     const priorityOrder: Record<string, number> = { urgent: 0, warning: 1, info: 2 };
     items.sort((a, b) => {

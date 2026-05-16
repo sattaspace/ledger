@@ -25,6 +25,8 @@ import {
   LoadingSkeleton,
   FormErrors,
   Modal,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { StatusColorMap } from "@/components/vue";
 import {
@@ -232,6 +234,7 @@ function goBack() {
 </script>
 
 <template>
+  <FeatureGate feature="invoices" show-fallback>
   <div class="space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="isLoading" type="detail" />
@@ -645,4 +648,8 @@ function goBack() {
       />
     </template>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="invoices" />
+  </template>
+  </FeatureGate>
 </template>

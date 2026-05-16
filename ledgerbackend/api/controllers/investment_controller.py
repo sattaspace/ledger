@@ -7,7 +7,7 @@ from decimal import Decimal
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import InvestmentAccount, Holding
+from api.models import Account, InvestmentAccount, Holding
 from api.schemas.investments import (
     HoldingCreate,
     HoldingFilter,
@@ -77,6 +77,11 @@ class InvestmentController(LedgerControllerBase):
         self.require_feature(request, "investments")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_investments", InvestmentAccount.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — account must belong to this user
+        account = self.validate_fk_ownership(request, Account, payload.account_id)
+        if account is None:
+            from .base import FkOwnershipError
+            raise FkOwnershipError("Account", payload.account_id)
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         obj = InvestmentAccount.objects.create(user_id=user_id, **data)
@@ -91,7 +96,9 @@ class InvestmentController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "investments")
         obj = self.get_or_404(InvestmentAccount, user_id, investment_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "account_id": (Account, request),
+        })
         return obj
 
     # ── Soft Delete / Restore ─────────────────────────────────────────────

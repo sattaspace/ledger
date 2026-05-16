@@ -320,6 +320,8 @@ export interface TransferCreate {
   to_account_id: number;
   amount: string;
   currency?: string;
+  exchange_rate?: string | null;
+  amount_base?: string | null;
   description?: string | null;
   status?: TransactionStatus;
 }
@@ -1097,6 +1099,15 @@ export interface SavingsContributionOut {
   new_amount: string;
   transaction_id: number | null;
   detail: string;
+}
+
+export interface SavingsGoalContributionOut {
+  id: number;
+  goal_id: number;
+  amount: string;
+  currency: string;
+  contributed_at: string;
+  notes: string | null;
 }
 
 // =============================================================================

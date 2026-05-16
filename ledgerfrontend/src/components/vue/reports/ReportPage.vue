@@ -27,9 +27,12 @@ import {
   StatusBadge,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { DateRange } from "@/components/vue";
 import { useReportsStore } from "@/stores/reports";
+import { useAccess } from "@/composables/useAccess";
+import { useToast } from "@/composables/useToast";
 import type {
   MonthlyBucket,
   CategorySpending,
@@ -49,6 +52,8 @@ defineOptions({
 // ─── Store ───────────────────────────────────────────────────────────────────
 
 const store = useReportsStore();
+const { hasAccess } = useAccess();
+const toast = useToast();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -182,6 +187,130 @@ const tagMax = computed(() => {
   if (tags.length === 0) return 1;
   return Math.max(...tags.map((t) => t.amount), 1);
 });
+
+// ─── Export Helpers ───────────────────────────────────────────────────────────
+
+const canExportPdf = hasAccess("export_pdf");
+const exporting = ref(false);
+
+function escapeCSV(value: unknown): string {
+  const str = String(value ?? "");
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function downloadCSV(filename: string, headers: string[], rows: string[][]): void {
+  const headerLine = headers.map(escapeCSV).join(",");
+  const dataLines = rows.map((row) => row.map(escapeCSV).join(","));
+  const csv = [headerLine, ...dataLines].join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function exportCurrentTabCSV(): void {
+  const tab = activeTab.value;
+  const dateSuffix = `${dateFrom.value}_to_${dateTo.value}`;
+
+  try {
+    if (tab === "income-expense") {
+      const headers = ["Month", "Income", "Expense", "Net"];
+      const rows = store.incomeExpenseByMonth.map((b) => [
+        b.month,
+        String(b.income),
+        String(b.expense),
+        String(b.income - b.expense),
+      ]);
+      downloadCSV(`income-expense_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "category-spending") {
+      const headers = ["Category", "Amount", "Is Income", "Percentage"];
+      const total = store.totalCategoryExpense || 1;
+      const rows = store.categorySpending.map((c) => [
+        c.categoryName,
+        String(c.amount),
+        String(c.isIncome),
+        ((c.amount / total) * 100).toFixed(1) + "%",
+      ]);
+      downloadCSV(`category-spending_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "budget-actual") {
+      const headers = ["Category", "Period", "Budget", "Spent", "Remaining", "% Used"];
+      const rows = store.budgetVsActual.map((b) => [
+        b.categoryName,
+        b.period,
+        String(b.amount),
+        String(b.spentAmount),
+        String(b.remaining),
+        b.percentUsed.toFixed(1) + "%",
+      ]);
+      downloadCSV(`budget-actual_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "net-worth") {
+      const headers = ["Type", "Account", "Currency", "Balance"];
+      const rows = store.netWorthComposition.flatMap((g) =>
+        g.accounts.map((a) => [
+          g.type,
+          a.name,
+          a.currency,
+          a.current_balance,
+        ]),
+      );
+      downloadCSV(`net-worth_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "cash-flow") {
+      const headers = ["Month", "Income", "Expense", "Net", "Cumulative"];
+      const rows = store.cashFlowByMonth.map((m) => [
+        m.month,
+        String(m.income),
+        String(m.expense),
+        String(m.net),
+        String(m.cumulative),
+      ]);
+      downloadCSV(`cash-flow_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "tag-spending") {
+      const headers = ["Tag", "Amount"];
+      const rows = store.tagSpending.map((t) => [
+        t.tagName,
+        String(t.amount),
+      ]);
+      downloadCSV(`tag-spending_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "debt-payoff") {
+      const headers = ["Name", "Type", "Principal", "Remaining", "Monthly Payment", "Interest Rate", "% Paid"];
+      const rows = store.debtPayoffEntries.map((d) => [
+        d.name,
+        d.debtType,
+        String(d.principalAmount),
+        String(d.remainingBalance),
+        String(d.monthlyPayment),
+        d.interestRate + "%",
+        d.progressPercent.toFixed(1) + "%",
+      ]);
+      downloadCSV(`debt-payoff_${dateSuffix}.csv`, headers, rows);
+    } else if (tab === "investment-performance") {
+      const headers = ["Symbol", "Name", "Type", "Quantity", "Cost Basis", "Current Value", "Gain/Loss", "Return %"];
+      const rows = store.holdingPerformance.map((h) => [
+        h.symbol,
+        h.assetName,
+        h.assetType,
+        String(h.quantity),
+        String(h.costBasis),
+        String(h.currentValue),
+        String(h.unrealizedGainLoss),
+        h.gainLossPercent.toFixed(1) + "%",
+      ]);
+      downloadCSV(`investments_${dateSuffix}.csv`, headers, rows);
+    }
+
+    toast.success("CSV exported successfully");
+  } catch (err) {
+    toast.error("Failed to export CSV");
+  }
+}
 </script>
 
 <template>
@@ -194,6 +323,32 @@ const tagMax = computed(() => {
         <p class="text-sm text-slate-custom-600 dark:text-slate-custom-400 mt-1">
           Financial analytics and insights
         </p>
+      </div>
+      <div class="flex items-center gap-3">
+        <!-- CSV Export (always available) -->
+        <button
+          class="btn-secondary"
+          :disabled="isLoading || !hasData"
+          @click="exportCurrentTabCSV"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+          Export CSV
+        </button>
+        <!-- PDF Export (gated by export_pdf feature) -->
+        <FeatureGate feature="export_pdf" :show-fallback="false">
+          <button
+            class="btn-primary"
+            :disabled="isLoading || !hasData || exporting"
+            @click="exporting = true; setTimeout(() => { exportCurrentTabCSV(); exporting = false; }, 300)"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+            </svg>
+            {{ exporting ? 'Exporting...' : 'Export PDF' }}
+          </button>
+        </FeatureGate>
       </div>
     </div>
 

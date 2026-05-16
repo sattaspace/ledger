@@ -43,10 +43,12 @@ api = NinjaExtraAPI(
 from django.http import JsonResponse
 from api.controllers.base import (
     AuthRequiredError,
+    AuthServiceUnavailableError,
     FeatureRequiredError,
     SubscriptionInactiveError,
     PlanLimitReachedError,
 )
+from api.errors import TooManyRequestsError
 
 @api.exception_handler(AuthRequiredError)
 def auth_required_handler(request, exc):
@@ -76,10 +78,68 @@ def plan_limit_reached_handler(request, exc):
         status=exc.status_code,
     )
 
-# ── Import all controllers so auto_discover picks them up ──────────────────
+@api.exception_handler(AuthServiceUnavailableError)
+def auth_service_unavailable_handler(request, exc):
+    return JsonResponse(
+        {"detail": exc.detail},
+        status=exc.status_code,
+    )
 
-# Legacy test controller
-from api.controllers.test_note_controller import TestNoteController  # noqa: E402, F401
+@api.exception_handler(TooManyRequestsError)
+def too_many_requests_handler(request, exc):
+    return JsonResponse(
+        {"detail": exc.message},
+        status=429,
+    )
+
+
+# ── Health check endpoint ─────────────────────────────────────────────────
+
+from ninja import Router as NinjaRouter
+
+health_router = NinjaRouter(tags=["Health"])
+
+
+@health_router.get("/health", response=dict)
+def health_check(request):
+    """Health check endpoint — verifies Sattabase connectivity and database.
+
+    Returns:
+        - status: "healthy" or "degraded"
+        - sattabase: connectivity check result
+        - database: database connectivity check result
+    """
+    from api.middleware import check_sattabase_health
+
+    checks = {
+        "status": "healthy",
+        "sattabase": None,
+        "database": None,
+    }
+
+    # Check Sattabase connectivity
+    sattabase_result = check_sattabase_health()
+    checks["sattabase"] = sattabase_result
+    if not sattabase_result["sattabase_reachable"]:
+        checks["status"] = "degraded"
+
+    # Check database connectivity
+    try:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        checks["database"] = {"connected": True}
+    except Exception as exc:
+        checks["database"] = {"connected": False, "error": str(exc)}
+        checks["status"] = "degraded"
+
+    status_code = 200 if checks["status"] == "healthy" else 503
+    return JsonResponse(checks, status=status_code)
+
+
+api.add_router("", health_router)
+
+# ── Import all controllers so auto_discover picks them up ──────────────────
 
 # Foundation
 from api.controllers.institution_controller import InstitutionController  # noqa: E402, F401

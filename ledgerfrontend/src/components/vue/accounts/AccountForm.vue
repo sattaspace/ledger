@@ -70,7 +70,7 @@ const form = useCrudForm<AccountOut, AccountCreate, AccountUpdate>({
   buildCreatePayload: (formData) => ({
     name: formData.name as string,
     institution_id: formData.institution_id as number,
-    account_type: formData.institution_id as unknown as AccountType || "ASSET",
+    account_type: (formData.account_type as AccountType) || "ASSET",
     currency: (formData.currency as string) || undefined,
     current_balance: (formData.current_balance as string) || "0",
     credit_limit: (formData.credit_limit as string) || null,

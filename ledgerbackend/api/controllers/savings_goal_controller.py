@@ -8,7 +8,7 @@ from django.db import models as db_models
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import SavingsGoal, Transaction
+from api.models import Account, SavingsGoal, Transaction
 from api.schemas.goals import (
     SavingsContribution,
     SavingsContributionOut,
@@ -79,6 +79,8 @@ class SavingsGoalController(LedgerControllerBase):
         self.require_feature(request, "goals")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_goals", SavingsGoal.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — account must belong to this user
+        self.validate_fk_ownership(request, Account, payload.account_id)
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id", None)
         obj = SavingsGoal.objects.create(user_id=user_id, **data)
@@ -93,7 +95,9 @@ class SavingsGoalController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "goals")
         obj = self.get_or_404(SavingsGoal, user_id, goal_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "account_id": (Account, request),
+        })
         return obj
 
     # ── Contribute ────────────────────────────────────────────────────────

@@ -44,6 +44,15 @@ class Budget(UserOwnedModel):
         help_text="If True, unspent amount rolls over to next period.",
     )
 
+    # ── Pending transaction inclusion ────────────────────────────────
+    include_pending = models.BooleanField(
+        default=False,
+        help_text=(
+            "If True, PENDING transactions are included in spent_amount. "
+            "Default is False (only CLEARED transactions count toward budget)."
+        ),
+    )
+
     class Meta:
         db_table = "budgets_budget"
         ordering = ["-start_date"]
@@ -56,12 +65,24 @@ class Budget(UserOwnedModel):
 
     @property
     def spent_amount(self):
-        """Calculate total spent in this budget period from transactions."""
+        """Calculate total spent in this budget period from transactions.
+
+        By default, only CLEARED transactions are counted. If
+        ``include_pending`` is True, PENDING transactions are also included,
+        giving users a "projected spending" view of their budget.
+        """
         from django.db.models import Sum
 
         from api.models_core import Transaction
 
         end_date = self._get_end_date()
+
+        # Determine which statuses to include
+        if self.include_pending:
+            statuses = ["CLEARED", "PENDING"]
+        else:
+            statuses = ["CLEARED"]
+
         return (
             Transaction.objects.filter(
                 user_id=self.user_id,
@@ -69,7 +90,7 @@ class Budget(UserOwnedModel):
                 transaction_type="EXPENSE",
                 date__gte=self.start_date,
                 date__lte=end_date,
-                status="CLEARED",
+                status__in=statuses,
                 is_deleted=False,
             ).aggregate(total=Sum("amount_base"))["total"]
             or Decimal("0")

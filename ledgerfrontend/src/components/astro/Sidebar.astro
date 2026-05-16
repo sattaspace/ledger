@@ -148,6 +148,7 @@ const navSections: NavSection[] = [
         label: "Financial Calendar",
         href: "/dashboard/calendar",
         icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z",
+        feature: "bills",
       },
     ],
   },
@@ -334,6 +335,25 @@ const navSections: NavSection[] = [
   .dark .sidebar-scroll::-webkit-scrollbar-thumb {
     background: var(--color-navy-700);
   }
+
+  /* Feature-gated sidebar items: hidden by default to prevent flash, revealed after access check */
+  .sidebar-nav-item[data-feature] {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease-in;
+  }
+  .sidebar-nav-item[data-feature].feature-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .sidebar-nav-item[data-feature].feature-hidden {
+    opacity: 0;
+    pointer-events: none;
+    height: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+  }
 </style>
 
 <script>
@@ -464,7 +484,11 @@ const navSections: NavSection[] = [
           || (typeof value === 'string' && value !== '' && value !== 'false' && value !== '0');
       }
 
-      item.style.display = hasAccess ? '' : 'none';
+      item.classList.remove('feature-hidden');
+      item.classList.toggle('feature-visible', hasAccess);
+      if (!hasAccess) {
+        item.classList.add('feature-hidden');
+      }
     });
 
     // ── Hide section headers when all items are hidden ──
@@ -472,7 +496,7 @@ const navSections: NavSection[] = [
     sections.forEach((section) => {
       const items = section.querySelectorAll<HTMLElement>('.sidebar-nav-item');
       const visibleItems = Array.from(items).filter(
-        (item) => item.style.display !== 'none'
+        (item) => !item.classList.contains('feature-hidden')
       );
 
       if (items.length > 0 && visibleItems.length === 0) {

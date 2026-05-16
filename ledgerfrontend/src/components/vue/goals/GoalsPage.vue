@@ -30,6 +30,7 @@ import {
   FilterBar,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { FilterConfig } from "@/components/vue";
 import {
@@ -43,7 +44,9 @@ import { useAccountStore } from "@/stores/account";
 import type {
   SavingsGoalOut,
   SavingsGoalFilter,
+  SavingsGoalContributionOut,
 } from "@/lib/ledgerTypes";
+import { ledgerApi } from "@/lib/ledgerApi";
 import SavingsGoalForm from "./SavingsGoalForm.vue";
 import GoalContribute from "./GoalContribute.vue";
 
@@ -323,6 +326,33 @@ function onDeactivateClick(event: Event, item: SavingsGoalOut) {
   activator.confirmDeactivate(item);
 }
 
+// ─── Contribution History ────────────────────────────────────────────────────
+
+const showHistory = ref<number | null>(null);
+const contributions = ref<SavingsGoalContributionOut[]>([]);
+const contributionsLoading = ref(false);
+const contributionsError = ref<string | null>(null);
+
+async function toggleHistory(goalId: number) {
+  if (showHistory.value === goalId) {
+    showHistory.value = null;
+    contributions.value = [];
+    return;
+  }
+  showHistory.value = goalId;
+  contributions.value = [];
+  contributionsError.value = null;
+  contributionsLoading.value = true;
+  try {
+    const result = await ledgerApi.savingsGoals.contributions(goalId, { limit: 10 });
+    contributions.value = result.items;
+  } catch {
+    contributionsError.value = "Failed to load contribution history";
+  } finally {
+    contributionsLoading.value = false;
+  }
+}
+
 // ─── Computed ────────────────────────────────────────────────────────────────
 
 const isLoading = computed(() => store.loading || filtersLoading.value);
@@ -340,12 +370,15 @@ const hasItems = computed(() => store.items.length > 0);
           Track your progress toward financial milestones
         </p>
       </div>
-      <button class="btn-primary" @click="openCreateForm">
-        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
-        </svg>
-        Add Goal
-      </button>
+      <div class="flex items-center gap-3">
+        <button class="btn-primary" @click="openCreateForm">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          Add Goal
+        </button>
+        <PlanLimitBadge max-key="max_goals" feature-key="goals" :current="store.items.length" />
+      </div>
     </div>
 
     <!-- ── Summary Bar ────────────────────────────────────────────────────── -->
@@ -572,6 +605,20 @@ const hasItems = computed(() => store.items.length > 0);
             </svg>
           </button>
 
+          <!-- History -->
+          <button
+            class="btn-ghost px-2 py-1.5 text-xs rounded-md hover:bg-cyan-50 dark:hover:bg-navy-800 text-slate-custom-600 dark:text-slate-custom-400 hover:text-cyan-700 dark:hover:text-cyan-400 transition-colors"
+            :class="{ 'bg-cyan-50 dark:bg-navy-800 text-cyan-700 dark:text-cyan-400': showHistory === (goal as SavingsGoalOut).id }"
+            title="View contribution history"
+            :aria-label="`View history for ${(goal as SavingsGoalOut).name}`"
+            :aria-expanded="showHistory === (goal as SavingsGoalOut).id"
+            @click.stop="toggleHistory((goal as SavingsGoalOut).id)"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+            </svg>
+          </button>
+
           <!-- Edit -->
           <button
             class="btn-ghost px-2 py-1.5 text-xs rounded-md hover:bg-cyan-50 dark:hover:bg-navy-800 text-slate-custom-600 dark:text-slate-custom-400 hover:text-cyan-700 dark:hover:text-cyan-400 transition-colors"
@@ -631,6 +678,39 @@ const hasItems = computed(() => store.items.length > 0);
               <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
             </svg>
           </button>
+        </div>
+
+        <!-- Contribution History -->
+        <div
+          v-if="showHistory === (goal as SavingsGoalOut).id"
+          class="mt-3 pt-3 border-t border-navy-100 dark:border-navy-800"
+        >
+          <p class="text-xs font-semibold text-navy-900 dark:text-navy-100 mb-2">Contribution History</p>
+          <!-- Loading -->
+          <div v-if="contributionsLoading" class="space-y-2">
+            <div class="h-4 bg-navy-100 dark:bg-navy-800 rounded animate-pulse w-3/4" />
+            <div class="h-4 bg-navy-100 dark:bg-navy-800 rounded animate-pulse w-1/2" />
+          </div>
+          <!-- Error -->
+          <p v-else-if="contributionsError" class="text-xs text-debit">{{ contributionsError }}</p>
+          <!-- Empty -->
+          <p v-else-if="contributions.length === 0" class="text-xs text-slate-custom-500 dark:text-slate-custom-400">No contributions yet</p>
+          <!-- List -->
+          <ul v-else class="space-y-2">
+            <li
+              v-for="c in contributions"
+              :key="c.id"
+              class="flex items-center justify-between text-xs"
+            >
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-slate-custom-500 dark:text-slate-custom-400 flex-shrink-0">{{ formatDate(c.contributed_at) }}</span>
+                <span v-if="c.notes" class="text-slate-custom-600 dark:text-slate-custom-300 truncate" :title="c.notes">{{ c.notes }}</span>
+              </div>
+              <span class="font-medium text-credit flex-shrink-0 ml-2">
+                {{ formatCurrency(c.amount, c.currency || 'USD') }}
+              </span>
+            </li>
+          </ul>
         </div>
       </div>
     </div>

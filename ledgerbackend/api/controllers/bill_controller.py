@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Bill, BillPayment, Transaction
+from api.models import Account, Category, Bill, BillPayment, Transaction
 from api.schemas.bills import (
     BillCreate,
     BillFilter,
@@ -99,6 +99,9 @@ class BillController(LedgerControllerBase):
         self.require_feature(request, "bills")
         self.check_plan_limit(request, "max_bills",
                             Bill.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — account and category must belong to this user
+        self.validate_fk_ownership(request, Account, payload.account_id)
+        self.validate_fk_ownership(request, Category, payload.category_id)
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id", None)
         data["category_id"] = data.pop("category_id", None)
@@ -114,7 +117,10 @@ class BillController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "account_id": (Account, request),
+            "category_id": (Category, request),
+        })
         return obj
 
     # ── Generate Transaction ──────────────────────────────────────────────
@@ -220,6 +226,8 @@ class BillController(LedgerControllerBase):
         self.check_plan_limit(request, "max_bills",
                             BillPayment.objects.filter(user_id=user_id).count())
         bill = self.get_or_404(Bill, user_id, bill_id)
+        # Validate FK ownership — transaction must belong to this user
+        self.validate_fk_ownership(request, Transaction, payload.transaction_id)
         data = payload.model_dump()
         data.pop("bill_id", None)  # Use URL param
         data["transaction_id"] = data.pop("transaction_id", None)

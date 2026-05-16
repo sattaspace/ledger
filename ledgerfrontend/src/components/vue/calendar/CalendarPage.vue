@@ -12,6 +12,7 @@ import { ledgerApi } from "@/lib/ledgerApi";
 import { useToast } from "@/composables/useToast";
 import { getUserTimezone } from "@/lib/timezone";
 import { formatCurrency, getBaseCurrency } from "@/lib/currency";
+import { FeatureGate, UpgradePrompt } from "@/components/vue";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -231,6 +232,30 @@ async function fetchCalendarEvents(): Promise<void> {
       }
     } catch { /* skip */ }
 
+    // Fetch debt payment due dates
+    try {
+      const debtResponse = await ledgerApi.debts.list({ limit: 100, is_active: true });
+      for (const debt of debtResponse.results) {
+        if (debt.payment_day) {
+          // Generate a debt payment event for the current month
+          const year = currentYear.value;
+          const month = currentMonth.value;
+          const dayStr = String(Math.min(debt.payment_day, new Date(year, month + 1, 0).getDate())).padStart(2, "0");
+          const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${dayStr}`;
+          events.value.push({
+            id: `debt-${debt.id}`,
+            type: "debt",
+            title: debt.entity_name || debt.debt_type,
+            date: dateStr,
+            amount: debt.monthly_payment ? parseFloat(debt.monthly_payment) : undefined,
+            currency: debt.currency,
+            link: `/dashboard/debts/${debt.id}`,
+            color: getTypeColor("debt"),
+          });
+        }
+      }
+    } catch { /* skip */ }
+
   } catch (err) {
     console.error("Failed to fetch calendar events:", err);
     toast.error("Failed to load calendar events");
@@ -248,6 +273,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <FeatureGate feature="bills" show-fallback>
   <div>
     <!-- Header -->
     <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -392,4 +418,8 @@ onMounted(() => {
       </div>
     </div>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="bills" />
+  </template>
+  </FeatureGate>
 </template>

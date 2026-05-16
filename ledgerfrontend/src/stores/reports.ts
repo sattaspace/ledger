@@ -128,6 +128,10 @@ export const useReportsStore = defineStore("reports", {
     holdings: [] as HoldingOut[],
     accounts: [] as AccountOut[],
 
+    // ── Transaction-to-tag associations (fetched during report load) ──
+    transactionTagMap: {} as Record<number, number[]>,
+    tagFetchComplete: false,
+
     // ── Date range filter ──
     dateFrom: "" as string,
     dateTo: "" as string,
@@ -297,16 +301,14 @@ export const useReportsStore = defineStore("reports", {
 
     // ── 6. Tag Spending ──
 
-    /** Expense spending grouped by tag. NOTE: tags are on transaction-tag relation,
-     *  not directly on TransactionOut. Since the transaction list doesn't include
-     *  tag_ids, we use category-based grouping as primary and provide tag spending
-     *  as a secondary view using the tags dropdown + total categories as proxy. */
+    /** Expense spending grouped by tag. Uses batch-fetched transaction-tag
+     *  associations from fetchTransactionTags() for accurate aggregation.
+     *  Transactions without tag associations are excluded from tag totals. */
     tagSpending(): TagSpending[] {
-      // Since transactions don't carry tag_ids in the list response,
-      // we provide a simplified view using categories mapped to expense totals.
-      // In a production app, a dedicated API endpoint for tag-based spending would be needed.
       const tagMap = new Map<number, TagSpending>();
+      const tagLookup = new Map(this.tags.map((t) => [t.id, t]));
 
+      // Initialize entries for all active tags
       for (const tag of this.tags) {
         if (tag.is_deleted) continue;
         tagMap.set(tag.id, {
@@ -318,20 +320,18 @@ export const useReportsStore = defineStore("reports", {
         });
       }
 
-      // Distribute total expenses equally across tags as a placeholder
-      // This would need a proper backend endpoint for accurate data
-      const totalExpense = this.totalExpenses;
-      const activeTags = this.tags.filter((t) => !t.is_deleted);
-      if (activeTags.length > 0 && totalExpense > 0) {
-        const perTag = totalExpense / activeTags.length;
-        for (const tag of activeTags) {
-          const entry = tagMap.get(tag.id);
+      // Aggregate spending using real transaction-tag associations
+      for (const txn of this.transactions) {
+        if (txn.is_deleted || txn.transaction_type === "TRANSFER") continue;
+        const tagIds = this.transactionTagMap[txn.id];
+        if (!tagIds || tagIds.length === 0) continue;
+
+        const amount = parseFloat(txn.amount_base || txn.amount_original || "0");
+        for (const tagId of tagIds) {
+          const entry = tagMap.get(tagId);
           if (entry) {
-            entry.amount = Math.round(perTag * 100) / 100;
-            entry.transactionCount = Math.ceil(
-              this.transactions.filter((t) => !t.is_deleted && t.transaction_type === "EXPENSE")
-                .length / activeTags.length,
-            );
+            entry.amount += amount;
+            entry.transactionCount += 1;
           }
         }
       }
@@ -478,6 +478,10 @@ export const useReportsStore = defineStore("reports", {
             ? (accountRes.value as { items: AccountOut[] }).items || []
             : [];
 
+        // Batch-fetch transaction-tag associations for expense/refund transactions
+        // This enables accurate tag-based spending reports instead of placeholder data
+        await this.fetchTransactionTags();
+
         // Fetch holdings for each investment account
         if (this.investments.length > 0) {
           const holdingsResults = await Promise.allSettled(
@@ -511,6 +515,58 @@ export const useReportsStore = defineStore("reports", {
     },
 
     /**
+     * Batch-fetch transaction-tag associations for expense transactions.
+     *
+     * Uses concurrent batching (10 at a time) to avoid overwhelming the API.
+     * Caps at 500 expense transactions to keep response times reasonable;
+     * for datasets larger than 500, a dedicated backend aggregation endpoint
+     * would be the proper solution.
+     */
+    async fetchTransactionTags(): Promise<void> {
+      this.transactionTagMap = {};
+      this.tagFetchComplete = false;
+
+      const expenseTxns = this.transactions.filter(
+        (t) => !t.is_deleted && t.transaction_type !== "TRANSFER",
+      );
+
+      // Cap the number of transactions we fetch tags for to keep things performant
+      const MAX_TAG_FETCH = 500;
+      const txnsToFetch = expenseTxns.slice(0, MAX_TAG_FETCH);
+
+      if (txnsToFetch.length === 0) {
+        this.tagFetchComplete = true;
+        return;
+      }
+
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < txnsToFetch.length; i += BATCH_SIZE) {
+        const batch = txnsToFetch.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map(async (txn) => {
+            try {
+              const txTags = await ledgerApi.transactionTags.list(txn.id);
+              return { txnId: txn.id, tagIds: txTags.map((t) => t.tag_id) };
+            } catch {
+              return { txnId: txn.id, tagIds: [] as number[] };
+            }
+          }),
+        );
+
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            const { txnId, tagIds } = result.value;
+            if (tagIds.length > 0) {
+              this.transactionTagMap[txnId] = tagIds;
+            }
+          }
+        }
+      }
+
+      this.tagFetchComplete = true;
+    },
+
+    /**
      * Reset all report state.
      */
     $resetReports(): void {
@@ -528,6 +584,8 @@ export const useReportsStore = defineStore("reports", {
       this.investmentSummary = null;
       this.holdings = [];
       this.accounts = [];
+      this.transactionTagMap = {};
+      this.tagFetchComplete = false;
       this.dateFrom = "";
       this.dateTo = "";
       this.lastFetched = null;

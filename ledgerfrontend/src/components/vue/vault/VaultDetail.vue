@@ -20,6 +20,8 @@ import {
   TypeBadge,
   LoadingSkeleton,
   FormErrors,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import {
   useSoftDelete,
@@ -254,6 +256,7 @@ function downloadFile() {
 </script>
 
 <template>
+  <FeatureGate feature="vault" show-fallback>
   <div class="space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="isLoading" type="detail" />
@@ -661,4 +664,8 @@ function downloadFile() {
       />
     </template>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="vault" />
+  </template>
+  </FeatureGate>
 </template>

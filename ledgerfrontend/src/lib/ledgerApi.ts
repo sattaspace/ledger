@@ -978,8 +978,8 @@ export const budgets = {
 /** Investments — `/investments` */
 export const investments = {
   /** List all investment accounts. */
-  list(): Promise<PaginatedResponse<InvestmentAccountOut>> {
-    return ledgerGet("/investments");
+  list(filters?: PaginationIn): Promise<PaginatedResponse<InvestmentAccountOut>> {
+    return ledgerGet("/investments", filterToParams(filters));
   },
 
   /** Get portfolio-wide summary. */

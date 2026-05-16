@@ -47,6 +47,7 @@ const canAccess = computed(() => hasAccess(props.feature).value)
 const limitReached = computed(() => {
   if (props.limit === undefined || props.current === undefined) return false
   const maxAllowed = getLimit(props.feature, props.limit).value
+  if (maxAllowed === 0) return false  // 0 = unlimited, never "reached"
   return props.current >= maxAllowed
 })
 </script>

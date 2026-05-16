@@ -26,6 +26,7 @@ import {
   FilterBar,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { DataTableColumn, FilterConfig } from "@/components/vue";
 import {
@@ -260,12 +261,15 @@ const isLoading = computed(() => store.loading);
           Organize your income and expense categories
         </p>
       </div>
-      <button class="btn-primary" @click="openCreateModal">
-        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
-        </svg>
-        Add Category
-      </button>
+      <div class="flex items-center gap-3">
+        <button class="btn-primary" @click="openCreateModal">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          Add Category
+        </button>
+        <PlanLimitBadge max-key="max_categories" feature-key="categories" :current="store.items.length" />
+      </div>
     </div>
 
     <!-- ─── View Toggle + Filters ────────────────────────────────────── -->

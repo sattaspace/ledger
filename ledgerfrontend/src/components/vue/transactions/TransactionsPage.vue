@@ -30,6 +30,7 @@ import {
   TagChips,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { DataTableColumn, SortChangePayload, TagItem } from "@/components/vue";
 
@@ -45,6 +46,8 @@ import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
 
+import { useAccess } from "@/composables/useAccess";
+import { ledgerApi } from "@/lib/ledgerApi";
 import { formatCurrency, getBaseCurrency } from "@/lib/currency";
 import { formatDateShort } from "@/lib/timezone";
 
@@ -67,6 +70,11 @@ const tagStore = useTagStore();
 // ─── Dropdown Loader ─────────────────────────────────────────────────────────
 
 const dropdownLoader = useDropdownLoader();
+
+// ─── Data Retention ──────────────────────────────────────────────────────────
+
+const { getLimit } = useAccess();
+const dataRetentionDays = getLimit("data_retention_days");
 
 // ─── Filters ─────────────────────────────────────────────────────────────────
 
@@ -253,20 +261,40 @@ function getCategoryName(categoryId: number | null): string {
 
 // ─── Tag Lookup ──────────────────────────────────────────────────────────────
 
-// We store a local map of transaction ID → tags for the current page
+// Batch-fetch tags for visible transactions after list load.
+// Uses ledgerApi.transactionTags.list() per transaction with concurrency limit
+// to avoid N+1 waterfall. Results are cached in transactionTagMap.
 const transactionTagMap = ref<Record<number, TagItem[]>>({});
 
 async function loadTagsForTransactions() {
   const tagDropdown = dropdownLoader.getDropdown<{ id: number; name: string; color?: string }>("tags");
-  // Tags are loaded from the tag store's bulk fetch
-  // For the list view, we'll use whatever tag data the store provides
-  // In practice, we'd need the backend to include tags in list responses
-  // or make parallel requests. For now, we show tag chips from the store.
-  for (const tx of transactionStore.items) {
-    if (!transactionTagMap.value[tx.id]) {
-      // Tags would typically come from the transaction list API or a separate call
-      // For now, initialize empty — tags will be shown in detail view
-      transactionTagMap.value[tx.id] = [];
+  const tagLookup = new Map(tagDropdown.map((t) => [t.id, t]));
+
+  // Batch-fetch tags with concurrency of 5 to avoid overwhelming the API
+  const BATCH_SIZE = 5;
+  const items = transactionStore.items;
+
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const batch = items.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (tx) => {
+        try {
+          const txTags = await ledgerApi.transactionTags.list(tx.id);
+          return { txId: tx.id, tags: txTags };
+        } catch {
+          return { txId: tx.id, tags: [] };
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        const { txId, tags } = result.value;
+        transactionTagMap.value[txId] = tags
+          .map((t) => tagLookup.get(t.tag_id))
+          .filter((t): t is { id: number; name: string; color?: string } => !!t)
+          .map((t) => ({ id: t.id, name: t.name, color: t.color }));
+      }
     }
   }
 }
@@ -363,8 +391,18 @@ function handlePageChange(page: number) {
 }
 
 function handleSortChange(payload: SortChangePayload) {
-  // Sort is typically handled server-side; for now, we update local state
-  // and could pass sort params to the API
+  // Server-side sorting: map column key to Django ordering parameter
+  const sortKeyMap: Record<string, string> = {
+    date: "date",
+    payee: "payee",
+    amount_original: "amount_original",
+  };
+  const orderingField = sortKeyMap[payload.key];
+  if (!orderingField) return;
+  const ordering = payload.direction === "desc" ? `-${orderingField}` : orderingField;
+  setFilter("ordering" as keyof TransactionFilter, ordering as unknown as TransactionFilter[keyof TransactionFilter]);
+  setFilter("offset", 0);
+  applyFilters();
 }
 
 function handleRowClick(row: Record<string, unknown>) {
@@ -433,6 +471,9 @@ onMounted(async () => {
   // Load category tree for the filter CategoryTreeSelect
   await categoryStore.fetchTree();
   categoryTree.value = categoryStore.tree;
+
+  // Fetch tags for visible transactions after initial list load
+  await loadTagsForTransactions();
 });
 </script>
 
@@ -460,7 +501,22 @@ onMounted(async () => {
           </svg>
           Add Transaction
         </button>
+        <PlanLimitBadge max-key="max_transactions" feature-key="transactions" :current="transactionStore.items.length" />
       </div>
+    </div>
+
+    <!-- Data Retention Notice -->
+    <div
+      v-if="dataRetentionDays > 0"
+      class="flex items-center gap-2 rounded-lg bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800 px-4 py-2.5 mb-4"
+    >
+      <svg class="h-4 w-4 text-cyan-600 dark:text-cyan-400 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+      </svg>
+      <p class="text-sm text-cyan-800 dark:text-cyan-300">
+        Showing transactions from the last {{ dataRetentionDays }} days.
+        <a href="/dashboard/upgrade" class="font-medium underline hover:text-cyan-900 dark:hover:text-cyan-100">Upgrade for full history</a>.
+      </p>
     </div>
 
     <!-- Advanced Filter Bar -->

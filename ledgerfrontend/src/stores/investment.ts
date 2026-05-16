@@ -13,7 +13,13 @@
  */
 
 import { defineStore } from "pinia";
-import { crudState, crudGetters, crudActions, extractErrorMessage } from "./base";
+import {
+  crudState,
+  crudGetters,
+  crudActions,
+  extractErrorMessage,
+  extractFieldErrors,
+} from "./base";
 import { ledgerApi } from "@/lib/ledgerApi";
 import type {
   InvestmentAccountOut,
@@ -67,7 +73,7 @@ export const useInvestmentStore = defineStore("investment", {
     >({
       storeId: "investment",
       api: {
-        list: (filters?) => ledgerApi.investments.list(),
+        list: (filters?) => ledgerApi.investments.list(filters),
         get: (id) => ledgerApi.investments.get(id),
         create: (data) => ledgerApi.investments.create(data),
         update: (id, data) => ledgerApi.investments.update(id, data),
@@ -135,7 +141,7 @@ export const useInvestmentStore = defineStore("investment", {
         return result;
       } catch (err: unknown) {
         this.error = extractErrorMessage(err);
-        this.fieldErrors = extractErrorMessage(err) as any;
+        this.fieldErrors = extractFieldErrors(err);
         throw err;
       } finally {
         this.loadingAction = "";

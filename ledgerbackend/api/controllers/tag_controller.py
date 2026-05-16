@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Tag, TransactionTag
+from api.models import Tag, Transaction, TransactionTag
 from api.schemas.categories import (
     TagCreate,
     TagFilter,
@@ -123,6 +123,9 @@ class TransactionTagController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "tags")
         self.require_subscription_active(request)
+        # Validate FK ownership — transaction and tag must belong to this user
+        self.get_or_404(Transaction, user_id, transaction_id)
+        self.validate_fk_ownership(request, Tag, payload.tag_id)
         obj = TransactionTag.objects.create(
             user_id=user_id,
             transaction_id=transaction_id,
@@ -148,6 +151,11 @@ class TransactionTagController(LedgerControllerBase):
         # Check per-transaction tag limit
         self.check_plan_limit(request, "max_tags",
                             TransactionTag.objects.filter(user_id=user_id, transaction_id=transaction_id).count())
+        # Validate FK ownership — transaction must belong to this user
+        self.get_or_404(Transaction, user_id, transaction_id)
+        # Validate each tag belongs to this user
+        for tag_id in payload.tag_ids:
+            self.validate_fk_ownership(request, Tag, tag_id)
         # Remove existing tags
         TransactionTag.objects.filter(
             user_id=user_id,

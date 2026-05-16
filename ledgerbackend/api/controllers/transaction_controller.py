@@ -15,7 +15,7 @@ from django.db import transaction as db_transaction
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Account, Transaction, TransactionSplit
+from api.models import Account, Card, Category, Bill, Transaction, TransactionSplit
 from api.schemas.core import (
     TransactionCreate,
     TransactionFilter,
@@ -30,7 +30,7 @@ from api.schemas.core import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
-from .base import LedgerControllerBase
+from .base import LedgerControllerBase, FkOwnershipError
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,13 @@ class TransactionController(LedgerControllerBase):
         self.require_feature(request, "transactions")
         self.check_plan_limit(request, "max_transactions",
                             Transaction.objects.filter(user_id=user_id).count())
+        # Validate all FK ownership — every referenced object must belong to this user
+        account = self.validate_fk_ownership(request, Account, payload.account_id)
+        if account is None:
+            raise FkOwnershipError("Account", payload.account_id)
+        self.validate_fk_ownership(request, Card, payload.card_id)
+        self.validate_fk_ownership(request, Category, payload.category_id)
+        self.validate_fk_ownership(request, Bill, payload.bill_id)
         data = payload.model_dump()
         data["account_id"] = data.pop("account_id")
         data["card_id"] = data.pop("card_id", None)
@@ -167,7 +174,12 @@ class TransactionController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "transactions")
         obj = self.get_or_404(Transaction, user_id, transaction_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "account_id": (Account, request),
+            "card_id": (Card, request),
+            "category_id": (Category, request),
+            "bill_id": (Bill, request),
+        })
         return obj
 
     # ── Transfer ──────────────────────────────────────────────────────────
@@ -292,6 +304,8 @@ class TransactionController(LedgerControllerBase):
         self.check_plan_limit(request, "max_transactions",
                             TransactionSplit.objects.filter(user_id=user_id).count())
         txn = self.get_or_404(Transaction, user_id, transaction_id)
+        # Validate FK ownership
+        self.validate_fk_ownership(request, Category, payload.category_id)
         data = payload.model_dump()
         data.pop("transaction_id", None)  # Use the URL param instead
         obj = TransactionSplit.objects.create(

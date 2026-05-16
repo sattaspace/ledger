@@ -24,6 +24,8 @@ import {
   FormErrors,
   CategoryTreeSelect,
   LoadingSkeleton,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { TagItem } from "@/components/vue";
 
@@ -248,6 +250,7 @@ onMounted(async () => {
 </script>
 
 <template>
+  <FeatureGate feature="transactions" show-fallback>
   <div class="ldgr-transaction-detail space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="loading" type="detail" />
@@ -607,6 +610,10 @@ onMounted(async () => {
       @cancel="deleter.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="transactions" />
+  </template>
+  </FeatureGate>
 </template>
 
 <script lang="ts">

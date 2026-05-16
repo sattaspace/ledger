@@ -33,10 +33,6 @@ from api.schemas.common import (  # noqa: F401
     DateRangeFilter,
     AmountRangeFilter,
     CurrencyFilter,
-    # Legacy test schemas
-    TestNoteCreate,
-    TestNoteUpdate,
-    TestNoteOut,
 )
 
 # ── Core ─────────────────────────────────────────────────────────────────────

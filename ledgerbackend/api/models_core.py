@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.contrib.contenttypes.fields import GenericRelation
 
 from common.models import UserOwnedModel
 
@@ -134,6 +135,12 @@ class Account(UserOwnedModel):
     color = models.CharField(max_length=7, blank=True, help_text="Hex color for UI")
     notes = models.TextField(blank=True)
     sort_order = models.IntegerField(default=0, help_text="Manual sort order in UI")
+
+    # ── Generic relation for DocumentVault ────────────────────────────
+    documents = GenericRelation(
+        "api.DocumentVault",
+        related_query_name="account",
+    )
 
     class Meta:
         db_table = "core_account"
@@ -329,6 +336,12 @@ class Transaction(UserOwnedModel):
         help_text="If this transaction was auto-generated from a recurring bill.",
     )
 
+    # ── Generic relation for DocumentVault ────────────────────────────
+    documents = GenericRelation(
+        "api.DocumentVault",
+        related_query_name="transaction",
+    )
+
     class Meta:
         db_table = "core_transaction"
         ordering = ["-date", "-created_at"]
@@ -355,21 +368,61 @@ class Transaction(UserOwnedModel):
         )
 
     def save(self, *args, **kwargs):
-        """Auto-convert currency on creation if amount_base not set."""
+        """Auto-convert currency on creation if amount_base not set,
+        and trigger account balance recalculation after save."""
         if not self.pk and self.amount_base == Decimal("0"):
             self._convert_to_base_currency()
         super().save(*args, **kwargs)
+        # Recalculate the linked account's balance after every save.
+        # For bulk operations, consider using the explicit
+        # /accounts/{id}/recalculate-balance endpoint or a Celery task.
+        if self.account_id:
+            try:
+                account = Account.objects.get(id=self.account_id)
+                account.recalculate_balance()
+            except Account.DoesNotExist:
+                pass
+
+    def soft_delete(self):
+        """Soft-delete and recalculate account balance."""
+        super().soft_delete()
+        if self.account_id:
+            try:
+                account = Account.objects.get(id=self.account_id)
+                account.recalculate_balance()
+            except Account.DoesNotExist:
+                pass
+
+    def restore(self):
+        """Restore and recalculate account balance."""
+        super().restore()
+        if self.account_id:
+            try:
+                account = Account.objects.get(id=self.account_id)
+                account.recalculate_balance()
+            except Account.DoesNotExist:
+                pass
 
     def _convert_to_base_currency(self):
         """Convert amount_original to user's base currency using current rates.
 
-        Uses the base backend's exchange rate service (cached in Redis).
-        If conversion fails, falls back to 1:1 (same-currency assumption).
+        The user's base currency is determined from the linked Account's
+        currency field. If the transaction currency differs from the account
+        currency, conversion is performed using the base backend's exchange
+        rate service (cached in Redis via api/currency.py).
+
+        If conversion fails (e.g., rate not available), falls back to 1:1
+        (same-currency assumption) and logs a warning.
         """
         from api.currency import convert_amount
 
+        # Determine base currency from the linked account
         base_currency = self.currency_original  # Default: same currency
-        # TODO: Get actual user base currency from request context or user profile
+        if self.account_id:
+            try:
+                base_currency = Account.objects.get(id=self.account_id).currency
+            except Account.DoesNotExist:
+                pass
 
         if self.currency_original != base_currency:
             converted, rate = convert_amount(

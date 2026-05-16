@@ -7,6 +7,7 @@ a `debt_nature` field that distinguishes "money I borrowed" from "money I lent".
 from decimal import Decimal
 
 from django.db import models
+from django.contrib.contenttypes.fields import GenericRelation
 
 from common.models import UserOwnedModel
 
@@ -101,6 +102,12 @@ class DebtFacility(UserOwnedModel):
     )
 
     notes = models.TextField(blank=True)
+
+    # ── Generic relation for DocumentVault ────────────────────────────
+    documents = GenericRelation(
+        "api.DocumentVault",
+        related_query_name="debt_facility",
+    )
 
     class Meta:
         db_table = "debt_debt_facility"

@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Generic, TypeVar, Optional
 
 from ninja import Schema
+from pydantic import Field
 
 
 # =============================================================================
@@ -18,8 +19,8 @@ from ninja import Schema
 class PaginationIn(Schema):
     """Pagination parameters for list endpoints."""
 
-    limit: int = 50
-    offset: int = 0
+    limit: int = Field(default=50, le=200, description="Max items per page (capped at 200)")
+    offset: int = Field(default=0, ge=0, description="Number of items to skip")
 
 
 class PaginationOut(Schema):
@@ -131,27 +132,3 @@ class SoftDeleteAction(Schema):
     but this schema exists for OpenAPI documentation clarity."""
 
     pass
-
-
-# =============================================================================
-# TestNote schemas (migrated from old schemas.py)
-# =============================================================================
-
-
-class TestNoteCreate(Schema):
-    title: str
-    content: str = ""
-
-
-class TestNoteUpdate(Schema):
-    title: Optional[str] = None
-    content: Optional[str] = None
-
-
-class TestNoteOut(Schema):
-    id: int
-    user_id: int
-    title: str
-    content: str
-    created_at: datetime
-    updated_at: datetime

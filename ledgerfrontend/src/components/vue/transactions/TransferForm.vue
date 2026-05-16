@@ -8,6 +8,7 @@
  * Features:
  *   - From/To account selectors with validation (must be different)
  *   - Amount with currency selector
+ *   - Cross-currency support with exchange rate field and auto-conversion
  *   - Date, description, status fields
  *   - Auto-currency from "from" account
  *   - FormErrors display
@@ -28,6 +29,7 @@ import type {
   TransactionStatus,
   TransferCreate,
 } from "@/lib/ledgerTypes";
+import { formatCurrency, convertAmount } from "@/lib/currency";
 
 // ─── Emits ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +56,7 @@ const currency = ref("USD");
 const date = ref(today());
 const description = ref("");
 const status = ref<TransactionStatus>("PENDING");
+const exchangeRate = ref("1.000000");
 
 // ─── Error State ─────────────────────────────────────────────────────────────
 
@@ -86,6 +89,47 @@ const sameAccountError = computed(() => {
     return "From and To accounts must be different";
   }
   return "";
+});
+
+// ─── Cross-currency detection ─────────────────────────────────────────────────
+
+const fromAccount = computed(() => {
+  if (!fromAccountId.value) return null;
+  return accountStore.dropdown.find((a) => a.id === Number(fromAccountId.value)) ?? null;
+});
+
+const toAccount = computed(() => {
+  if (!toAccountId.value) return null;
+  return accountStore.dropdown.find((a) => a.id === Number(toAccountId.value)) ?? null;
+});
+
+const fromCurrency = computed(() => fromAccount.value?.currency ?? "");
+const toCurrency = computed(() => toAccount.value?.currency ?? "");
+
+const isCrossCurrency = computed(
+  () =>
+    !!(fromCurrency.value && toCurrency.value && fromCurrency.value !== toCurrency.value),
+);
+
+const convertedAmount = computed(() => {
+  if (!isCrossCurrency.value || !amount.value) return "";
+  const num = parseFloat(amount.value);
+  if (isNaN(num) || num <= 0) return "";
+  const rate = parseFloat(exchangeRate.value);
+  if (isNaN(rate) || rate <= 0) return "";
+  return (num * rate).toFixed(2);
+});
+
+// Auto-populate exchange rate from cached rates when accounts change
+watch([fromAccountId, toAccountId], () => {
+  if (isCrossCurrency.value) {
+    const cached = convertAmount(1, fromCurrency.value, toCurrency.value);
+    if (cached !== null) {
+      exchangeRate.value = cached.toFixed(6);
+    } else {
+      exchangeRate.value = "1.000000";
+    }
+  }
 });
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -135,6 +179,12 @@ async function handleSubmit() {
       description: description.value || null,
       status: status.value,
     };
+
+    // Include exchange rate data for cross-currency transfers
+    if (isCrossCurrency.value) {
+      payload.exchange_rate = exchangeRate.value;
+      payload.amount_base = convertedAmount.value;
+    }
 
     await transactionStore.createTransfer(payload);
     emit("saved");
@@ -258,6 +308,40 @@ onMounted(async () => {
           @update="(val: CurrencyInputValue) => { amount = val.amount; currency = val.currency; }"
         />
         <p v-if="fieldErrors.amount" class="mt-1 text-xs text-debit">{{ fieldErrors.amount[0] }}</p>
+      </div>
+
+      <!-- Cross-currency conversion -->
+      <div v-if="isCrossCurrency" class="rounded-lg border border-amber-300 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/20 p-4 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z" />
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd" />
+          </svg>
+          Currency Conversion: {{ fromCurrency }} → {{ toCurrency }}
+        </div>
+
+        <!-- Exchange Rate -->
+        <div>
+          <label class="label-text mb-1 block text-xs">
+            Exchange Rate (1 {{ fromCurrency }} = ? {{ toCurrency }})
+          </label>
+          <input
+            v-model="exchangeRate"
+            type="number"
+            step="0.000001"
+            min="0"
+            class="input-field w-full"
+            placeholder="1.000000"
+          />
+        </div>
+
+        <!-- Converted Amount Display -->
+        <div v-if="convertedAmount" class="flex items-center justify-between rounded-md bg-white/60 dark:bg-navy-800/60 px-3 py-2 text-sm">
+          <span class="text-slate-custom-600 dark:text-slate-custom-400">Destination amount:</span>
+          <span class="font-semibold text-credit">
+            {{ formatCurrency(convertedAmount, toCurrency) }}
+          </span>
+        </div>
       </div>
 
       <!-- Date -->

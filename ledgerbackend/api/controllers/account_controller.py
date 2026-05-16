@@ -18,7 +18,7 @@ from api.schemas.core import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
-from .base import LedgerControllerBase
+from .base import LedgerControllerBase, FkOwnershipError
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,10 @@ class AccountController(LedgerControllerBase):
         self.require_feature(request, "accounts")
         self.check_plan_limit(request, "max_accounts",
                             Account.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — institution must belong to this user
+        institution = self.validate_fk_ownership(request, Institution, payload.institution_id)
+        if institution is None:
+            raise FkOwnershipError("Institution", payload.institution_id)
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id")
         obj = Account.objects.create(user_id=user_id, **data)
@@ -77,7 +81,9 @@ class AccountController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "accounts")
         obj = self.get_or_404(Account, user_id, account_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "institution_id": (Institution, request),
+        })
         return obj
 
     # ── Balance Recalculation ─────────────────────────────────────────────

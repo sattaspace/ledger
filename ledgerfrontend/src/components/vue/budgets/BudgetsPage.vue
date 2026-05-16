@@ -21,10 +21,14 @@ import {
   ConfirmDialog,
   StatusBadge,
   TypeBadge,
+  SearchInput,
   EmptyState,
   LoadingSkeleton,
   FilterBar,
   ProgressBar,
+  FeatureGate,
+  UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import type { FilterConfig, TypeStyleMap } from "@/components/vue";
 import {
@@ -94,8 +98,19 @@ const {
 } = useLedgerFilters<BudgetFilter>({
   store: budgetStore,
   defaultFilters: { limit: 25, offset: 0 },
-  syncKeys: ["period", "currency", "category_id"],
+  syncKeys: ["period", "currency", "category_id", "search"],
 });
+
+// ─── Search ──────────────────────────────────────────────────────────────────
+
+const searchQuery = ref("");
+
+function handleSearch(query: string) {
+  searchQuery.value = query;
+  setFilter("search", query || null);
+  setFilter("offset", 0);
+  applyFilters();
+}
 
 // ─── Filter Config for FilterBar ─────────────────────────────────────────────
 
@@ -153,6 +168,7 @@ function handleFilterChange(key: string, value: unknown) {
 }
 
 function handleFilterReset() {
+  searchQuery.value = "";
   resetFilters();
 }
 
@@ -287,6 +303,7 @@ function onToggleActiveClick(event: Event, item: BudgetOut) {
 </script>
 
 <template>
+  <FeatureGate feature="budgets" show-fallback>
   <div class="space-y-6">
     <!-- Page Header -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -296,12 +313,15 @@ function onToggleActiveClick(event: Event, item: BudgetOut) {
           Track spending against your budget limits
         </p>
       </div>
-      <button class="btn-primary" @click="openCreateForm">
-        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
-        </svg>
-        Add Budget
-      </button>
+      <div class="flex items-center gap-3">
+        <button class="btn-primary" @click="openCreateForm">
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          Add Budget
+        </button>
+        <PlanLimitBadge max-key="max_budgets" feature-key="budgets" :current="budgetStore.items.length" />
+      </div>
     </div>
 
     <!-- Summary Stats Row -->
@@ -328,15 +348,22 @@ function onToggleActiveClick(event: Event, item: BudgetOut) {
       </div>
     </div>
 
-    <!-- Filters -->
-    <FilterBar
-      :filters="filterConfigs"
-      :model-value="{}"
-      :loading="filtersLoading"
-      @filter-change="handleFilterChange"
-      @reset="handleFilterReset"
-      @update:model-value="handleFilterModelUpdate"
-    />
+    <!-- Search + Filters -->
+    <div class="space-y-3">
+      <SearchInput
+        v-model="searchQuery"
+        placeholder="Search budgets by category name..."
+        @search="handleSearch"
+      />
+      <FilterBar
+        :filters="filterConfigs"
+        :model-value="{}"
+        :loading="filtersLoading"
+        @filter-change="handleFilterChange"
+        @reset="handleFilterReset"
+        @update:model-value="handleFilterModelUpdate"
+      />
+    </div>
 
     <!-- Loading State -->
     <LoadingSkeleton v-if="budgetStore.loading && !budgetStore.listLoaded" type="card" :rows="6" />
@@ -584,4 +611,8 @@ function onToggleActiveClick(event: Event, item: BudgetOut) {
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="budgets" />
+  </template>
+  </FeatureGate>
 </template>

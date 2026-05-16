@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import InsurancePolicy
+from api.models import Institution, InsurancePolicy
 from api.schemas.insurance import (
     InsurancePolicyCreate,
     InsurancePolicyFilter,
@@ -96,6 +96,8 @@ class InsuranceController(LedgerControllerBase):
         self.require_feature(request, "insurance")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_insurance", InsurancePolicy.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — institution must belong to this user
+        self.validate_fk_ownership(request, Institution, payload.institution_id)
         data = payload.model_dump()
         data["institution_id"] = data.pop("institution_id", None)
         obj = InsurancePolicy.objects.create(user_id=user_id, **data)
@@ -110,7 +112,9 @@ class InsuranceController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "institution_id": (Institution, request),
+        })
         return obj
 
     # ── Soft Delete / Restore ─────────────────────────────────────────────

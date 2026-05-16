@@ -9,6 +9,7 @@
  *   - Detail grid: Institution, currency, credit limit, interest rate,
  *     statement/due day, sort order
  *   - Available credit (for liability accounts)
+ *   - Recent transactions: Last 10 transactions for the account
  *   - Actions: Edit, Delete/Restore, Activate/Deactivate, Recalculate Balance
  *   - Back button to /dashboard/accounts
  */
@@ -20,13 +21,16 @@ import {
   StatusBadge,
   TypeBadge,
   LoadingSkeleton,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import { useSoftDelete, useActivator, useDropdownLoader } from "@/composables";
 import { useAccountStore } from "@/stores/account";
 import { useInstitutionStore } from "@/stores/institution";
+import { useTransactionStore } from "@/stores/transaction";
 import { formatCurrency, getBaseCurrency } from "@/lib/currency";
 import { formatDateTime } from "@/lib/timezone";
-import type { AccountOut } from "@/lib/ledgerTypes";
+import type { AccountOut, TransactionOut } from "@/lib/ledgerTypes";
 import AccountForm from "./AccountForm.vue";
 
 // ─── Props & Emits ───────────────────────────────────────────────────────────
@@ -43,6 +47,7 @@ const emit = defineEmits<{
 
 const accountStore = useAccountStore();
 const institutionStore = useInstitutionStore();
+const transactionStore = useTransactionStore();
 const dropdownLoader = useDropdownLoader();
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -53,6 +58,8 @@ const account = ref<AccountOut | null>(null);
 const showEditForm = ref(false);
 const recalculating = ref(false);
 const recalcResult = ref<{ old_balance: string; new_balance: string; detail: string } | null>(null);
+const recentTransactions = ref<TransactionOut[]>([]);
+const loadingRecentTx = ref(false);
 
 // ─── Soft Delete ─────────────────────────────────────────────────────────────
 
@@ -146,10 +153,26 @@ async function handleRecalculateBalance() {
 function handleEditSaved() {
   showEditForm.value = false;
   loadAccount();
+  loadRecentTransactions();
 }
 
 function handleEditCancel() {
   showEditForm.value = false;
+}
+
+// ─── Load Recent Transactions ────────────────────────────────────────────────
+
+async function loadRecentTransactions() {
+  if (!account.value) return;
+  loadingRecentTx.value = true;
+  try {
+    await transactionStore.fetchList({ account_id: account.value.id, limit: 10, offset: 0 });
+    recentTransactions.value = transactionStore.items.slice(0, 10);
+  } catch {
+    // Silently fail — recent transactions are supplementary
+  } finally {
+    loadingRecentTx.value = false;
+  }
 }
 
 // ─── Load Account ────────────────────────────────────────────────────────────
@@ -189,10 +212,14 @@ onMounted(async () => {
 
   // Load the account
   await loadAccount();
+
+  // Load recent transactions
+  await loadRecentTransactions();
 });
 </script>
 
 <template>
+  <FeatureGate feature="accounts" show-fallback>
   <div class="ldgr-account-detail space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="loading" type="detail" />
@@ -490,6 +517,61 @@ onMounted(async () => {
           </div>
         </dl>
       </div>
+
+      <!-- Recent Transactions -->
+      <div class="card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-navy-900 dark:text-navy-100">Recent Transactions</h2>
+          <a
+            :href="`/dashboard/transactions?account_id=${account.id}`"
+            class="text-sm text-cyan-600 dark:text-cyan-400 hover:text-cyan-700 dark:hover:text-cyan-300 font-medium"
+          >
+            View All →
+          </a>
+        </div>
+
+        <!-- Loading -->
+        <div v-if="loadingRecentTx" class="flex items-center justify-center py-8">
+          <svg class="h-6 w-6 animate-spin text-cyan-500" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+
+        <!-- Empty -->
+        <div v-else-if="recentTransactions.length === 0" class="py-6 text-center">
+          <p class="text-sm text-slate-custom-500 dark:text-slate-custom-400">No transactions yet for this account.</p>
+        </div>
+
+        <!-- Transaction List -->
+        <div v-else class="divide-y divide-navy-100 dark:divide-navy-800">
+          <a
+            v-for="tx in recentTransactions"
+            :key="tx.id"
+            :href="`/dashboard/transactions/${tx.id}`"
+            class="flex items-center gap-3 py-3 first:pt-0 last:pb-0 hover:bg-cyan-50/50 dark:hover:bg-navy-800/50 -mx-2 px-2 rounded-lg transition-colors"
+          >
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-navy-900 dark:text-navy-100 truncate">
+                {{ tx.payee || "Unnamed Transaction" }}
+              </p>
+              <p class="text-xs text-slate-custom-500 dark:text-slate-custom-400">
+                {{ tx.date }}
+              </p>
+            </div>
+            <div class="text-right flex-shrink-0">
+              <p
+                :class="[
+                  'text-sm font-semibold',
+                  tx.transaction_type === 'EXPENSE' ? 'text-debit' : tx.transaction_type === 'INCOME' ? 'text-credit' : 'text-navy-900 dark:text-navy-100'
+                ]"
+              >
+                {{ tx.transaction_type === 'EXPENSE' ? '-' : tx.transaction_type === 'INCOME' ? '+' : '' }}{{ formatCurrency(tx.amount_original, tx.currency_original, { displayMode: 'symbol' }) }}
+              </p>
+            </div>
+          </a>
+        </div>
+      </div>
     </template>
 
     <!-- Edit Account Modal -->
@@ -533,6 +615,10 @@ onMounted(async () => {
       @cancel="activator.cancel()"
     />
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="accounts" />
+  </template>
+  </FeatureGate>
 </template>
 
 <script lang="ts">

@@ -112,6 +112,8 @@ class InvoiceController(LedgerControllerBase):
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_invoices", Invoice.objects.filter(user_id=user_id).count())
         data = payload.model_dump()
+        # Validate FK ownership — transaction must belong to this user
+        self.validate_fk_ownership(request, Transaction, data.get("transaction_id"))
         data["transaction_id"] = data.pop("transaction_id", None)
         obj = Invoice.objects.create(user_id=user_id, **data)
         logger.info("Invoice created: id=%s user_id=%s number=%s", obj.id, user_id, obj.invoice_number)
@@ -125,7 +127,9 @@ class InvoiceController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "transaction_id": (Transaction, request),
+        })
         return obj
 
     # ── Mark Paid ─────────────────────────────────────────────────────────

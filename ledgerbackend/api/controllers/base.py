@@ -1,16 +1,19 @@
 """Base controller for all Ledger domain controllers.
 
 Provides:
-    - Auth helper: require_user_id() — extracts Sattabase user_id or 401
+    - Auth helper: require_user_id() — extracts Sattabase user_id, 401 or 503
+    - Auth helper: AuthServiceUnavailableError — 503 when auth service is down
     - Feature gate: require_feature() — checks access map for feature boolean
     - Subscription: require_subscription_active() — checks subscription status
     - Plan limit: check_plan_limit() — enforces numeric record limits
     - Retention: get_retention_cutoff() — returns date cutoff for data_retention_days
     - API access: require_api_access() — gates external API access
+    - FK ownership: validate_fk_ownership() — ensures FK targets belong to the user
     - Object lookup: get_or_404() — scoped by user_id, excludes soft-deleted
     - Object lookup: get_with_deleted_or_404() — includes soft-deleted (for restore)
     - Pagination: paginate() — consistent paginated list responses
     - Filter application: apply_filters() — common filter logic
+    - Update helper: update_object() — with protected field guard
 """
 
 import logging
@@ -57,12 +60,21 @@ class LedgerControllerBase(ControllerBase):
         return None
 
     def require_user_id(self, request) -> int:
-        """Extract user_id or return a 401 response.
+        """Extract user_id or return a 401/503 response.
 
         Use this at the top of every endpoint that requires authentication.
+
+        Returns 503 (AuthServiceUnavailableError) when the auth service is
+        unreachable — the user provided a token but we can't verify it.
+        Returns 401 (AuthRequiredError) when the user is not authenticated
+        (no token, invalid token, or expired token).
         """
         user_id = self.get_user_id(request)
         if user_id is None:
+            # Check if the auth service is unavailable (set by
+            # AuthServiceUnavailableMiddleware after the SDK middleware)
+            if getattr(request, "sattabase_auth_unavailable", False):
+                raise AuthServiceUnavailableError()
             raise AuthRequiredError()
         return user_id
 
@@ -267,25 +279,106 @@ class LedgerControllerBase(ControllerBase):
 
         return queryset, limit, offset
 
+    # ── FK ownership validation ────────────────────────────────────────────
+
+    # Fields that must NEVER be overwritten via update_object().
+    # Prevents a misconfigured schema from allowing a client to change
+    # user_id, id, or audit timestamps on an existing record.
+    PROTECTED_FIELDS = frozenset({
+        "user_id", "id", "created_at", "updated_at",
+        "deleted_at", "is_deleted", "activated_at",
+    })
+
+    def validate_fk_ownership(self, request, model_class: Type, fk_id: int | None):
+        """Validate that a FK target belongs to the current user, or raise 404.
+
+        Returns the resolved object if it exists and belongs to the user.
+        Returns None if fk_id is None (optional FK).
+        Raises Http404 if the object doesn't exist or belongs to another user.
+
+        Usage in create/update endpoints:
+            account = self.validate_fk_ownership(request, Account, payload.account_id)
+            category = self.validate_fk_ownership(request, Category, payload.category_id)
+        """
+        if fk_id is None:
+            return None
+        user_id = self.require_user_id(request)
+        return self.get_or_404(model_class, user_id, fk_id)
+
     # ── Update helper ─────────────────────────────────────────────────────
 
-    def update_object(self, obj, payload) -> None:
+    def update_object(self, obj, payload, *, fk_map: dict | None = None) -> None:
         """Apply update schema fields to an object (only provided fields).
 
         Handles FK field naming: institution_id in schema → institution_id on model.
+
+        Protected fields (user_id, id, created_at, etc.) are silently stripped
+        from the update data to prevent accidental or malicious overwrites.
+
+        Args:
+            obj: The model instance to update.
+            payload: The Pydantic schema with update fields.
+            fk_map: Optional dict mapping FK field names to (model_class, request)
+                    tuples for ownership validation.  Example:
+                        {
+                            "institution_id": (Institution, request),
+                            "account_id": (Account, request),
+                        }
+                    When provided, each non-None FK value is validated with
+                    validate_fk_ownership() before being applied.
         """
         update_data = payload.model_dump(exclude_unset=True)
+
+        # Strip protected fields — never allow client to overwrite these
+        for field in self.PROTECTED_FIELDS:
+            update_data.pop(field, None)
+
+        # Validate FK ownership if a mapping was provided
+        if fk_map:
+            for fk_field, (model_class, req) in fk_map.items():
+                fk_value = update_data.get(fk_field)
+                if fk_value is not None:
+                    # Will raise Http404 if the FK target doesn't belong to user
+                    self.validate_fk_ownership(req, model_class, fk_value)
+
         for field, value in update_data.items():
             setattr(obj, field, value)
         obj.save()
 
 
+class FkOwnershipError(Exception):
+    """Raised when a FK reference does not belong to the current user."""
+
+    def __init__(self, model_name: str, fk_id: int):
+        self.status_code = 400
+        self.detail = f"{model_name} with id={fk_id} not found or does not belong to you."
+        super().__init__(self.detail)
+
+
 class AuthRequiredError(Exception):
-    """Raised when Sattabase auth is required but not present."""
+    """Raised when Sattabase auth is required but not present (401)."""
 
     def __init__(self):
         self.status_code = 401
         self.detail = "Authentication required via Sattabase."
+        super().__init__(self.detail)
+
+
+class AuthServiceUnavailableError(Exception):
+    """Raised when the Sattabase auth service is unreachable (503).
+
+    This is distinct from AuthRequiredError (401). When the user provides
+    a valid-looking JWT but the base backend is down, we return 503 instead
+    of 401 so the client can distinguish between "not authenticated" and
+    "auth service temporarily unavailable".
+    """
+
+    def __init__(self):
+        self.status_code = 503
+        self.detail = (
+            "Authentication service is temporarily unavailable. "
+            "Please try again in a few moments."
+        )
         super().__init__(self.detail)
 
 

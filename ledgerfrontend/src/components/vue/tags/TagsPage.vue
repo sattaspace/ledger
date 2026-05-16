@@ -22,6 +22,7 @@ import {
   LoadingSkeleton,
   FeatureGate,
   UpgradePrompt,
+  PlanLimitBadge,
 } from "@/components/vue";
 import {
   useLedgerFilters,
@@ -191,6 +192,7 @@ onMounted(() => {
         >
           {{ tagCount }}
         </span>
+        <PlanLimitBadge max-key="max_tags" feature-key="tags" :current="store.items.length" />
       </div>
     </div>
 

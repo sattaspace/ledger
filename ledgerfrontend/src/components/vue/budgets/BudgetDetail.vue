@@ -24,6 +24,8 @@ import {
   LoadingSkeleton,
   FormErrors,
   ProgressBar,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { TypeStyleMap } from "@/components/vue";
 import {
@@ -220,6 +222,7 @@ const overviewFields = computed<DetailField[]>(() => {
 </script>
 
 <template>
+  <FeatureGate feature="budgets" show-fallback>
   <div class="space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="isLoading" type="detail" />
@@ -516,4 +519,8 @@ const overviewFields = computed<DetailField[]>(() => {
       />
     </template>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="budgets" />
+  </template>
+  </FeatureGate>
 </template>

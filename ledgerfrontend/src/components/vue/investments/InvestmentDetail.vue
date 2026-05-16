@@ -24,6 +24,8 @@ import {
   FormErrors,
   DataTable,
   Modal,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn } from "@/components/vue";
 import {
@@ -327,6 +329,7 @@ const holdingColumns: DataTableColumn[] = [
 </script>
 
 <template>
+  <FeatureGate feature="investments" show-fallback>
   <div class="space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="isLoading" type="detail" />
@@ -739,4 +742,8 @@ const holdingColumns: DataTableColumn[] = [
       />
     </template>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="investments" />
+  </template>
+  </FeatureGate>
 </template>

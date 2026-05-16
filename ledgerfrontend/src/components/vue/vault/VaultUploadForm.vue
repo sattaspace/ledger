@@ -28,9 +28,15 @@ const props = withDefaults(
   defineProps<{
     /** Whether the form is visible (parent controls visibility via Modal). */
     open?: boolean;
+    /** Django ContentType ID for linking the document to a parent entity (e.g. insurance policy). */
+    contentTypeId?: number | null;
+    /** ID of the parent entity to link this document to. */
+    objectId?: number | null;
   }>(),
   {
     open: false,
+    contentTypeId: null,
+    objectId: null,
   },
 );
 
@@ -164,8 +170,8 @@ async function handleSubmit() {
     formData.append("title", title.value.trim());
     formData.append("file_type", detectedFileType.value);
     formData.append("file_size", String(selectedFile.value.size));
-    formData.append("content_type_id", "0");
-    formData.append("object_id", "0");
+    formData.append("content_type_id", props.contentTypeId != null ? String(props.contentTypeId) : "0");
+    formData.append("object_id", props.objectId != null ? String(props.objectId) : "0");
 
     if (expiryDate.value) {
       formData.append("expiry_date", expiryDate.value);

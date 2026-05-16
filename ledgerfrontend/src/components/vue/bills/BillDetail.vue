@@ -22,6 +22,8 @@ import {
   FormErrors,
   DataTable,
   Modal,
+  FeatureGate,
+  UpgradePrompt,
 } from "@/components/vue";
 import type { DataTableColumn } from "@/components/vue";
 import {
@@ -393,6 +395,7 @@ function switchTab(tab: "overview" | "payments") {
 </script>
 
 <template>
+  <FeatureGate feature="bills" show-fallback>
   <div class="space-y-6">
     <!-- Loading State -->
     <LoadingSkeleton v-if="isLoading" type="detail" />
@@ -836,4 +839,8 @@ function switchTab(tab: "overview" | "payments") {
       />
     </template>
   </div>
+  <template #no-access>
+    <UpgradePrompt feature="bills" />
+  </template>
+  </FeatureGate>
 </template>

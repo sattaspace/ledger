@@ -3,7 +3,7 @@
  * BudgetForm — Create/edit form for Budget entities.
  *
  * Fields:
- *   category_id, amount, currency, period, start_date, allow_rollover
+ *   category_id, amount, currency, period, start_date, allow_rollover, is_active
  *
  * Uses useCrudForm composable for lifecycle management.
  * Uses CategoryTreeSelect for hierarchical category picking.
@@ -93,6 +93,7 @@ const form = useCrudForm<BudgetOut, BudgetCreate, BudgetUpdate>({
       period: entity.period ?? "MONTHLY",
       start_date: entity.start_date ?? getDefaultStartDate(),
       allow_rollover: entity.allow_rollover ?? false,
+      is_active: entity.is_active ?? true,
     };
   },
   buildCreatePayload(formData) {
@@ -118,6 +119,7 @@ const form = useCrudForm<BudgetOut, BudgetCreate, BudgetUpdate>({
     if ("period" in diff) diff.period = diff.period as BudgetPeriod;
     if ("start_date" in diff) diff.start_date = String(diff.start_date);
     if ("allow_rollover" in diff) diff.allow_rollover = diff.allow_rollover === true;
+    if ("is_active" in diff) diff.is_active = diff.is_active === true;
     return diff as BudgetUpdate;
   },
   onSuccess(item) {
@@ -158,6 +160,10 @@ function handlePeriodChange(event: Event) {
 
 function handleRolloverToggle() {
   form.setFieldValue("allow_rollover", !form.data.allow_rollover);
+}
+
+function handleActiveToggle() {
+  form.setFieldValue("is_active", !form.data.is_active);
 }
 </script>
 
@@ -268,6 +274,37 @@ function handleRolloverToggle() {
             </span>
             <span class="text-xs text-slate-custom-500 dark:text-slate-custom-400">
               Allow unused budget to roll over to next period
+            </span>
+          </div>
+        </div>
+
+        <!-- Active Status Toggle (edit mode only) -->
+        <div v-if="mode === 'edit'" class="flex items-start gap-3 py-2">
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="!!form.data.is_active"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-ring',
+              form.data.is_active
+                ? 'bg-cyan-600 dark:bg-cyan-500'
+                : 'bg-navy-200 dark:bg-navy-700',
+            ]"
+            @click="handleActiveToggle"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                form.data.is_active ? 'translate-x-5' : 'translate-x-0',
+              ]"
+            />
+          </button>
+          <div class="flex flex-col">
+            <span class="text-sm font-medium text-navy-900 dark:text-navy-100">
+              Active
+            </span>
+            <span class="text-xs text-slate-custom-500 dark:text-slate-custom-400">
+              Deactivate this budget to pause tracking
             </span>
           </div>
         </div>

@@ -5,7 +5,7 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Budget
+from api.models import Category, Budget
 from api.schemas.budgets import (
     BudgetCreate,
     BudgetFilter,
@@ -65,6 +65,11 @@ class BudgetController(LedgerControllerBase):
         self.require_feature(request, "budgets")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_budgets", Budget.objects.filter(user_id=user_id).count())
+        # Validate FK ownership — category must belong to this user
+        category = self.validate_fk_ownership(request, Category, payload.category_id)
+        if category is None:
+            from .base import FkOwnershipError
+            raise FkOwnershipError("Category", payload.category_id)
         data = payload.model_dump()
         data["category_id"] = data.pop("category_id")
         obj = Budget.objects.create(user_id=user_id, **data)
@@ -79,7 +84,9 @@ class BudgetController(LedgerControllerBase):
         user_id = self.require_user_id(request)
         self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
-        self.update_object(obj, payload)
+        self.update_object(obj, payload, fk_map={
+            "category_id": (Category, request),
+        })
         return obj
 
     # ── Soft Delete / Restore ─────────────────────────────────────────────
