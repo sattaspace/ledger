@@ -15,7 +15,7 @@ from django.db import transaction as db_transaction
 from ninja import Query
 from ninja_extra import api_controller, route
 
-from api.models import Account, Card, Category, Bill, Transaction, TransactionSplit
+from api.models import Account, Card, Category, Bill, Tag, Transaction, TransactionSplit, TransactionTag
 from api.schemas.core import (
     TransactionCreate,
     TransactionFilter,
@@ -63,6 +63,9 @@ class TransactionController(LedgerControllerBase):
         amount_min = filter_dict.pop("amount_min", None)
         amount_max = filter_dict.pop("amount_max", None)
 
+        # Tag filter — requires join on TransactionTag through table
+        tag_id = filter_dict.pop("tag_id", None)
+
         # Standard exact-match filters
         for field, value in filter_dict.items():
             if value is not None:
@@ -84,6 +87,15 @@ class TransactionController(LedgerControllerBase):
         cutoff = self.get_retention_cutoff(request)
         if cutoff:
             qs = qs.filter(date__gte=cutoff)
+
+        # Tag filter — join through TransactionTag table
+        if tag_id is not None:
+            # Validate the tag belongs to this user
+            self.validate_fk_ownership(request, Tag, tag_id)
+            qs = qs.filter(
+                tag_links__tag_id=tag_id,
+                tag_links__user_id=user_id,
+            ).distinct()
 
         # Search on payee and description
         if search:
@@ -306,6 +318,24 @@ class TransactionController(LedgerControllerBase):
         txn = self.get_or_404(Transaction, user_id, transaction_id)
         # Validate FK ownership
         self.validate_fk_ownership(request, Category, payload.category_id)
+
+        # ── Validate split total doesn't exceed transaction amount ──
+        from django.db.models import Sum
+        existing_total = TransactionSplit.objects.filter(
+            transaction=txn,
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        new_total = existing_total + payload.amount
+        if new_total > txn.amount_original:
+            from ninja.errors import ValidationError as NinjaValidationError
+            remaining = txn.amount_original - existing_total
+            raise NinjaValidationError(
+                f"Split amounts would exceed transaction total. "
+                f"Transaction amount: {txn.amount_original}, "
+                f"Existing splits: {existing_total}, "
+                f"Remaining: {remaining}, "
+                f"Attempted: {payload.amount}"
+            )
+
         data = payload.model_dump()
         data.pop("transaction_id", None)  # Use the URL param instead
         obj = TransactionSplit.objects.create(
@@ -318,10 +348,14 @@ class TransactionController(LedgerControllerBase):
 
     @route.patch("/{int:transaction_id}/splits/{int:split_id}", response=TransactionSplitOut)
     def update_split(self, request, transaction_id: int, split_id: int, payload: TransactionSplitUpdate):
-        """Update an existing split."""
+        """Update an existing split.
+
+        Validates that the updated split amounts still don't exceed
+        the transaction's amount_original.
+        """
         user_id = self.require_user_id(request)
         self.require_feature(request, "transactions")
-        self.get_or_404(Transaction, user_id, transaction_id)
+        txn = self.get_or_404(Transaction, user_id, transaction_id)
         try:
             split = TransactionSplit.objects.get(
                 id=split_id, user_id=user_id, transaction_id=transaction_id
@@ -329,6 +363,25 @@ class TransactionController(LedgerControllerBase):
         except TransactionSplit.DoesNotExist:
             from django.http import Http404
             raise Http404
+
+        # ── Validate split total if amount is being changed ──
+        if payload.amount is not None:
+            from django.db.models import Sum
+            existing_total = TransactionSplit.objects.filter(
+                transaction=txn,
+            ).exclude(id=split_id).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+            new_total = existing_total + payload.amount
+            if new_total > txn.amount_original:
+                from ninja.errors import ValidationError as NinjaValidationError
+                remaining = txn.amount_original - existing_total
+                raise NinjaValidationError(
+                    f"Split amounts would exceed transaction total. "
+                    f"Transaction amount: {txn.amount_original}, "
+                    f"Other splits: {existing_total}, "
+                    f"Remaining: {remaining}, "
+                    f"Attempted: {payload.amount}"
+                )
+
         self.update_object(split, payload)
         return split
 

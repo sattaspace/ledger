@@ -278,7 +278,11 @@ class TransactionListOut(Schema):
 
 
 class TransactionFilter(PaginationIn):
-    """Filter parameters for transaction list endpoint."""
+    """Filter parameters for transaction list endpoint.
+
+    tag_id filters transactions that have the specified tag attached
+    via the TransactionTag through table.
+    """
 
     account_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -292,6 +296,7 @@ class TransactionFilter(PaginationIn):
     amount_max: Optional[Decimal] = None
     search: Optional[str] = None
     is_recurring: Optional[bool] = None
+    tag_id: Optional[int] = None
 
 
 class TransferCreate(Schema):

@@ -308,6 +308,8 @@ export interface TransactionFilter extends PaginationIn {
   amount_max?: string | null;
   search?: string | null;
   is_recurring?: boolean | null;
+  /** Filter transactions that have the specified tag attached. */
+  tag_id?: number | null;
 }
 
 // =============================================================================

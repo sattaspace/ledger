@@ -1,5 +1,6 @@
 """Document Vault model — Secure document storage linked to financial items."""
 
+from django.contrib.contenttypes.fields import GenericForeignKey
 from django.db import models
 
 from common.models import UserOwnedModel
@@ -38,6 +39,9 @@ class DocumentVault(UserOwnedModel):
         on_delete=models.CASCADE,
     )
     object_id = models.PositiveIntegerField()
+
+    # Enables forward traversal: doc.content_object → the linked entity
+    content_object = GenericForeignKey("content_type", "object_id")
 
     class Meta:
         db_table = "vault_document"

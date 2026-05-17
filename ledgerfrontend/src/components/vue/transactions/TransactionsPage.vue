@@ -90,6 +90,7 @@ const defaultFilters: Partial<TransactionFilter> = {
   category_id: null,
   amount_min: null,
   amount_max: null,
+  tag_id: null,
 };
 
 const {
@@ -114,6 +115,7 @@ const {
     "category_id",
     "amount_min",
     "amount_max",
+    "tag_id",
   ],
 });
 
@@ -224,6 +226,7 @@ const filterStatus = ref<string>("");
 const filterCategoryId = ref<number | null>(null);
 const filterAmountMin = ref("");
 const filterAmountMax = ref("");
+const filterTagId = ref<number | string>("");
 
 // ─── Amount Formatting ───────────────────────────────────────────────────────
 
@@ -381,6 +384,14 @@ function handleAmountMaxChange(event: Event) {
   const val = (event.target as HTMLInputElement).value;
   filterAmountMax.value = val;
   setFilter("amount_max", val || null);
+  setFilter("offset", 0);
+  applyFilters();
+}
+
+function handleTagFilterChange(event: Event) {
+  const val = (event.target as HTMLSelectElement).value;
+  filterTagId.value = val;
+  setFilter("tag_id", val ? Number(val) : null);
   setFilter("offset", 0);
   applyFilters();
 }
@@ -638,6 +649,25 @@ onMounted(async () => {
             class="input-field h-10 w-full text-sm"
             @input="handleAmountMaxChange"
           />
+        </div>
+
+        <!-- Tag Filter -->
+        <div class="min-w-[140px]">
+          <label class="label-text mb-1 block text-xs">Tag</label>
+          <select
+            :value="filterTagId"
+            class="input-field h-10 w-full text-sm"
+            @change="handleTagFilterChange"
+          >
+            <option value="">All Tags</option>
+            <option
+              v-for="tag in tagStore.dropdown"
+              :key="tag.id"
+              :value="tag.id"
+            >
+              #{{ tag.name }}
+            </option>
+          </select>
         </div>
 
         <!-- Reset -->
