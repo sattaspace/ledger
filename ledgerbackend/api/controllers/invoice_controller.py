@@ -19,6 +19,9 @@ from api.schemas.invoices import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
+
 from .base import LedgerControllerBase
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,7 @@ class InvoiceController(LedgerControllerBase):
     def list_invoices(self, request, filters: InvoiceFilter = Query(...)):
         """List all invoices for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_invoices")
         self.require_feature(request, "invoices")
         qs = Invoice.objects.filter(user_id=user_id)
 
@@ -82,6 +86,7 @@ class InvoiceController(LedgerControllerBase):
     def list_overdue(self, request):
         """Get all overdue invoices (for dashboard/alerts)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_invoices")
         self.require_feature(request, "invoices")
         from django.utils import timezone
         today = timezone.now().date()
@@ -99,15 +104,18 @@ class InvoiceController(LedgerControllerBase):
     def get_invoice(self, request, invoice_id: int):
         """Get a single invoice by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_invoices")
         self.require_feature(request, "invoices")
         return self.get_or_404(Invoice, user_id, invoice_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=InvoiceOut)
+    @log_audit(action="invoice.create")
     def create_invoice(self, request, payload: InvoiceCreate):
         """Create a new invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_invoices", Invoice.objects.filter(user_id=user_id).count())
@@ -122,9 +130,11 @@ class InvoiceController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:invoice_id}", response=InvoiceOut)
+    @log_audit(action="invoice.update", capture_state=True)
     def update_invoice(self, request, invoice_id: int, payload: InvoiceUpdate):
         """Update an existing invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
         self.update_object(obj, payload, fk_map={
@@ -135,12 +145,14 @@ class InvoiceController(LedgerControllerBase):
     # ── Mark Paid ─────────────────────────────────────────────────────────
 
     @route.post("/{int:invoice_id}/mark-paid", response=InvoiceOut)
+    @log_audit(action="invoice.mark_paid", capture_state=True)
     def mark_paid(self, request, invoice_id: int, payload: InvoiceMarkPaid):
         """Mark an invoice as paid.
 
         Optionally creates an INCOME transaction and links it.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_transactions",
@@ -179,18 +191,22 @@ class InvoiceController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:invoice_id}", response=MessageOut)
+    @log_audit(action="invoice.delete", capture_state=True)
     def soft_delete_invoice(self, request, invoice_id: int):
         """Soft-delete an invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_invoice")
         self.require_feature(request, "invoices")
         obj = self.get_or_404(Invoice, user_id, invoice_id)
         obj.soft_delete()
         return {"detail": "Invoice deleted."}
 
     @route.post("/{int:invoice_id}/restore", response=MessageOut)
+    @log_audit(action="invoice.restore", capture_state=True)
     def restore_invoice(self, request, invoice_id: int):
         """Restore a soft-deleted invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_invoices",
@@ -205,6 +221,7 @@ class InvoiceController(LedgerControllerBase):
     def list_line_items(self, request, invoice_id: int):
         """List all line items for an invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_invoices")
         self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         return list(
@@ -212,9 +229,11 @@ class InvoiceController(LedgerControllerBase):
         )
 
     @route.post("/{int:invoice_id}/line-items", response=InvoiceLineItemOut)
+    @log_audit(action="invoice_line_item.create")
     def create_line_item(self, request, invoice_id: int, payload: InvoiceLineItemCreate):
         """Add a line item to an invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_invoices",
@@ -231,9 +250,11 @@ class InvoiceController(LedgerControllerBase):
         return obj
 
     @route.patch("/{int:invoice_id}/line-items/{int:item_id}", response=InvoiceLineItemOut)
+    @log_audit(action="invoice_line_item.update", capture_state=True)
     def update_line_item(self, request, invoice_id: int, item_id: int, payload: InvoiceLineItemUpdate):
         """Update a line item."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_invoice")
         self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         try:
@@ -248,9 +269,11 @@ class InvoiceController(LedgerControllerBase):
         return item
 
     @route.delete("/{int:invoice_id}/line-items/{int:item_id}", response=MessageOut)
+    @log_audit(action="invoice_line_item.delete", capture_state=True)
     def delete_line_item(self, request, invoice_id: int, item_id: int):
         """Delete a line item from an invoice."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_invoice")
         self.require_feature(request, "invoices")
         self.get_or_404(Invoice, user_id, invoice_id)
         try:

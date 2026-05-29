@@ -15,6 +15,9 @@ from api.schemas.insurance import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
+
 from .base import LedgerControllerBase
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,7 @@ class InsuranceController(LedgerControllerBase):
     def list_policies(self, request, filters: InsurancePolicyFilter = Query(...)):
         """List all insurance policies for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_insurance")
         self.require_feature(request, "insurance")
         qs = InsurancePolicy.objects.filter(user_id=user_id).select_related("institution")
 
@@ -64,6 +68,7 @@ class InsuranceController(LedgerControllerBase):
     def upcoming_renewals(self, request, days: int = 60):
         """Get policies with upcoming renewals (for dashboard)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_insurance")
         self.require_feature(request, "insurance")
         from django.utils import timezone
         from datetime import timedelta
@@ -84,15 +89,18 @@ class InsuranceController(LedgerControllerBase):
     def get_policy(self, request, policy_id: int):
         """Get a single insurance policy by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_insurance")
         self.require_feature(request, "insurance")
         return self.get_or_404(InsurancePolicy, user_id, policy_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=InsurancePolicyOut)
+    @log_audit(action="insurance_policy.create")
     def create_policy(self, request, payload: InsurancePolicyCreate):
         """Create a new insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_insurance")
         self.require_feature(request, "insurance")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_insurance", InsurancePolicy.objects.filter(user_id=user_id).count())
@@ -107,9 +115,11 @@ class InsuranceController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:policy_id}", response=InsurancePolicyOut)
+    @log_audit(action="insurance_policy.update", capture_state=True)
     def update_policy(self, request, policy_id: int, payload: InsurancePolicyUpdate):
         """Update an existing insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_insurance")
         self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         self.update_object(obj, payload, fk_map={
@@ -120,18 +130,22 @@ class InsuranceController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:policy_id}", response=MessageOut)
+    @log_audit(action="insurance_policy.delete", capture_state=True)
     def soft_delete_policy(self, request, policy_id: int):
         """Soft-delete an insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_insurance")
         self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.soft_delete()
         return {"detail": "Insurance policy deleted."}
 
     @route.post("/{int:policy_id}/restore", response=MessageOut)
+    @log_audit(action="insurance_policy.restore", capture_state=True)
     def restore_policy(self, request, policy_id: int):
         """Restore a soft-deleted insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_insurance")
         self.require_feature(request, "insurance")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_insurance",
@@ -146,6 +160,7 @@ class InsuranceController(LedgerControllerBase):
     def activate_policy(self, request, policy_id: int):
         """Activate an insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_insurance")
         self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.activate()
@@ -155,6 +170,7 @@ class InsuranceController(LedgerControllerBase):
     def deactivate_policy(self, request, policy_id: int):
         """Deactivate an insurance policy."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_insurance")
         self.require_feature(request, "insurance")
         obj = self.get_or_404(InsurancePolicy, user_id, policy_id)
         obj.deactivate()

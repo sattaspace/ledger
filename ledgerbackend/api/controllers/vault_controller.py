@@ -17,6 +17,9 @@ from api.schemas.vault import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
+
 from .base import LedgerControllerBase
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,7 @@ class VaultController(LedgerControllerBase):
     def list_documents(self, request, filters: DocumentVaultFilter = Query(...)):
         """List all documents for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_vault")
         self.require_feature(request, "vault")
         qs = DocumentVault.objects.filter(user_id=user_id)
 
@@ -81,6 +85,7 @@ class VaultController(LedgerControllerBase):
     def list_expiring(self, request, days: int = 30):
         """Get documents expiring within N days (for dashboard/alerts)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_vault")
         self.require_feature(request, "vault")
         from django.utils import timezone
         from datetime import timedelta
@@ -101,12 +106,14 @@ class VaultController(LedgerControllerBase):
     def get_document(self, request, document_id: int):
         """Get a single document by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_vault")
         self.require_feature(request, "vault")
         return self.get_or_404(DocumentVault, user_id, document_id)
 
     # ── Create (metadata only) ────────────────────────────────────────────
 
     @route.post("", response=DocumentVaultOut)
+    @log_audit(action="document_vault.create")
     def create_document(self, request, payload: DocumentVaultCreate):
         """Create a new document record in the vault.
 
@@ -115,6 +122,7 @@ class VaultController(LedgerControllerBase):
         to attach the actual file after creation.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_vault_documents", DocumentVault.objects.filter(user_id=user_id).count())
@@ -131,6 +139,7 @@ class VaultController(LedgerControllerBase):
     # ── File Upload ──────────────────────────────────────────────────────
 
     @route.post("/{int:document_id}/upload", response=DocumentVaultOut)
+    @log_audit(action="document_vault.upload")
     def upload_file(self, request, document_id: int, file: UploadedFile = File(...)):
         """Upload a file for an existing document record.
 
@@ -138,6 +147,7 @@ class VaultController(LedgerControllerBase):
         Allowed types: PDF, PNG, JPG, Excel, CSV, Word.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
 
@@ -171,9 +181,11 @@ class VaultController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:document_id}", response=DocumentVaultOut)
+    @log_audit(action="document_vault.update", capture_state=True)
     def update_document(self, request, document_id: int, payload: DocumentVaultUpdate):
         """Update document metadata. The file itself cannot be updated — delete and re-upload."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
 
@@ -190,18 +202,22 @@ class VaultController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:document_id}", response=MessageOut)
+    @log_audit(action="document_vault.delete", capture_state=True)
     def soft_delete_document(self, request, document_id: int):
         """Soft-delete a document."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_vault")
         self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.soft_delete()
         return {"detail": "Document deleted."}
 
     @route.post("/{int:document_id}/restore", response=MessageOut)
+    @log_audit(action="document_vault.restore", capture_state=True)
     def restore_document(self, request, document_id: int):
         """Restore a soft-deleted document."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_vault_documents",
@@ -216,6 +232,7 @@ class VaultController(LedgerControllerBase):
     def activate_document(self, request, document_id: int):
         """Activate a document."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.activate()
@@ -225,6 +242,7 @@ class VaultController(LedgerControllerBase):
     def deactivate_document(self, request, document_id: int):
         """Deactivate a document."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_vault")
         self.require_feature(request, "vault")
         obj = self.get_or_404(DocumentVault, user_id, document_id)
         obj.deactivate()

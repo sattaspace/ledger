@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 RATES_CACHE_KEY_PREFIX = "ledger:exchange_rates"
 CURRENCIES_CACHE_KEY = "ledger:currencies_meta"
+USER_BASE_CURRENCY_KEY_PREFIX = "ledger:user_base_currency"
 RATES_CACHE_TTL_SECONDS = getattr(settings, "EXCHANGE_RATE_CACHE_TTL", 6 * 60 * 60)  # 6 hours
 CURRENCIES_CACHE_TTL_SECONDS = getattr(settings, "CURRENCY_META_CACHE_TTL", 24 * 60 * 60)  # 24 hours
 
@@ -124,6 +125,35 @@ def cache_currencies_from_auth_me(currencies: dict) -> None:
     if currencies and isinstance(currencies, dict):
         cache.set(CURRENCIES_CACHE_KEY, currencies, CURRENCIES_CACHE_TTL_SECONDS)
         logger.debug("Cached currency metadata from auth/me (%d currencies)", len(currencies))
+
+
+def cache_user_base_currency(user_id: int, currency: str) -> None:
+    """Cache the user's base currency from their Sattabase profile.
+
+    Called by LedgerControllerBase.require_user_id() after extracting
+    the currency from request.sattabase_user. This makes the currency
+    available to model methods (e.g. Transaction._convert_to_base_currency)
+    that don't have access to the request object.
+
+    Cached for 24 hours (same as CURRENCY_META_CACHE_TTL) since the
+    user's base currency rarely changes.
+    """
+    if user_id and currency:
+        cache_key = f"{USER_BASE_CURRENCY_KEY_PREFIX}:{user_id}"
+        cache.set(cache_key, currency.upper(), timeout=CURRENCIES_CACHE_TTL_SECONDS)
+        logger.debug("Cached user base currency: user_id=%s currency=%s", user_id, currency)
+
+
+def get_user_base_currency(user_id: int) -> str | None:
+    """Get the cached base currency for a user.
+
+    Returns:
+        The ISO 4217 currency code (e.g. "USD", "BDT"), or None if not cached.
+    """
+    if not user_id:
+        return None
+    cache_key = f"{USER_BASE_CURRENCY_KEY_PREFIX}:{user_id}"
+    return cache.get(cache_key)
 
 
 def get_currency_symbol(currency_code: str) -> str:

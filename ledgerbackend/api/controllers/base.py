@@ -68,6 +68,11 @@ class LedgerControllerBase(ControllerBase):
         unreachable — the user provided a token but we can't verify it.
         Returns 401 (AuthRequiredError) when the user is not authenticated
         (no token, invalid token, or expired token).
+
+        As a side effect, caches the user's base currency (from
+        request.sattabase_user.currency) so that model methods like
+        Transaction._convert_to_base_currency() can look it up without
+        needing the request object.
         """
         user_id = self.get_user_id(request)
         if user_id is None:
@@ -76,6 +81,13 @@ class LedgerControllerBase(ControllerBase):
             if getattr(request, "sattabase_auth_unavailable", False):
                 raise AuthServiceUnavailableError()
             raise AuthRequiredError()
+
+        # Cache user's base currency for model-level currency conversion
+        user = getattr(request, "sattabase_user", None)
+        if user and hasattr(user, "currency") and user.currency:
+            from api.currency import cache_user_base_currency
+            cache_user_base_currency(user_id, user.currency)
+
         return user_id
 
     # ── Feature / subscription helpers ─────────────────────────────────────

@@ -5,7 +5,9 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
 from api.models import Account, Institution, DebtFacility, DebtPayment, Transaction
+from api.rate_limit import check_rate_limit_or_raise
 from api.schemas.debt import (
     DebtFacilityCreate,
     DebtFacilityFilter,
@@ -33,6 +35,7 @@ class DebtController(LedgerControllerBase):
     def list_debts(self, request, filters: DebtFacilityFilter = Query(...)):
         """List all debt facilities for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_debts")
         self.require_feature(request, "debts")
         qs = DebtFacility.objects.filter(user_id=user_id).select_related("institution", "account")
         qs, limit, offset = self.apply_filters(qs, filters)
@@ -42,6 +45,7 @@ class DebtController(LedgerControllerBase):
     def debt_summary(self, request):
         """Get a summary of total borrowed vs lent amounts."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "report_debts")
         self.require_feature(request, "debts")
         from django.db.models import Sum
 
@@ -65,15 +69,18 @@ class DebtController(LedgerControllerBase):
     def get_debt(self, request, debt_id: int):
         """Get a single debt facility by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_debts")
         self.require_feature(request, "debts")
         return self.get_or_404(DebtFacility, user_id, debt_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=DebtFacilityOut)
+    @log_audit(action="debt.create")
     def create_debt(self, request, payload: DebtFacilityCreate):
         """Create a new debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_debts", DebtFacility.objects.filter(user_id=user_id).count())
@@ -90,9 +97,11 @@ class DebtController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:debt_id}", response=DebtFacilityOut)
+    @log_audit(action="debt.update", capture_state=True)
     def update_debt(self, request, debt_id: int, payload: DebtFacilityUpdate):
         """Update an existing debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         self.update_object(obj, payload, fk_map={
@@ -104,18 +113,22 @@ class DebtController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:debt_id}", response=MessageOut)
+    @log_audit(action="debt.delete", capture_state=True)
     def soft_delete_debt(self, request, debt_id: int):
         """Soft-delete a debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_debt")
         self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.soft_delete()
         return {"detail": "Debt deleted."}
 
     @route.post("/{int:debt_id}/restore", response=MessageOut)
+    @log_audit(action="debt.restore", capture_state=True)
     def restore_debt(self, request, debt_id: int):
         """Restore a soft-deleted debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_debts",
@@ -130,6 +143,7 @@ class DebtController(LedgerControllerBase):
     def activate_debt(self, request, debt_id: int):
         """Activate a debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.activate()
@@ -139,6 +153,7 @@ class DebtController(LedgerControllerBase):
     def deactivate_debt(self, request, debt_id: int):
         """Deactivate a debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         obj = self.get_or_404(DebtFacility, user_id, debt_id)
         obj.deactivate()
@@ -150,6 +165,7 @@ class DebtController(LedgerControllerBase):
     def list_payments(self, request, debt_id: int):
         """List all payments for a debt facility."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_debts")
         self.require_feature(request, "debts")
         self.get_or_404(DebtFacility, user_id, debt_id)
         return list(
@@ -157,6 +173,7 @@ class DebtController(LedgerControllerBase):
         )
 
     @route.post("/{int:debt_id}/payments", response=DebtPaymentOut)
+    @log_audit(action="debt_payment.create")
     def create_payment(self, request, debt_id: int, payload: DebtPaymentCreate):
         """Record a payment against a debt facility.
 
@@ -164,6 +181,7 @@ class DebtController(LedgerControllerBase):
         principal_portion + extra_payment.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_debts",
@@ -191,9 +209,11 @@ class DebtController(LedgerControllerBase):
         return obj
 
     @route.patch("/{int:debt_id}/payments/{int:payment_id}", response=DebtPaymentOut)
+    @log_audit(action="debt_payment.update", capture_state=True)
     def update_payment(self, request, debt_id: int, payment_id: int, payload: DebtPaymentUpdate):
         """Update a debt payment."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_debt")
         self.require_feature(request, "debts")
         self.get_or_404(DebtFacility, user_id, debt_id)
         try:

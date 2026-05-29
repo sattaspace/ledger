@@ -5,6 +5,8 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
 from api.models import Account, Card
 from api.schemas.cards import (
     CardCreate,
@@ -29,6 +31,7 @@ class CardController(LedgerControllerBase):
     def list_cards(self, request, filters: CardFilter = Query(...)):
         """List all cards for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_cards")
         self.require_feature(request, "cards")
         qs = Card.objects.filter(user_id=user_id).select_related("account")
         qs, limit, offset = self.apply_filters(qs, filters)
@@ -38,6 +41,7 @@ class CardController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for card selection components."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_cards")
         self.require_feature(request, "cards")
         return list(Card.objects.filter(user_id=user_id).select_related("account"))
 
@@ -47,15 +51,18 @@ class CardController(LedgerControllerBase):
     def get_card(self, request, card_id: int):
         """Get a single card by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_cards")
         self.require_feature(request, "cards")
         return self.get_or_404(Card, user_id, card_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=CardOut)
+    @log_audit(action="card.create")
     def create_card(self, request, payload: CardCreate):
         """Create a new card linked to an account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_card")
         self.require_feature(request, "cards")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_cards", Card.objects.filter(user_id=user_id).count())
@@ -72,9 +79,11 @@ class CardController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:card_id}", response=CardOut)
+    @log_audit(action="card.update", capture_state=True)
     def update_card(self, request, card_id: int, payload: CardUpdate):
         """Update an existing card."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_card")
         self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         self.update_object(obj, payload, fk_map={
@@ -85,18 +94,22 @@ class CardController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:card_id}", response=MessageOut)
+    @log_audit(action="card.delete", capture_state=True)
     def soft_delete_card(self, request, card_id: int):
         """Soft-delete a card."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_card")
         self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.soft_delete()
         return {"detail": "Card deleted."}
 
     @route.post("/{int:card_id}/restore", response=MessageOut)
+    @log_audit(action="card.restore", capture_state=True)
     def restore_card(self, request, card_id: int):
         """Restore a soft-deleted card."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_card")
         self.require_feature(request, "cards")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_cards",
@@ -111,6 +124,7 @@ class CardController(LedgerControllerBase):
     def activate_card(self, request, card_id: int):
         """Activate a card."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_card")
         self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.activate()
@@ -120,6 +134,7 @@ class CardController(LedgerControllerBase):
     def deactivate_card(self, request, card_id: int):
         """Deactivate a card."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_card")
         self.require_feature(request, "cards")
         obj = self.get_or_404(Card, user_id, card_id)
         obj.deactivate()

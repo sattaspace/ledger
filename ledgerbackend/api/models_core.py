@@ -177,35 +177,35 @@ class Account(UserOwnedModel):
 
         Should be called after bulk operations or as a periodic integrity check.
         Normal single-transaction saves update the balance incrementally.
+
+        Transfer direction logic:
+            Each TRANSFER creates two Transaction rows linked via transfer_pair.
+            The outflow (created first, lower ID) debits the source account.
+            The inflow (created second, higher ID) credits the destination account.
+            We determine direction by comparing the transaction's own ID with its
+            transfer_pair_id: if id < transfer_pair_id this is the outflow (−amount),
+            otherwise it is the inflow (+amount).
         """
-        from django.db.models import Sum, Case, When, Value, DecimalField
-
-        # Income & Refund → positive; Expense → negative; Transfer → depends on direction
-        # For simplicity, we sum signed amounts based on transaction_type
-        signed_amounts = Case(
-            When(
-                transaction_type__in=["INCOME", "REFUND"],
-                then="amount_original",
-            ),
-            When(
-                transaction_type="EXPENSE",
-                then=-models.F("amount_original"),  # noqa: DJ012
-            ),
-            When(
-                transaction_type="TRANSFER",
-                then=models.Value(Decimal("0")),  # Handled via transfer pairs
-                output_field=DecimalField(),
-            ),
-            default=Value(Decimal("0")),
-            output_field=DecimalField(),
-        )
-
-        result = self.transactions.filter(
+        total = Decimal("0")
+        for txn in self.transactions.filter(
             is_deleted=False,
             status__in=["CLEARED", "PENDING"],
-        ).aggregate(total=Sum(signed_amounts))
+        ).only("id", "transaction_type", "amount_original", "transfer_pair_id"):
+            if txn.transaction_type in ("INCOME", "REFUND"):
+                total += txn.amount_original
+            elif txn.transaction_type == "EXPENSE":
+                total -= txn.amount_original
+            elif txn.transaction_type == "TRANSFER":
+                if txn.transfer_pair_id is not None:
+                    # Outflow was created first (lower ID) → deduct
+                    # Inflow was created second (higher ID) → add
+                    if txn.id < txn.transfer_pair_id:
+                        total -= txn.amount_original  # outflow from this account
+                    else:
+                        total += txn.amount_original  # inflow to this account
+                # Unpaired transfers are ignored (shouldn't happen in production)
 
-        self.current_balance = result["total"] or Decimal("0")
+        self.current_balance = total
         self.save(update_fields=["current_balance", "updated_at"])
 
 
@@ -406,23 +406,33 @@ class Transaction(UserOwnedModel):
     def _convert_to_base_currency(self):
         """Convert amount_original to user's base currency using current rates.
 
-        The user's base currency is determined from the linked Account's
-        currency field. If the transaction currency differs from the account
-        currency, conversion is performed using the base backend's exchange
-        rate service (cached in Redis via api/currency.py).
+        The user's base currency is determined in this priority order:
+          1. Cached user profile currency from Sattabase (set during auth/me)
+          2. Linked Account's currency field (fallback when profile cache miss)
+          3. Transaction's own currency_original (last resort — no conversion)
+
+        If the transaction currency differs from the resolved base currency,
+        conversion is performed using the base backend's exchange rate service
+        (cached in Redis via api/currency.py).
 
         If conversion fails (e.g., rate not available), falls back to 1:1
         (same-currency assumption) and logs a warning.
         """
-        from api.currency import convert_amount
+        from api.currency import convert_amount, get_user_base_currency
 
-        # Determine base currency from the linked account
-        base_currency = self.currency_original  # Default: same currency
-        if self.account_id:
+        # Priority 1: User's base currency from Sattabase profile (cached by middleware)
+        base_currency = get_user_base_currency(self.user_id)
+
+        # Priority 2: Account's currency (functional fallback)
+        if base_currency is None and self.account_id:
             try:
                 base_currency = Account.objects.get(id=self.account_id).currency
             except Account.DoesNotExist:
                 pass
+
+        # Priority 3: Default to the transaction currency (no conversion needed)
+        if base_currency is None:
+            base_currency = self.currency_original
 
         if self.currency_original != base_currency:
             converted, rate = convert_amount(

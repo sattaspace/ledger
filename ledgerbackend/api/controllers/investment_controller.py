@@ -21,6 +21,9 @@ from api.schemas.investments import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
+
 from .base import LedgerControllerBase
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,7 @@ class InvestmentController(LedgerControllerBase):
     def list_investments(self, request):
         """List all investment accounts for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_investments")
         self.require_feature(request, "investments")
         qs = InvestmentAccount.objects.filter(user_id=user_id).select_related("account")
         return self.paginate(qs)
@@ -43,6 +47,7 @@ class InvestmentController(LedgerControllerBase):
     def portfolio_summary(self, request):
         """Get portfolio-wide summary (total value, total cost, total gain/loss)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "report_investments")
         self.require_feature(request, "investments")
         from django.db.models import Sum
 
@@ -65,15 +70,18 @@ class InvestmentController(LedgerControllerBase):
     def get_investment(self, request, investment_id: int):
         """Get a single investment account by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_investments")
         self.require_feature(request, "investments")
         return self.get_or_404(InvestmentAccount, user_id, investment_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=InvestmentAccountOut)
+    @log_audit(action="investment.create")
     def create_investment(self, request, payload: InvestmentAccountCreate):
         """Create an investment profile for an existing account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_investment")
         self.require_feature(request, "investments")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_investments", InvestmentAccount.objects.filter(user_id=user_id).count())
@@ -91,9 +99,11 @@ class InvestmentController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:investment_id}", response=InvestmentAccountOut)
+    @log_audit(action="investment.update", capture_state=True)
     def update_investment(self, request, investment_id: int, payload: InvestmentAccountUpdate):
         """Update an investment account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_investment")
         self.require_feature(request, "investments")
         obj = self.get_or_404(InvestmentAccount, user_id, investment_id)
         self.update_object(obj, payload, fk_map={
@@ -104,18 +114,22 @@ class InvestmentController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:investment_id}", response=MessageOut)
+    @log_audit(action="investment.delete", capture_state=True)
     def soft_delete_investment(self, request, investment_id: int):
         """Soft-delete an investment account and its holdings."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_investment")
         self.require_feature(request, "investments")
         obj = self.get_or_404(InvestmentAccount, user_id, investment_id)
         obj.soft_delete()
         return {"detail": "Investment account deleted."}
 
     @route.post("/{int:investment_id}/restore", response=MessageOut)
+    @log_audit(action="investment.restore", capture_state=True)
     def restore_investment(self, request, investment_id: int):
         """Restore a soft-deleted investment account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_investment")
         self.require_feature(request, "investments")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_investments",
@@ -130,6 +144,7 @@ class InvestmentController(LedgerControllerBase):
     def list_holdings(self, request, investment_id: int):
         """List all holdings for an investment account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_investments")
         self.require_feature(request, "investments")
         self.get_or_404(InvestmentAccount, user_id, investment_id)
         return list(
@@ -137,9 +152,11 @@ class InvestmentController(LedgerControllerBase):
         )
 
     @route.post("/{int:investment_id}/holdings", response=HoldingOut)
+    @log_audit(action="holding.create")
     def create_holding(self, request, investment_id: int, payload: HoldingCreate):
         """Add a holding to an investment account."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_investment")
         self.require_feature(request, "investments")
         self.require_subscription_active(request)
         # Holdings share the investment account quota; count both types
@@ -160,9 +177,11 @@ class InvestmentController(LedgerControllerBase):
         return obj
 
     @route.patch("/{int:investment_id}/holdings/{int:holding_id}", response=HoldingOut)
+    @log_audit(action="holding.update", capture_state=True)
     def update_holding(self, request, investment_id: int, holding_id: int, payload: HoldingUpdate):
         """Update a holding."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_investment")
         self.require_feature(request, "investments")
         self.get_or_404(InvestmentAccount, user_id, investment_id)
         try:
@@ -179,9 +198,11 @@ class InvestmentController(LedgerControllerBase):
         return holding
 
     @route.delete("/{int:investment_id}/holdings/{int:holding_id}", response=MessageOut)
+    @log_audit(action="holding.delete", capture_state=True)
     def soft_delete_holding(self, request, investment_id: int, holding_id: int):
         """Soft-delete a holding."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_investment")
         self.require_feature(request, "investments")
         self.get_or_404(InvestmentAccount, user_id, investment_id)
         try:

@@ -5,6 +5,8 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
 from api.models import Category
 from api.schemas.categories import (
     CategoryCreate,
@@ -30,6 +32,7 @@ class CategoryController(LedgerControllerBase):
     def list_categories(self, request, filters: CategoryFilter = Query(...)):
         """List all categories for the authenticated user, with pagination and filters."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_categories")
         self.require_feature(request, "categories")
         qs = Category.objects.filter(user_id=user_id).select_related("parent")
         qs, limit, offset = self.apply_filters(qs, filters)
@@ -39,6 +42,7 @@ class CategoryController(LedgerControllerBase):
     def list_dropdown(self, request):
         """Lightweight list for dropdown/select components."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_categories")
         self.require_feature(request, "categories")
         return list(Category.objects.filter(user_id=user_id).select_related("parent"))
 
@@ -51,6 +55,7 @@ class CategoryController(LedgerControllerBase):
         Returns only top-level categories (parent=None) with nested subcategories.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_categories")
         self.require_feature(request, "categories")
         all_categories = Category.objects.filter(
             user_id=user_id,
@@ -87,15 +92,18 @@ class CategoryController(LedgerControllerBase):
     def get_category(self, request, category_id: int):
         """Get a single category by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_categories")
         self.require_feature(request, "categories")
         return self.get_or_404(Category, user_id, category_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=CategoryOut)
+    @log_audit(action="category.create")
     def create_category(self, request, payload: CategoryCreate):
         """Create a new category. Use parent_id for subcategories."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_category")
         self.require_subscription_active(request)
         self.require_feature(request, "categories")
         self.check_plan_limit(request, "max_categories",
@@ -114,9 +122,11 @@ class CategoryController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:category_id}", response=CategoryOut)
+    @log_audit(action="category.update", capture_state=True)
     def update_category(self, request, category_id: int, payload: CategoryUpdate):
         """Update an existing category. Only provided fields are changed."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_category")
         self.require_feature(request, "categories")
         obj = self.get_or_404(Category, user_id, category_id)
         self.update_object(obj, payload, fk_map={
@@ -127,9 +137,11 @@ class CategoryController(LedgerControllerBase):
     # ── Soft Delete ───────────────────────────────────────────────────────
 
     @route.delete("/{int:category_id}", response=MessageOut)
+    @log_audit(action="category.delete", capture_state=True)
     def soft_delete_category(self, request, category_id: int):
         """Soft-delete a category."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_category")
         self.require_feature(request, "categories")
         obj = self.get_or_404(Category, user_id, category_id)
         obj.soft_delete()
@@ -139,9 +151,11 @@ class CategoryController(LedgerControllerBase):
     # ── Restore ───────────────────────────────────────────────────────────
 
     @route.post("/{int:category_id}/restore", response=MessageOut)
+    @log_audit(action="category.restore", capture_state=True)
     def restore_category(self, request, category_id: int):
         """Restore a soft-deleted category."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_category")
         self.require_feature(request, "categories")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_categories",
@@ -156,6 +170,7 @@ class CategoryController(LedgerControllerBase):
     def activate_category(self, request, category_id: int):
         """Activate a category."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_category")
         self.require_feature(request, "categories")
         obj = self.get_or_404(Category, user_id, category_id)
         obj.activate()
@@ -165,6 +180,7 @@ class CategoryController(LedgerControllerBase):
     def deactivate_category(self, request, category_id: int):
         """Deactivate a category."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_category")
         self.require_feature(request, "categories")
         obj = self.get_or_404(Category, user_id, category_id)
         obj.deactivate()

@@ -1,4 +1,4 @@
-# sattabase/backend/Dockerfile
+# sattabase/ledgerbackend/Dockerfile
 # Stage 1: Build dependencies
 FROM python:3.10-slim AS builder
 
@@ -43,4 +43,4 @@ EXPOSE 8087
 CMD ["gunicorn", "--bind", "0.0.0.0:8087", "--workers", "4", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--access-logfile", "-", "--error-logfile", "-", \
-     "base.asgi:application"]
+     "ledger.asgi:application"]

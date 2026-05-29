@@ -5,7 +5,9 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
 from api.models import Account, Category, Bill, BillPayment, Transaction
+from api.rate_limit import check_rate_limit_or_raise
 from api.schemas.bills import (
     BillCreate,
     BillFilter,
@@ -34,6 +36,7 @@ class BillController(LedgerControllerBase):
     def list_bills(self, request, filters: BillFilter = Query(...)):
         """List all bills for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_bills")
         self.require_feature(request, "bills")
         qs = Bill.objects.filter(user_id=user_id).select_related("account", "category")
 
@@ -66,6 +69,7 @@ class BillController(LedgerControllerBase):
     def list_upcoming(self, request, days: int = 30):
         """Get bills due within the next N days (for dashboard)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_bills")
         self.require_feature(request, "bills")
         from django.utils import timezone
         from datetime import timedelta
@@ -86,15 +90,18 @@ class BillController(LedgerControllerBase):
     def get_bill(self, request, bill_id: int):
         """Get a single bill by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_bills")
         self.require_feature(request, "bills")
         return self.get_or_404(Bill, user_id, bill_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=BillOut)
+    @log_audit(action="bill.create")
     def create_bill(self, request, payload: BillCreate):
         """Create a new bill/subscription."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_subscription_active(request)
         self.require_feature(request, "bills")
         self.check_plan_limit(request, "max_bills",
@@ -112,9 +119,11 @@ class BillController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:bill_id}", response=BillOut)
+    @log_audit(action="bill.update", capture_state=True)
     def update_bill(self, request, bill_id: int, payload: BillUpdate):
         """Update an existing bill."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         self.update_object(obj, payload, fk_map={
@@ -126,12 +135,14 @@ class BillController(LedgerControllerBase):
     # ── Generate Transaction ──────────────────────────────────────────────
 
     @route.post("/{int:bill_id}/generate", response=BillGenerateTransactionOut)
+    @log_audit(action="bill.generate")
     def generate_transaction(self, request, bill_id: int):
         """Manually generate a transaction from a bill.
 
         Also auto-called by Celery on the due date.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "transactions")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_transactions",
@@ -153,19 +164,22 @@ class BillController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:bill_id}", response=MessageOut)
+    @log_audit(action="bill.delete", capture_state=True)
     def soft_delete_bill(self, request, bill_id: int):
         """Soft-delete a bill."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_bill")
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.soft_delete()
         return {"detail": "Bill deleted."}
 
     @route.post("/{int:bill_id}/restore", response=MessageOut)
+    @log_audit(action="bill.restore", capture_state=True)
     def restore_bill(self, request, bill_id: int):
         """Restore a soft-deleted bill."""
         user_id = self.require_user_id(request)
-        self.require_feature(request, "bills")
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_bills",
                             Bill.objects.filter(user_id=user_id).count())
@@ -176,9 +190,11 @@ class BillController(LedgerControllerBase):
     # ── Activate / Deactivate (uses Bill status, not ActivatorModel) ──────
 
     @route.post("/{int:bill_id}/pause", response=MessageOut)
+    @log_audit(action="bill.pause")
     def pause_bill(self, request, bill_id: int):
         """Pause a bill (stops auto-generation)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "PAUSED"
@@ -186,9 +202,11 @@ class BillController(LedgerControllerBase):
         return {"detail": "Bill paused."}
 
     @route.post("/{int:bill_id}/cancel", response=MessageOut)
+    @log_audit(action="bill.cancel")
     def cancel_bill(self, request, bill_id: int):
         """Cancel a bill permanently."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "CANCELLED"
@@ -196,9 +214,11 @@ class BillController(LedgerControllerBase):
         return {"detail": "Bill cancelled."}
 
     @route.post("/{int:bill_id}/reactivate", response=MessageOut)
+    @log_audit(action="bill.reactivate")
     def reactivate_bill(self, request, bill_id: int):
         """Reactivate a paused or cancelled bill."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         obj = self.get_or_404(Bill, user_id, bill_id)
         obj.status = "ACTIVE"
@@ -211,6 +231,7 @@ class BillController(LedgerControllerBase):
     def list_payments(self, request, bill_id: int):
         """List all payments for a bill."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_bills")
         self.require_feature(request, "bills")
         self.get_or_404(Bill, user_id, bill_id)
         return list(
@@ -218,9 +239,11 @@ class BillController(LedgerControllerBase):
         )
 
     @route.post("/{int:bill_id}/payments", response=BillPaymentOut)
+    @log_audit(action="bill_payment.create")
     def create_payment(self, request, bill_id: int, payload: BillPaymentCreate):
         """Record a payment for a bill."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_bills",
@@ -236,9 +259,11 @@ class BillController(LedgerControllerBase):
         return obj
 
     @route.patch("/{int:bill_id}/payments/{int:payment_id}", response=BillPaymentOut)
+    @log_audit(action="bill_payment.update", capture_state=True)
     def update_payment(self, request, bill_id: int, payment_id: int, payload: BillPaymentUpdate):
         """Update a bill payment."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_bill")
         self.require_feature(request, "bills")
         self.get_or_404(Bill, user_id, bill_id)
         try:

@@ -241,13 +241,13 @@ CELERY_RESULT_BACKEND = "django-db"
 CELERY_TASK_TIME_LIMIT = 30 * 60
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = "UTC"
-CACH_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/4'
+CACHE_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/4'
 CACHE_MIDDLEWARE_SECONDS = 3600
 
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": CACH_URL,
+        "LOCATION": CACHE_URL,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },

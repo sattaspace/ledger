@@ -15,6 +15,8 @@ from django.db import transaction as db_transaction
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
 from api.models import Account, Card, Category, Bill, Tag, Transaction, TransactionSplit, TransactionTag
 from api.schemas.core import (
     TransactionCreate,
@@ -48,6 +50,7 @@ class TransactionController(LedgerControllerBase):
         date range, amount range, search, and recurring flag.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_transactions")
         self.require_feature(request, "transactions")
         qs = Transaction.objects.filter(user_id=user_id).select_related("account", "category")
 
@@ -108,6 +111,7 @@ class TransactionController(LedgerControllerBase):
     def list_recent(self, request, limit: int = 10):
         """Get the most recent transactions (for dashboard)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_transactions")
         self.require_feature(request, "transactions")
         qs = Transaction.objects.filter(user_id=user_id).select_related("account", "category")
         # Data retention enforcement
@@ -122,6 +126,7 @@ class TransactionController(LedgerControllerBase):
     def get_report_summary(self, request):
         """Get transaction summary report. Requires 'reports' feature."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "report_transactions")
         self.require_feature(request, "reports")
         from django.db.models import Sum, Count, Q
         qs = Transaction.objects.filter(user_id=user_id)
@@ -142,12 +147,14 @@ class TransactionController(LedgerControllerBase):
     def get_transaction(self, request, transaction_id: int):
         """Get a single transaction by ID."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_transactions")
         self.require_feature(request, "transactions")
         return self.get_or_404(Transaction, user_id, transaction_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=TransactionOut)
+    @log_audit(action="transaction.create")
     def create_transaction(self, request, payload: TransactionCreate):
         """Create a new transaction.
 
@@ -155,6 +162,7 @@ class TransactionController(LedgerControllerBase):
         exchange rates from the base backend.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_subscription_active(request)
         self.require_feature(request, "transactions")
         self.check_plan_limit(request, "max_transactions",
@@ -181,9 +189,11 @@ class TransactionController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:transaction_id}", response=TransactionOut)
+    @log_audit(action="transaction.update", capture_state=True)
     def update_transaction(self, request, transaction_id: int, payload: TransactionUpdate):
         """Update an existing transaction. Only provided fields are changed."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_feature(request, "transactions")
         obj = self.get_or_404(Transaction, user_id, transaction_id)
         self.update_object(obj, payload, fk_map={
@@ -197,6 +207,7 @@ class TransactionController(LedgerControllerBase):
     # ── Transfer ──────────────────────────────────────────────────────────
 
     @route.post("/transfer", response=TransferOut)
+    @log_audit(action="transaction.transfer")
     def create_transfer(self, request, payload: TransferCreate):
         """Create an internal transfer between two accounts.
 
@@ -207,6 +218,7 @@ class TransactionController(LedgerControllerBase):
         Both are linked via transfer_pair (OneToOneField).
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_subscription_active(request)
         self.require_feature(request, "transactions")
         self.check_plan_limit(request, "max_transactions",
@@ -265,9 +277,11 @@ class TransactionController(LedgerControllerBase):
     # ── Soft Delete ───────────────────────────────────────────────────────
 
     @route.delete("/{int:transaction_id}", response=MessageOut)
+    @log_audit(action="transaction.delete", capture_state=True)
     def soft_delete_transaction(self, request, transaction_id: int):
         """Soft-delete a transaction."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_transaction")
         self.require_feature(request, "transactions")
         obj = self.get_or_404(Transaction, user_id, transaction_id)
         obj.soft_delete()
@@ -277,9 +291,11 @@ class TransactionController(LedgerControllerBase):
     # ── Restore ───────────────────────────────────────────────────────────
 
     @route.post("/{int:transaction_id}/restore", response=MessageOut)
+    @log_audit(action="transaction.restore", capture_state=True)
     def restore_transaction(self, request, transaction_id: int):
         """Restore a soft-deleted transaction."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_feature(request, "transactions")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_transactions",
@@ -294,6 +310,7 @@ class TransactionController(LedgerControllerBase):
     def list_splits(self, request, transaction_id: int):
         """List all splits for a transaction."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_transactions")
         self.require_feature(request, "transactions")
         # Verify transaction ownership
         self.get_or_404(Transaction, user_id, transaction_id)
@@ -305,12 +322,14 @@ class TransactionController(LedgerControllerBase):
         )
 
     @route.post("/{int:transaction_id}/splits", response=TransactionSplitOut)
+    @log_audit(action="transaction_split.create")
     def create_split(self, request, transaction_id: int, payload: TransactionSplitCreate):
         """Add a split to a transaction.
 
         The sum of all splits must not exceed the transaction's amount_original.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_feature(request, "transactions")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_transactions",
@@ -347,6 +366,7 @@ class TransactionController(LedgerControllerBase):
         return obj
 
     @route.patch("/{int:transaction_id}/splits/{int:split_id}", response=TransactionSplitOut)
+    @log_audit(action="transaction_split.update", capture_state=True)
     def update_split(self, request, transaction_id: int, split_id: int, payload: TransactionSplitUpdate):
         """Update an existing split.
 
@@ -354,6 +374,7 @@ class TransactionController(LedgerControllerBase):
         the transaction's amount_original.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_transaction")
         self.require_feature(request, "transactions")
         txn = self.get_or_404(Transaction, user_id, transaction_id)
         try:
@@ -386,9 +407,11 @@ class TransactionController(LedgerControllerBase):
         return split
 
     @route.delete("/{int:transaction_id}/splits/{int:split_id}", response=MessageOut)
+    @log_audit(action="transaction_split.delete", capture_state=True)
     def delete_split(self, request, transaction_id: int, split_id: int):
         """Delete a split from a transaction."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_transaction")
         self.require_feature(request, "transactions")
         self.get_or_404(Transaction, user_id, transaction_id)
         try:

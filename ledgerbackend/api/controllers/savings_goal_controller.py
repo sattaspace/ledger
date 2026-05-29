@@ -20,6 +20,9 @@ from api.schemas.goals import (
 )
 from api.schemas.common import MessageOut, PaginatedResponse
 
+from api.audit import log_audit
+from api.rate_limit import check_rate_limit_or_raise
+
 from .base import LedgerControllerBase
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,7 @@ class SavingsGoalController(LedgerControllerBase):
     def list_goals(self, request, filters: SavingsGoalFilter = Query(...)):
         """List all savings goals for the authenticated user."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_goals")
         self.require_feature(request, "goals")
         qs = SavingsGoal.objects.filter(user_id=user_id).select_related("account")
 
@@ -54,6 +58,7 @@ class SavingsGoalController(LedgerControllerBase):
     def dashboard_goals(self, request):
         """Get savings goals for dashboard (active + uncompleted)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_goals")
         self.require_feature(request, "goals")
         return list(
             SavingsGoal.objects.filter(
@@ -67,15 +72,18 @@ class SavingsGoalController(LedgerControllerBase):
     def get_goal(self, request, goal_id: int):
         """Get a single savings goal by ID with progress tracking."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_goals")
         self.require_feature(request, "goals")
         return self.get_or_404(SavingsGoal, user_id, goal_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=SavingsGoalOut)
+    @log_audit(action="savings_goal.create")
     def create_goal(self, request, payload: SavingsGoalCreate):
         """Create a new savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_goals", SavingsGoal.objects.filter(user_id=user_id).count())
@@ -90,9 +98,11 @@ class SavingsGoalController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:goal_id}", response=SavingsGoalOut)
+    @log_audit(action="savings_goal.update", capture_state=True)
     def update_goal(self, request, goal_id: int, payload: SavingsGoalUpdate):
         """Update an existing savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         obj = self.get_or_404(SavingsGoal, user_id, goal_id)
         self.update_object(obj, payload, fk_map={
@@ -103,6 +113,7 @@ class SavingsGoalController(LedgerControllerBase):
     # ── Contribute ────────────────────────────────────────────────────────
 
     @route.post("/{int:goal_id}/contribute", response=SavingsContributionOut)
+    @log_audit(action="savings_goal.contribute")
     def contribute(self, request, goal_id: int, payload: SavingsContribution):
         """Add a contribution to a savings goal.
 
@@ -110,6 +121,7 @@ class SavingsGoalController(LedgerControllerBase):
         and updates the goal's current_amount.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_transactions",
@@ -158,18 +170,22 @@ class SavingsGoalController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:goal_id}", response=MessageOut)
+    @log_audit(action="savings_goal.delete", capture_state=True)
     def soft_delete_goal(self, request, goal_id: int):
         """Soft-delete a savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_goal")
         self.require_feature(request, "goals")
         obj = self.get_or_404(SavingsGoal, user_id, goal_id)
         obj.soft_delete()
         return {"detail": "Savings goal deleted."}
 
     @route.post("/{int:goal_id}/restore", response=MessageOut)
+    @log_audit(action="savings_goal.restore", capture_state=True)
     def restore_goal(self, request, goal_id: int):
         """Restore a soft-deleted savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_goals",
@@ -184,6 +200,7 @@ class SavingsGoalController(LedgerControllerBase):
     def activate_goal(self, request, goal_id: int):
         """Activate a savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         obj = self.get_or_404(SavingsGoal, user_id, goal_id)
         obj.activate()
@@ -193,6 +210,7 @@ class SavingsGoalController(LedgerControllerBase):
     def deactivate_goal(self, request, goal_id: int):
         """Deactivate a savings goal."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_goal")
         self.require_feature(request, "goals")
         obj = self.get_or_404(SavingsGoal, user_id, goal_id)
         obj.deactivate()

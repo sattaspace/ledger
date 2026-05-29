@@ -4,7 +4,7 @@ This module creates the NinjaExtraAPI instance and imports all controllers
 so ``auto_discover_controllers()`` can register them with the API.
 
 Controller import order matches domain priority:
-  1. Foundation: TestNote (legacy), Institution, Account, Category, Tag
+  1. Foundation: Institution, Account, Category, Tag
   2. Core: Transaction (with splits & transfer), Card
   3. Features: Bill, Debt, Budget
   4. Extended: Investment, SavingsGoal, Insurance, Invoice, Vault

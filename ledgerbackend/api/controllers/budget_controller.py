@@ -5,7 +5,9 @@ import logging
 from ninja import Query
 from ninja_extra import api_controller, route
 
+from api.audit import log_audit
 from api.models import Category, Budget
+from api.rate_limit import check_rate_limit_or_raise
 from api.schemas.budgets import (
     BudgetCreate,
     BudgetFilter,
@@ -33,6 +35,7 @@ class BudgetController(LedgerControllerBase):
         dynamically from transactions for accuracy.
         """
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_budgets")
         self.require_feature(request, "budgets")
         qs = Budget.objects.filter(user_id=user_id).select_related("category")
         qs, limit, offset = self.apply_filters(qs, filters)
@@ -42,6 +45,7 @@ class BudgetController(LedgerControllerBase):
     def budget_overview(self, request):
         """Get all budgets with spending status (for dashboard)."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_budgets")
         self.require_feature(request, "budgets")
         return list(
             Budget.objects.filter(user_id=user_id).select_related("category")
@@ -53,15 +57,18 @@ class BudgetController(LedgerControllerBase):
     def get_budget(self, request, budget_id: int):
         """Get a single budget by ID with computed spending."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "list_budgets")
         self.require_feature(request, "budgets")
         return self.get_or_404(Budget, user_id, budget_id)
 
     # ── Create ────────────────────────────────────────────────────────────
 
     @route.post("", response=BudgetOut)
+    @log_audit(action="budget.create")
     def create_budget(self, request, payload: BudgetCreate):
         """Create a new budget for a category."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_budget")
         self.require_feature(request, "budgets")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_budgets", Budget.objects.filter(user_id=user_id).count())
@@ -79,9 +86,11 @@ class BudgetController(LedgerControllerBase):
     # ── Update ────────────────────────────────────────────────────────────
 
     @route.patch("/{int:budget_id}", response=BudgetOut)
+    @log_audit(action="budget.update", capture_state=True)
     def update_budget(self, request, budget_id: int, payload: BudgetUpdate):
         """Update an existing budget."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_budget")
         self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         self.update_object(obj, payload, fk_map={
@@ -92,18 +101,22 @@ class BudgetController(LedgerControllerBase):
     # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     @route.delete("/{int:budget_id}", response=MessageOut)
+    @log_audit(action="budget.delete", capture_state=True)
     def soft_delete_budget(self, request, budget_id: int):
         """Soft-delete a budget."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "delete_budget")
         self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.soft_delete()
         return {"detail": "Budget deleted."}
 
     @route.post("/{int:budget_id}/restore", response=MessageOut)
+    @log_audit(action="budget.restore", capture_state=True)
     def restore_budget(self, request, budget_id: int):
         """Restore a soft-deleted budget."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_budget")
         self.require_feature(request, "budgets")
         self.require_subscription_active(request)
         self.check_plan_limit(request, "max_budgets",
@@ -118,6 +131,7 @@ class BudgetController(LedgerControllerBase):
     def activate_budget(self, request, budget_id: int):
         """Activate a budget."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_budget")
         self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.activate()
@@ -127,6 +141,7 @@ class BudgetController(LedgerControllerBase):
     def deactivate_budget(self, request, budget_id: int):
         """Deactivate a budget."""
         user_id = self.require_user_id(request)
+        check_rate_limit_or_raise(request, "create_budget")
         self.require_feature(request, "budgets")
         obj = self.get_or_404(Budget, user_id, budget_id)
         obj.deactivate()
