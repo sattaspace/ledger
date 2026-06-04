@@ -1,0 +1,17 @@
+---
+/**
+ * User Credits — /dashboard/billing/credits
+ *
+ * Displays user's credit pools and invoices.
+ * Mounts UserCreditsClient Vue component.
+ */
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import UserCreditsClient from "@/components/vue/UserCreditsClient.vue";
+---
+
+<DashboardLayout
+  title="Credit Pools — SattaBase"
+  description="Manage your prepaid credits and view purchase history."
+>
+  <UserCreditsClient client:only="vue" />
+</DashboardLayout>

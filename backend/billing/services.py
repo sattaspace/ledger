@@ -29,6 +29,9 @@ from .models import (
     AccessEntry,
     Subscription,
     SubscriptionStatus,
+    CreditPool,
+    CreditInvoice,
+    CreditTransaction,
 )
 
 logger = logging.getLogger(__name__)
@@ -217,17 +220,25 @@ class BillingService:
 
     @staticmethod
     async def aget_subscription_for_product(
-        user, product_slug: str
+        user, product_slug: str, select_for_update: bool = False
     ) -> Optional[Subscription]:
-        """Async version of get_subscription_for_product()."""
+        """Async version of get_subscription_for_product().
+        
+        Args:
+            user: The user to get subscription for
+            product_slug: The product slug
+            select_for_update: If True, lock the row for update (CRIT-03 FIX)
+        """
         product = await BillingService.aget_product_by_slug(product_slug)
         if not product:
             return None
 
         try:
-            sub = await Subscription.objects.select_related("plan", "product").aget(
-                user=user, product=product
-            )
+            qs = Subscription.objects.select_related("plan", "product")
+            # CRIT-03 FIX: Support select_for_update for race condition prevention
+            if select_for_update:
+                qs = qs.select_for_update()
+            sub = await qs.aget(user=user, product=product)
             return sub
         except Subscription.DoesNotExist:
             return None
@@ -697,6 +708,274 @@ class BillingService:
                 "current_period_end": subscription.current_period_end,
                 "trial_end": subscription.trial_end,
                 "is_active": subscription.is_effectively_active(),
+                "is_credit_based": False,
             },
             "access": access_map,
         }
+
+    # =========================================================================
+    # Unified Access Check (Subscription + Credit)
+    # =========================================================================
+
+    @staticmethod
+    def is_user_active_for_product(user, product) -> dict:
+        """
+        Check if a user has active access to a product via subscription OR credits.
+
+        Stripe subscription takes precedence. Credit pool is the fallback.
+
+        Returns:
+            {
+                "is_active": bool,
+                "source": "subscription" | "credit" | None,
+                "plan": Plan | None,
+                "access_map": dict,
+                "current_period_end": datetime | None,
+                "expires_at": datetime | None,
+                "is_credit_based": bool,
+            }
+        """
+        now = timezone.now()
+
+        # 1. Check Stripe subscription first (takes precedence)
+        # Only ACTIVE and TRIALING subscriptions take precedence.
+        # PAST_DUE / CANCELED subscriptions do NOT mask an active credit pool.
+        sub = Subscription.objects.select_related("plan").filter(
+            user=user,
+            product=product,
+            status__in=[
+                SubscriptionStatus.ACTIVE,
+                SubscriptionStatus.TRIALING,
+            ],
+            current_period_end__gt=now,
+        ).first()
+
+        if sub:
+            prefetch_related_objects(
+                [sub.plan],
+                Prefetch("access_entries", queryset=AccessEntry.objects.all()),
+            )
+            return {
+                "is_active": True,
+                "source": "subscription",
+                "plan": sub.plan,
+                "access_map": sub.get_access_map(),
+                "current_period_end": sub.current_period_end,
+                "expires_at": sub.current_period_end,
+                "is_credit_based": False,
+            }
+
+        # 2. Check credit pool
+        credit_pool = CreditPool.objects.select_related("plan").filter(
+            user=user,
+            product=product,
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+        ).filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=now)
+        ).order_by("-created_at").first()
+
+        if credit_pool and credit_pool.periods_remaining > 0:
+            prefetch_related_objects(
+                [credit_pool.plan],
+                Prefetch("access_entries", queryset=AccessEntry.objects.all()),
+            )
+            access_map = {
+                e.key: e.typed_value
+                for e in credit_pool.plan.access_entries.all()
+            }
+            return {
+                "is_active": True,
+                "source": "credit",
+                "plan": credit_pool.plan,
+                "access_map": access_map,
+                "current_period_end": credit_pool.current_period_end,
+                "expires_at": credit_pool.current_period_end,
+                "is_credit_based": True,
+            }
+
+        return {
+            "is_active": False,
+            "source": None,
+            "plan": None,
+            "access_map": {},
+            "current_period_end": None,
+            "expires_at": None,
+            "is_credit_based": False,
+        }
+
+    @staticmethod
+    def _compute_next_invoice_id() -> int:
+        """Return the next safe invoice ID based on DB max id + 1."""
+        last = CreditInvoice.objects.order_by("-id").first()
+        return (last.id + 1) if last else 1
+
+    @staticmethod
+    def _compute_period_end(start, billing_cycle: str, periods: int):
+        """Compute the end date given a start, cycle type, and number of periods."""
+        from dateutil.relativedelta import relativedelta
+
+        if billing_cycle == "monthly":
+            return start + relativedelta(months=periods)
+        elif billing_cycle == "yearly":
+            return start + relativedelta(years=periods)
+        elif billing_cycle == "lifetime":
+            # Cap lifetime credits at 2 years for compliance/liability management
+            return start + relativedelta(years=2)
+        return start + relativedelta(months=periods)
+
+    @staticmethod
+    @transaction.atomic
+    def create_credit_pool(user, plan, amount_cents, source="manual",
+                           payment_reference="", created_by=None,
+                           currency="USD", tax_cents=0, notes=""):
+        """
+        Create a credit pool and its associated invoice.
+
+        Returns:
+            (CreditPool, CreditInvoice)
+
+        Raises:
+            ValueError: if plan price is 0 or amount is invalid.
+        
+        CRIT-10 FIX: Added verification that all objects were created successfully
+        to prevent partial state where pool exists without invoice.
+        """
+        from django.core.exceptions import ValidationError
+
+        if plan.price_cents <= 0 and amount_cents > 0:
+            raise ValueError("Cannot buy credits for a free plan.")
+
+        now = timezone.now()
+        credit_periods = max(1, amount_cents // plan.price_cents) if plan.price_cents > 0 else 1
+
+        period_start = now
+        period_end = BillingService._compute_period_end(
+            now, plan.billing_cycle, credit_periods
+        )
+
+        # Create pool first to get a stable DB ID, then use it for invoice numbering.
+        # This guarantees collision-free invoice numbers for tax compliance.
+        pool = CreditPool.objects.create(
+            user=user,
+            product=plan.product,
+            plan=plan,
+            amount_cents=amount_cents,
+            currency=currency,
+            credit_periods=credit_periods,
+            source=source,
+            payment_reference=payment_reference,
+            created_by=created_by,
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+            activated_at=now,
+            current_period_start=period_start,
+            current_period_end=period_end,
+            expires_at=period_end,
+        )
+
+        # CRIT-10 FIX: Verify pool was created successfully
+        if not pool.pk:
+            raise ValueError("Failed to create credit pool - rolling back transaction")
+
+        # LOW-12 FIX: Changed from %05d to %010d to support larger pool IDs
+        # The previous format limited to 99,999 pools; new format supports up to
+        # 9,999,999,999 pools which is sufficient for any scale.
+        invoice_number = "SB-CRED-%010d" % pool.id
+        invoice = CreditInvoice.objects.create(
+            credit_pool=pool,
+            user=user,
+            product=plan.product,
+            plan=plan,
+            invoice_number=invoice_number,
+            status=CreditInvoice.CreditInvoiceStatus.PAID,
+            amount_cents=amount_cents,
+            currency=currency,
+            tax_cents=tax_cents,
+            total_cents=amount_cents + tax_cents,
+            period_start=period_start,
+            period_end=period_end,
+            payment_reference=payment_reference,
+            notes=notes,
+            issued_at=now,
+        )
+
+        # CRIT-10 FIX: Verify invoice was created successfully
+        if not invoice.pk:
+            raise ValueError("Failed to create invoice - rolling back transaction")
+
+        CreditTransaction.objects.create(
+            credit_pool=pool,
+            invoice=invoice,
+            action=CreditTransaction.TransactionType.PURCHASE,
+            periods_delta=credit_periods,
+            amount_cents_delta=amount_cents,
+            periods_balance=credit_periods,
+            reason=f"Credit purchase via {source}",
+            created_by=created_by,
+        )
+
+        logger.info(
+            "CREDIT_POOL_CREATED: user=%s, plan=%s, amount=%sc, "
+            "periods=%s, source=%s, invoice=%s",
+            user.email,
+            plan.slug,
+            amount_cents,
+            credit_periods,
+            source,
+            invoice_number,
+        )
+
+        return pool, invoice
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_credit_pools_for_subscription(user, product):
+        """
+        Cancel all active credit pools for a user+product when they
+        start a Stripe subscription. Prevents double-access.
+        """
+        now = timezone.now()
+        active_pools = CreditPool.objects.filter(
+            user=user,
+            product=product,
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+        )
+
+        cancelled_count = 0
+        for pool in active_pools:
+            remaining = pool.periods_remaining
+            pool.status = CreditPool.CreditPoolStatus.CANCELLED
+            pool.expires_at = now
+            pool.current_period_end = now
+            pool.save(update_fields=["status", "expires_at", "current_period_end", "updated_at"])
+
+            CreditTransaction.objects.create(
+                credit_pool=pool,
+                action=CreditTransaction.TransactionType.ADJUST,
+                periods_delta=-remaining if remaining > 0 else 0,
+                amount_cents_delta=0,
+                periods_balance=0,
+                reason="Cancelled: user converted to Stripe subscription",
+            )
+            cancelled_count += 1
+
+        if cancelled_count:
+            logger.info(
+                "CREDIT_POOLS_CANCELLED_FOR_SUB: user=%s, product=%s, count=%d",
+                user.email,
+                product.slug,
+                cancelled_count,
+            )
+
+        return cancelled_count
+
+    # =========================================================================
+    # Async wrappers for credit methods
+    # =========================================================================
+
+    @staticmethod
+    async def aget_user_active_for_product(user, product) -> dict:
+        return await sync_to_async(BillingService.is_user_active_for_product)(user, product)
+
+    @staticmethod
+    async def acancel_credit_pools_for_subscription(user, product):
+        return await sync_to_async(BillingService.cancel_credit_pools_for_subscription)(user, product)

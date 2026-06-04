@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Re-bind Blue classes to luxury Hermès Orange spectrum */
+  --color-blue-50: #FDF2EC;
+  --color-blue-100: #FBE4D7;
+  --color-blue-200: #F6C8AF;
+  --color-blue-300: #EEA075;
+  --color-blue-400: #E77A42;
+  --color-blue-500: #E46327;
+  --color-blue-600: #E25212; /* Hermès Orange */
+  --color-blue-700: #C2410B; /* Hermès Hover Dark Orange */
+  --color-blue-800: #9E3205;
+  --color-blue-900: #6B2002;
+
+  /* Re-bind Slate classes to luxury Warm Parchment & Rich Espresso Leather spectrum */
+  --color-slate-50: #FAF8F5;  /* Bone backdrop */
+  --color-slate-100: #F4F0EA; /* Soft linen */
+  --color-slate-200: #EAE4DC; /* Divider sand level */
+  --color-slate-300: #DBD3C7; /* Active grey/cream borders */
+  --color-slate-400: #8C8479; /* Warm grey body text */
+  --color-slate-500: #736B60;
+  --color-slate-600: #5C5449;
+  --color-slate-700: #443D34;
+  --color-slate-750: #3E372F;
+  --color-slate-800: #29241E; /* Medium dark espresso/waxed leather */
+  --color-slate-850: #1D1915;
+  --color-slate-900: #13100E; /* Deep espresso charcoal shelf */
+  --color-slate-950: #0C0A09; /* Extra deep midnight leather shelf */
+}
+
+/* Luxury theme background & body overrides for supreme readability */
+body {
+  background-color: #FAF8F5;
+  color: #1c1917;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dynamic fade in transition and micro-interactions */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom scrollbars to blend with warm parchment canvas */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #FAF8F5;
+}
+::-webkit-scrollbar-thumb {
+  background: #E7E5E4;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D6D3D1;
+}

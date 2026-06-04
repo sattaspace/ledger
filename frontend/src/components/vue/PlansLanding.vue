@@ -1,21 +1,19 @@
 <script setup lang="ts">
 // Plans landing page — shows all products/domains with their plans
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage, getCurrentUser } from "@/lib/auth";
-import { useSubscription } from "@/composables";
+import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { useSubscription, useProducts } from "@/composables";
 import {
-  billingApi,
   formatPrice,
   formatCycle,
   getUserCurrency,
-  setUserCurrency,
 } from "@/lib/billing";
-import type { ProductDetailSchema } from "@/lib/billing";
+import type { ProductDetailSchema, AccessMatrixSchema } from "@/lib/billing";
 import { showToast } from "@/lib/toast";
 
-const products = ref<ProductDetailSchema[]>([]);
 const loading = ref(true);
-const { subscriptions, refetchSubscriptions } = useSubscription();
+const { subscriptions, fetchSubscriptions } = useSubscription();
+const { products, productDetails, accessMatrices, fetchAllProductDetails } = useProducts();
 
 // Get current subscription for a product
 function getSubForProduct(productSlug: string) {
@@ -43,36 +41,36 @@ function getStatusLabel(status: string, cancelAtPeriodEnd: boolean) {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+// Count access matrix features defined for a specific plan.
+// Uses the access matrix API data (synchronized with admin) — not the static plan.features.
+function getFeatureCount(productSlug: string, planSlug: string): number {
+  const matrix = accessMatrices.value.get(productSlug);
+  if (!matrix || matrix.rows.length === 0) return 0;
+  return matrix.rows.filter(
+    (row) => row.values[planSlug] !== undefined && row.values[planSlug] !== null,
+  ).length;
+}
+
+// Get product detail from the composable cache
+function getProductDetail(slug: string): ProductDetailSchema | undefined {
+  return productDetails.value.get(slug);
+}
+
 onMounted(async () => {
   if (!requireAuth()) return;
 
   try {
-    // Fetch user currency
-    try {
-      const user = await getCurrentUser();
-      if (user?.currency) {
-        setUserCurrency(user.currency);
-      }
-    } catch {
-      // Non-critical
-    }
-
+    // Currency is already set by useAuth or Navbar — no separate API call needed.
     const currency = getUserCurrency();
 
-    // Fetch all products with their plans in parallel
-    const [productsData] = await Promise.all([
-      billingApi.getProducts(),
-      refetchSubscriptions(),
+    // API-7 FIX: Use useProducts composable which fetches ALL product details
+    // and access matrices in parallel via fetchAllProductDetails(), with
+    // deduplication and caching. This eliminates the N+1 problem where
+    // PlansLanding previously fetched detail + matrix per product in a loop.
+    await Promise.all([
+      fetchAllProductDetails(currency),
+      fetchSubscriptions(),
     ]);
-
-    // Fetch detailed product data (with plans) for each product
-    const detailPromises = productsData.map((p) =>
-      billingApi.getProductBySlug(p.slug, currency).catch(() => null)
-    );
-    const details = await Promise.all(detailPromises);
-
-    // Filter out failed fetches
-    products.value = details.filter((d): d is ProductDetailSchema => d !== null);
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -89,6 +87,18 @@ onMounted(async () => {
       <p class="mt-1 text-sm text-[var(--color-muted-foreground)]">
         Browse plans across all available products. Click on any product to compare plans and manage your subscription.
       </p>
+      <!-- Alternative payment info -->
+      <div class="mt-3 flex items-start gap-2.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-4 py-3">
+        <svg class="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="text-sm">
+          <p class="text-blue-800 dark:text-blue-300 font-medium">Can't pay with an international card?</p>
+          <p class="text-blue-700 dark:text-blue-400 mt-0.5">
+            No worries — you can also <a href="/dashboard/billing/credits/request" class="font-semibold underline underline-offset-2 hover:text-blue-900 dark:hover:text-blue-200">purchase credits via bank transfer</a> to activate your subscription. No international payment method required.
+          </p>
+        </div>
+      </div>
     </div>
 
     <!-- Loading -->
@@ -150,9 +160,9 @@ onMounted(async () => {
                 {{ product.description }}
               </p>
               <!-- Service domains -->
-              <div v-if="product.service_domains && product.service_domains.length > 0" class="mt-2 flex flex-wrap gap-1.5">
+              <div v-if="getProductDetail(product.slug)?.service_domains && getProductDetail(product.slug)!.service_domains.length > 0" class="mt-2 flex flex-wrap gap-1.5">
                 <span
-                  v-for="domain in product.service_domains"
+                  v-for="domain in getProductDetail(product.slug)!.service_domains"
                   :key="domain.id"
                   class="inline-flex items-center rounded-md bg-[var(--color-accent)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)] font-mono"
                 >
@@ -167,9 +177,9 @@ onMounted(async () => {
         </div>
 
         <!-- Plan Summary Cards -->
-        <div v-if="product.plans && product.plans.length > 0" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div v-if="getProductDetail(product.slug)?.plans && getProductDetail(product.slug)!.plans.length > 0" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div
-            v-for="plan in product.plans"
+            v-for="plan in getProductDetail(product.slug)!.plans"
             :key="plan.id"
             class="rounded-lg border p-3 transition-colors"
             :class="[
@@ -204,9 +214,9 @@ onMounted(async () => {
                 {{ formatCycle(plan.billing_cycle) }}
               </span>
             </div>
-            <!-- Feature count -->
-            <p v-if="plan.features && Object.keys(plan.features).length > 0" class="mt-1.5 text-xs text-[var(--color-muted-foreground)]">
-              {{ Object.keys(plan.features).length }} feature{{ Object.keys(plan.features).length !== 1 ? 's' : '' }} included
+            <!-- Feature count — from access matrix (synchronized with admin) -->
+            <p v-if="getFeatureCount(product.slug, plan.slug) > 0" class="mt-1.5 text-xs text-[var(--color-muted-foreground)]">
+              {{ getFeatureCount(product.slug, plan.slug) }} feature{{ getFeatureCount(product.slug, plan.slug) !== 1 ? 's' : '' }} included
             </p>
             <p v-if="plan.trial_days > 0" class="mt-1 text-xs text-brand-600 dark:text-brand-400">
               {{ plan.trial_days }}-day free trial

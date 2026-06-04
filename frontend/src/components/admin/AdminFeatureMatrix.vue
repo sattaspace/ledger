@@ -53,23 +53,36 @@ function getCellValue(row: AccessMatrixRow, planSlug: string): string | null {
   return row.values[planSlug] ?? null;
 }
 
-function isCheckmark(value: string | null): boolean {
+function isCheckmark(value: string | null, valueType?: string): boolean {
   if (value === null) return false;
+  if (valueType === "boolean") {
+    return String(value).toLowerCase() === "true";
+  }
   const lower = String(value).toLowerCase();
   return lower === "true" || lower === "1";
 }
 
-function isFalsy(value: string | null): boolean {
+function isFalsy(value: string | null, valueType?: string): boolean {
   if (value === null) return true;
+  // For integer type, "0" is NOT falsy — it means "Unlimited"
+  if (valueType === "integer") return false;
   const lower = String(value).toLowerCase();
   return lower === "false" || lower === "0" || lower === "";
 }
 
-function formatCellValue(value: string | null): string {
+/** Whether integer value means unlimited (0 in integer type) */
+function isUnlimited(value: string | null, valueType?: string): boolean {
+  if (value === null || valueType !== "integer") return false;
+  const n = parseInt(String(value), 10);
+  return !isNaN(n) && n === 0;
+}
+
+function formatCellValue(value: string | null, valueType?: string): string {
   if (value === null) return "—";
   const lower = String(value).toLowerCase();
   if (lower === "true") return "Yes";
   if (lower === "false") return "No";
+  if (valueType === "integer" && lower === "0") return "Unlimited";
   return String(value);
 }
 
@@ -139,15 +152,24 @@ function hasValue(row: AccessMatrixRow, planSlug: string): boolean {
               v-for="row in rows"
               :key="row.key"
               class="group hover:bg-muted/30 transition-colors"
+              :class="{ 'bg-amber-50/50 dark:bg-amber-950/20': row.key === 'all' }"
             >
               <!-- Feature key + description -->
               <td class="px-4 py-3">
-                <div>
-                  <p class="font-medium text-foreground text-sm">{{ row.key }}</p>
-                  <p v-if="row.description" class="text-xs text-muted-foreground mt-0.5">
-                    {{ row.description }}
+                <div class="flex items-center gap-2">
+                  <p class="font-medium text-foreground text-sm">
+                    {{ row.key === 'all' ? 'All Features' : row.key }}
                   </p>
+                  <span
+                    v-if="row.key === 'all'"
+                    class="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                  >
+                    Wildcard
+                  </span>
                 </div>
+                <p v-if="row.description" class="text-xs text-muted-foreground mt-0.5">
+                  {{ row.key === 'all' ? 'Applies to all feature keys — grants blanket access' : row.description }}
+                </p>
               </td>
 
               <!-- Plan value cells -->
@@ -165,7 +187,7 @@ function hasValue(row: AccessMatrixRow, planSlug: string): boolean {
 
                 <!-- Boolean true → checkmark -->
                 <svg
-                  v-if="isCheckmark(getCellValue(row, plan.slug))"
+                  v-if="isCheckmark(getCellValue(row, plan.slug), row.value_type)"
                   class="mx-auto h-5 w-5 text-green-600 dark:text-green-400"
                   fill="none"
                   stroke="currentColor"
@@ -173,16 +195,21 @@ function hasValue(row: AccessMatrixRow, planSlug: string): boolean {
                 >
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                 </svg>
-                <!-- Falsy/empty → dash -->
+                <!-- Unlimited (integer 0) → purple badge -->
                 <span
-                  v-else-if="isFalsy(getCellValue(row, plan.slug))"
-                  class="text-muted-foreground/40"
+                  v-else-if="isUnlimited(getCellValue(row, plan.slug), row.value_type)"
+                  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-purple-50 text-purple-600 dark:bg-purple-950/50 dark:text-purple-400"
                 >
-                  &mdash;
+                  Unlimited
                 </span>
+                <!-- Falsy/empty → dash (but show "No" for 'all' key rows with boolean false) -->
+                <template v-else-if="isFalsy(getCellValue(row, plan.slug), row.value_type)">
+                  <span v-if="row.key === 'all' && getCellValue(row, plan.slug) !== null" class="text-red-500 font-medium text-xs">No</span>
+                  <span v-else class="text-muted-foreground/40">&mdash;</span>
+                </template>
                 <!-- Integer/string value -->
                 <span v-else class="font-medium text-foreground">
-                  {{ formatCellValue(getCellValue(row, plan.slug)) }}
+                  {{ formatCellValue(getCellValue(row, plan.slug), row.value_type) }}
                 </span>
               </td>
 

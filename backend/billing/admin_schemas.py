@@ -314,12 +314,21 @@ class AdminAccessEntryBulkSchema(Schema):
 
 
 class AdminAccessMatrixRowSchema(Schema):
-    """One row in the access comparison matrix (one access key across plans)."""
+    """One row in the access comparison matrix (one access key across plans).
+
+    Shared by both admin and public endpoints.  The ``entry_ids`` field is
+    only needed for admin CRUD operations — public consumers can safely
+    ignore it.
+    """
 
     key: str = Field(..., description="Access key identifier")
     description: Optional[str] = Field(
         None,
         description="Description from the first plan that defines this key",
+    )
+    value_type: str = Field(
+        "string",
+        description="How the value is cast: boolean, integer, or string",
     )
     values: dict[str, Any] = Field(
         default_factory=dict,
@@ -410,8 +419,84 @@ class AdminAccessMatrixRowSaveSchema(Schema):
 
 
 # =============================================================================
-# 9.1.5 — Subscription Schemas
+# 9.1.7 — Credit Pool Schemas
 # =============================================================================
+
+
+class AdminCreditPurchaseSchema(Schema):
+    """Input schema for admin creating a credit purchase record.
+
+    This records a manual/offline payment and activates credits immediately.
+    """
+
+    user_email: str = Field(
+        ...,
+        description="Email of the user receiving credits",
+        examples=["user@example.com"],
+    )
+    product_slug: str = Field(
+        ...,
+        description="Product slug",
+        examples=["finance"],
+    )
+    plan_slug: str = Field(
+        ...,
+        description="Plan slug",
+        examples=["standard"],
+    )
+    amount_cents: int = Field(
+        ...,
+        ge=0,
+        description="Amount paid in cents (e.g. 900 = $9.00)",
+        examples=[900],
+    )
+    currency: str = Field("USD", max_length=3, description="ISO 4217 currency code")
+    source: str = Field(
+        "manual",
+        description="Payment source: manual, local_gateway, bank_transfer, cash",
+    )
+    payment_reference: str = Field(
+        "",
+        description="Bank reference, TXN ID, or admin note",
+        examples=["TXN-20260529-001"],
+    )
+    tax_cents: int = Field(
+        0,
+        ge=0,
+        description="Tax amount in cents for compliance reporting",
+    )
+    notes: str = Field(
+        "",
+        description="Admin internal notes (not shown to user)",
+    )
+
+
+class AdminCreditRefundSchema(Schema):
+    """Input schema for refunding a credit pool."""
+
+    reason: str = Field(
+        ...,
+        description="Reason for the refund (audit trail)",
+        examples=["Service discontinued"],
+    )
+
+
+class AdminCreditAdjustSchema(Schema):
+    """Input schema for adjusting a credit pool balance."""
+
+    periods_delta: int = Field(
+        ...,
+        description="Positive to add periods, negative to remove",
+    )
+    reason: str = Field(
+        ...,
+        description="Reason for the adjustment (audit trail)",
+    )
+    amount_cents_delta: Optional[int] = Field(
+        None,
+        description="Monetary equivalent of the adjustment (positive or negative)",
+    )
+
 
 
 class AdminSubscriptionListItemSchema(Schema):

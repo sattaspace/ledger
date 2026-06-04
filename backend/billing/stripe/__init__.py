@@ -313,67 +313,118 @@ def create_stripe_refund(subscription, amount_cents=None, reason="", initiated_b
 
 
 def get_transaction_history(user, limit=25, starting_after=None) -> dict:
-    """Pull invoice/charge history from Stripe.
+    """Pull invoice/charge history from Stripe and merge with local CreditInvoices.
 
     Returns enriched transaction data matching the frontend TransactionItemSchema
     including charge details, payment method info, card brand, tax, and periods.
+    Credit invoices (from bank-transfer purchases) are included with
+    type="credit_invoice" so the frontend can render them alongside Stripe items.
     """
-    customer_id = find_customer_id(user)
-    if not customer_id:
-        return {"transactions": [], "has_more": False, "currency": "USD"}
+    from ..models import CreditInvoice
 
     default_currency = getattr(user, "currency", "USD")
 
-    result = list_invoices(
-        customer_id=customer_id,
-        limit=min(limit, 100),
-        starting_after=starting_after,
-        expand=["data.charge"],
+    # ── 1. Fetch Stripe invoices ────────────────────────────────────────────
+    customer_id = find_customer_id(user)
+    stripe_transactions = []
+    stripe_has_more = False
+
+    if customer_id:
+        result = list_invoices(
+            customer_id=customer_id,
+            limit=min(limit, 100),
+            starting_after=starting_after,
+            expand=["data.charge"],
+        )
+        stripe_has_more = result["has_more"]
+
+        for inv in result["data"]:
+            # Extract charge and payment method details from expanded data
+            charge = inv.get("charge") or {}
+            charge_obj = charge if isinstance(charge, dict) else {}
+            payment_method_details = charge_obj.get("payment_method_details") or {}
+            card = payment_method_details.get("card") or {}
+
+            # Extract description from invoice lines
+            lines_data = (inv.get("lines") or {}).get("data") or []
+            line_desc = (
+                lines_data[0].get("description", "Subscription")
+                if lines_data
+                else "Invoice"
+            )
+
+            stripe_transactions.append(
+                {
+                    "id": inv.get("id"),
+                    "type": "invoice",
+                    "number": inv.get("number"),
+                    "status": inv.get("status"),
+                    "amount_paid": (inv.get("amount_paid") or 0) / 100,
+                    "amount_due": (inv.get("amount_due") or 0) / 100,
+                    "tax": (inv.get("tax") or 0) / 100,
+                    "currency": (inv.get("currency") or "usd").upper(),
+                    "description": inv.get("description") or line_desc,
+                    "hosted_url": inv.get("hosted_invoice_url"),
+                    "pdf_url": inv.get("invoice_pdf"),
+                    "created": inv.get("created"),
+                    "period_start": inv.get("period_start"),
+                    "period_end": inv.get("period_end"),
+                    "paid": inv.get("status") == "paid",
+                    "attempt_count": inv.get("attempt_count", 1),
+                    "charge_id": charge_obj.get("id", ""),
+                    "payment_method": card.get("last4", ""),
+                    "card_brand": card.get("brand", ""),
+                }
+            )
+
+    # ── 2. Fetch local CreditInvoices ──────────────────────────────────────
+    credit_invoices = list(
+        CreditInvoice.objects.select_related("product", "plan")
+        .filter(user=user)
+        .order_by("-issued_at")[:limit]
     )
 
-    transactions = []
-    for inv in result["data"]:
-        # Extract charge and payment method details from expanded data
-        charge = inv.get("charge") or {}
-        charge_obj = charge if isinstance(charge, dict) else {}
-        payment_method_details = charge_obj.get("payment_method_details") or {}
-        card = payment_method_details.get("card") or {}
+    credit_transactions = []
+    for ci in credit_invoices:
+        # Convert CreditInvoice to the same dict shape as Stripe transactions
+        # so the frontend can render them uniformly.
+        issued_ts = None
+        if ci.issued_at:
+            issued_ts = int(ci.issued_at.timestamp())
+        elif ci.created_at:
+            issued_ts = int(ci.created_at.timestamp())
 
-        # Extract description from invoice lines
-        lines_data = (inv.get("lines") or {}).get("data") or []
-        line_desc = (
-            lines_data[0].get("description", "Subscription")
-            if lines_data
-            else "Invoice"
-        )
-
-        transactions.append(
+        credit_transactions.append(
             {
-                "id": inv.get("id"),
-                "type": "invoice",
-                "number": inv.get("number"),
-                "status": inv.get("status"),
-                "amount_paid": (inv.get("amount_paid") or 0) / 100,
-                "amount_due": (inv.get("amount_due") or 0) / 100,
-                "tax": (inv.get("tax") or 0) / 100,
-                "currency": (inv.get("currency") or "usd").upper(),
-                "description": inv.get("description") or line_desc,
-                "hosted_url": inv.get("hosted_invoice_url"),
-                "pdf_url": inv.get("invoice_pdf"),
-                "created": inv.get("created"),
-                "period_start": inv.get("period_start"),
-                "period_end": inv.get("period_end"),
-                "paid": inv.get("status") == "paid",
-                "attempt_count": inv.get("attempt_count", 1),
-                "charge_id": charge_obj.get("id", ""),
-                "payment_method": card.get("last4", ""),
-                "card_brand": card.get("brand", ""),
+                "id": f"credit-{ci.id}",
+                "type": "credit_invoice",
+                "number": ci.invoice_number,
+                "status": ci.status,
+                "amount_paid": ci.total_cents / 100,
+                "amount_due": ci.total_cents / 100,
+                "tax": ci.tax_cents / 100,
+                "currency": (ci.currency or "USD").upper(),
+                "description": f"{ci.product.name} — {ci.plan.name} (Credit)",
+                "hosted_url": None,
+                "pdf_url": f"/api/v1/billing/credits/invoices/{ci.invoice_number}/pdf",
+                "created": issued_ts,
+                "period_start": int(ci.period_start.timestamp()) if ci.period_start else None,
+                "period_end": int(ci.period_end.timestamp()) if ci.period_end else None,
+                "paid": ci.status == "paid",
+                "attempt_count": 1,
+                "charge_id": "",
+                "payment_method": ci.payment_reference or "",
+                "card_brand": "",
             }
         )
 
+    # ── 3. Merge and sort by date (newest first) ───────────────────────────
+    all_transactions = stripe_transactions + credit_transactions
+    all_transactions.sort(key=lambda t: t["created"] or 0, reverse=True)
+
     return {
-        "transactions": transactions,
-        "has_more": result["has_more"],
+        "transactions": all_transactions,
+        "has_more": stripe_has_more,
         "currency": default_currency,
     }
 

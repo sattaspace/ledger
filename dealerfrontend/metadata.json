@@ -1,0 +1,6 @@
+{
+  "name": "Dealer Management System",
+  "description": "An easy-to-use dashboard for dealers and staffs to manage inventory restock, vehicle/DSR sales, credit collections, and automated reports with Gemini recommendations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

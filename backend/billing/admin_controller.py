@@ -53,7 +53,7 @@ from django.http import HttpRequest
 from django.utils.text import slugify
 from asgiref.sync import sync_to_async
 
-from ninja import Query
+from ninja import Body, Query
 from ninja_extra import api_controller, http_get, http_post, http_put, http_patch, http_delete
 
 from common.exceptions import (
@@ -76,6 +76,9 @@ from .models import (
     SubscriptionStatus,
     Refund,
     RefundStatus,
+    CreditPool,
+    CreditInvoice,
+    CreditTransaction,
 )
 from .admin_schemas import (
     AdminProductCreateSchema,
@@ -97,8 +100,12 @@ from .admin_schemas import (
     AdminRefundListItemSchema,
     AdminRefundDetailSchema,
     AdminRefundApprovalSchema,
+    AdminCreditPurchaseSchema,
+    AdminCreditRefundSchema,
+    AdminCreditAdjustSchema,
 )
 from .admin_utils import log_admin_access, admin_write_rate_limit, admin_read_rate_limit
+from .services import BillingService
 
 logger = logging.getLogger(__name__)
 
@@ -1542,6 +1549,7 @@ class AdminPlanController:
                 if key not in all_entries:
                     all_entries[key] = {
                         "description": entry.description,
+                        "value_type": entry.value_type,
                         "values": {},
                         "entry_ids": {},
                     }
@@ -1551,15 +1559,19 @@ class AdminPlanController:
                 all_entries[key]["values"][plan.slug] = entry.value
                 all_entries[key]["entry_ids"][plan.slug] = entry.id
 
-        # Build rows sorted by key
+        # Build rows sorted by key ('all' first, then alphabetical)
+        sorted_keys = sorted(all_entries.keys(), key=lambda k: (0 if k == "all" else 1, k))
+
         rows = [
             {
                 "key": key,
                 "description": data["description"],
+                "value_type": data["value_type"],
                 "values": data["values"],
                 "entry_ids": data["entry_ids"],
             }
-            for key, data in sorted(all_entries.items())
+            for key in sorted_keys
+            for data in [all_entries[key]]
         ]
 
         return {
@@ -2345,3 +2357,896 @@ class AdminRefundController:
         )
 
         return await self._serialize_refund_detail(refund)
+
+
+# =============================================================================
+# Admin Controller — Credit Pool Management
+# =============================================================================
+
+
+@api_controller(
+    "/admin",
+    tags=["Admin — Credits"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated, IsAdmin],
+)
+class AdminCreditController:
+    """Admin endpoints for credit pool management.
+
+    All endpoints require JWT authentication with staff privileges.
+    Every mutation is audit-logged via @log_admin_access.
+    """
+
+    @http_get(
+        "/credits",
+        response={200: dict},
+        summary="List credit pools",
+        description="List all credit pools with filters and pagination.",
+    )
+    @admin_read_rate_limit
+    async def list_credit_pools(
+        self,
+        request: HttpRequest,
+        status: Optional[str] = Query(None, description="Filter by status: active, exhausted, expired, refunded, cancelled"),
+        source: Optional[str] = Query(None, description="Filter by payment source: manual, local_gateway, bank_transfer, cash"),
+        product_id: Optional[int] = Query(None, description="Filter by product ID"),
+        search: Optional[str] = Query(None, description="Search by user email"),
+        pagination: PaginationInput = Query(...),
+    ):
+        qs = CreditPool.objects.select_related(
+            "user", "product", "plan"
+        ).order_by("-created_at")
+
+        if status:
+            qs = qs.filter(status=status)
+        if source:
+            qs = qs.filter(source=source)
+        if product_id:
+            qs = qs.filter(product_id=product_id)
+        if search:
+            qs = qs.filter(user__email__icontains=search)
+
+        from common.utils import get_paginated_data_async
+
+        results, meta = await get_paginated_data_async(
+            qs, pagination.page, pagination.page_size
+        )
+
+        items = []
+        for pool in results:
+            items.append({
+                "id": pool.id,
+                "user_email": pool.user.email,
+                "plan_name": pool.plan.name,
+                "plan_slug": pool.plan.slug,
+                "product_name": pool.product.name,
+                "amount_cents": pool.amount_cents,
+                "display_amount": pool.display_amount,
+                "currency": pool.currency,
+                "credit_periods": pool.credit_periods,
+                "periods_consumed": pool.periods_consumed,
+                "periods_remaining": pool.periods_remaining,
+                "source": pool.source,
+                "payment_reference": pool.payment_reference,
+                "status": pool.status,
+                "is_effectively_active": pool.is_effectively_active,
+                "current_period_start": pool.current_period_start.isoformat() if pool.current_period_start else None,
+                "current_period_end": pool.current_period_end.isoformat() if pool.current_period_end else None,
+                "expires_at": pool.expires_at.isoformat() if pool.expires_at else None,
+                "created_at": pool.created_at.isoformat() if pool.created_at else None,
+            })
+
+        return {
+            "items": items,
+            "total": meta["total_items"],
+            "page": meta["current_page"],
+            "page_size": meta["page_size"],
+            "has_next": meta["has_next"],
+            "has_previous": meta["has_previous"],
+        }
+
+    @http_get(
+        "/credits/{credit_id}",
+        response={200: dict, 404: dict},
+        summary="Credit pool detail",
+        description="Get full credit pool detail with transaction history.",
+    )
+    @admin_read_rate_limit
+    async def get_credit_pool(
+        self,
+        request: HttpRequest,
+        credit_id: int,
+    ):
+        try:
+            pool = await CreditPool.objects.select_related(
+                "user", "product", "plan"
+            ).aget(pk=credit_id)
+        except CreditPool.DoesNotExist:
+            raise NotFoundException("Credit pool not found.")
+
+        transactions = [tx async for tx in pool.transactions.order_by("-created_at").all()]
+
+        return {
+            "id": pool.id,
+            "user_email": pool.user.email,
+            "plan_name": pool.plan.name,
+            "plan_slug": pool.plan.slug,
+            "product_name": pool.product.name,
+            "amount_cents": pool.amount_cents,
+            "display_amount": pool.display_amount,
+            "currency": pool.currency,
+            "credit_periods": pool.credit_periods,
+            "periods_consumed": pool.periods_consumed,
+            "periods_remaining": pool.periods_remaining,
+            "source": pool.source,
+            "payment_reference": pool.payment_reference,
+            "status": pool.status,
+            "is_effectively_active": pool.is_effectively_active,
+            "current_period_start": pool.current_period_start,
+            "current_period_end": pool.current_period_end,
+            "expires_at": pool.expires_at,
+            "created_at": pool.created_at,
+            "transactions": [
+                {
+                    "id": tx.id,
+                    "action": tx.action,
+                    "periods_delta": tx.periods_delta,
+                    "amount_cents_delta": tx.amount_cents_delta,
+                    "periods_balance": tx.periods_balance,
+                    "reason": tx.reason,
+                    "created_at": tx.created_at,
+                }
+                for tx in transactions
+            ],
+        }
+
+    @http_post(
+        "/credits",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Create credit purchase",
+        description="Record a manual/offline credit purchase for a user.",
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def create_credit_purchase(
+        self,
+        request: HttpRequest,
+        payload: AdminCreditPurchaseSchema,
+    ):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        try:
+            user = await User.objects.aget(email=payload.user_email)
+        except User.DoesNotExist:
+            raise NotFoundException("User with email '%s' not found." % payload.user_email)
+
+        try:
+            product = await Product.objects.aget(slug=payload.product_slug, is_active=True)
+        except Product.DoesNotExist:
+            raise NotFoundException("Product '%s' not found or inactive." % payload.product_slug)
+
+        plan = await Plan.objects.filter(
+            product=product, slug=payload.plan_slug, is_active=True
+        ).afirst()
+        if not plan:
+            raise NotFoundException(
+                "Plan '%s' not found or inactive in product '%s'."
+                % (payload.plan_slug, product.slug)
+            )
+
+        try:
+            pool, invoice = await sync_to_async(BillingService.create_credit_pool)(
+                user=user,
+                plan=plan,
+                amount_cents=payload.amount_cents,
+                source=payload.source,
+                payment_reference=payload.payment_reference,
+                created_by=request.user,
+                currency=payload.currency,
+                tax_cents=payload.tax_cents,
+                notes=payload.notes,
+            )
+        except ValueError as e:
+            raise BadRequestException(str(e))
+
+        return {
+            "pool": {
+                "id": pool.id,
+                "plan_name": pool.plan.name,
+                "plan_slug": pool.plan.slug,
+                "product_name": pool.product.name,
+                "amount_cents": pool.amount_cents,
+                "display_amount": pool.display_amount,
+                "currency": pool.currency,
+                "credit_periods": pool.credit_periods,
+                "periods_remaining": pool.periods_remaining,
+                "status": pool.status,
+                "is_effectively_active": pool.is_effectively_active,
+                "current_period_end": pool.current_period_end,
+            },
+            "invoice": {
+                "id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "status": invoice.status,
+                "amount_cents": invoice.amount_cents,
+                "tax_cents": invoice.tax_cents,
+                "total_cents": invoice.total_cents,
+                "currency": invoice.currency,
+                "issued_at": invoice.issued_at,
+            },
+            "message": f"Credit purchase recorded. Invoice #{invoice.invoice_number} for {pool.display_amount} covering {pool.credit_periods} period(s).",
+        }
+
+    @http_post(
+        "/credits/{credit_id}/refund",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Refund credit pool",
+        description="Refund a credit pool and void remaining periods.",
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def refund_credit_pool(
+        self,
+        request: HttpRequest,
+        credit_id: int,
+        payload: AdminCreditRefundSchema,
+    ):
+        # HIGH-13: Use select_for_update within transaction to prevent race conditions
+        # when concurrent refund and adjustment operations are made
+        from django.db import transaction
+        from django.utils import timezone as dj_timezone
+        
+        async with transaction.atomic():
+            try:
+                pool = await CreditPool.objects.select_related(
+                    "user", "plan"
+                ).select_for_update().aget(pk=credit_id)
+            except CreditPool.DoesNotExist:
+                raise NotFoundException("Credit pool not found.")
+
+            if pool.status in (
+                CreditPool.CreditPoolStatus.REFUNDED,
+                CreditPool.CreditPoolStatus.CANCELLED,
+            ):
+                raise BadRequestException(
+                    "Cannot refund a credit pool with status '%s'." % pool.status
+                )
+
+            now = dj_timezone.now()
+            remaining = pool.periods_remaining
+            refund_amount = (
+                remaining * pool.plan.price_cents if pool.plan.price_cents > 0 else 0
+            )
+
+            pool.status = CreditPool.CreditPoolStatus.REFUNDED
+            pool.expires_at = now
+            pool.current_period_end = now
+            await pool.asave(
+                update_fields=["status", "expires_at", "current_period_end", "updated_at"]
+            )
+
+            await CreditTransaction.objects.acreate(
+                credit_pool=pool,
+                action=CreditTransaction.TransactionType.REFUND,
+                periods_delta=-remaining,
+                amount_cents_delta=-refund_amount,
+                periods_balance=0,
+                reason=payload.reason,
+                created_by=request.user,
+            )
+
+        logger.info(
+            "ADMIN_CREDIT_REFUND: credit_id=%s, user=%s, refund_amount=%sc, reason='%s', by=%s",
+            pool.id,
+            pool.user.email,
+            refund_amount,
+            payload.reason[:100],
+            request.user.email,
+        )
+
+        return {
+            "id": pool.id,
+            "status": pool.status,
+            "periods_remaining": 0,
+            "message": "Credit pool refunded. %s period(s) voided." % remaining,
+        }
+
+    @http_post(
+        "/credits/{credit_id}/adjust",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Adjust credit balance",
+        description="Add or remove periods from a credit pool.",
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def adjust_credit_pool(
+        self,
+        request: HttpRequest,
+        credit_id: int,
+        payload: AdminCreditAdjustSchema,
+    ):
+        # CRIT-05 FIX: Use select_for_update within transaction to prevent race conditions
+        # when multiple concurrent adjustments are made to the same credit pool
+        from django.db import transaction
+        
+        async with transaction.atomic():
+            try:
+                pool = await CreditPool.objects.select_related(
+                    "user", "plan"
+                ).select_for_update().aget(pk=credit_id)
+            except CreditPool.DoesNotExist:
+                raise NotFoundException("Credit pool not found.")
+
+            if pool.status != CreditPool.CreditPoolStatus.ACTIVE:
+                raise BadRequestException(
+                    "Cannot adjust a credit pool with status '%s'." % pool.status
+                )
+
+            new_credit_periods = pool.credit_periods + payload.periods_delta
+            if new_credit_periods < 0:
+                raise BadRequestException(
+                    "Adjustment would result in negative credit periods."
+                )
+
+            old_periods = pool.credit_periods
+            pool.credit_periods = new_credit_periods
+            pool.periods_consumed = min(pool.periods_consumed, new_credit_periods)
+
+            if pool.periods_remaining <= 0 and pool.status == CreditPool.CreditPoolStatus.ACTIVE:
+                pool.status = CreditPool.CreditPoolStatus.EXHAUSTED
+
+            await pool.asave(
+                update_fields=["credit_periods", "periods_consumed", "status", "updated_at"]
+            )
+
+            amount_delta = (
+                payload.amount_cents_delta
+                if payload.amount_cents_delta is not None
+                else (
+                    payload.periods_delta * pool.plan.price_cents
+                    if pool.plan.price_cents > 0
+                    else 0
+                )
+            )
+
+            await CreditTransaction.objects.acreate(
+                credit_pool=pool,
+                action=CreditTransaction.TransactionType.ADJUST,
+                periods_delta=payload.periods_delta,
+                amount_cents_delta=amount_delta,
+                periods_balance=pool.periods_remaining,
+                reason=payload.reason,
+                created_by=request.user,
+            )
+
+            logger.info(
+                "ADMIN_CREDIT_ADJUST: credit_id=%s, delta=%s, old=%s, new=%s, by=%s",
+                pool.id,
+                payload.periods_delta,
+                old_periods,
+                new_credit_periods,
+                request.user.email,
+            )
+
+            return {
+                "id": pool.id,
+                "credit_periods": pool.credit_periods,
+                "periods_remaining": pool.periods_remaining,
+                "status": pool.status,
+                "message": "Credit pool adjusted by %+d periods." % payload.periods_delta,
+            }
+
+
+# =============================================================================
+# Admin Controller — Credit Purchase Request Management
+# =============================================================================
+
+
+@api_controller(
+    "/admin",
+    tags=["Admin — Credit Requests"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated, IsAdmin],
+)
+class AdminCreditRequestController:
+    """Admin endpoints for managing credit purchase requests."""
+
+    @http_get(
+        "/credit-requests",
+        response={200: dict},
+        summary="List credit purchase requests",
+    )
+    @admin_read_rate_limit
+    async def list_credit_requests(
+        self,
+        request: HttpRequest,
+        status: Optional[str] = Query(None),
+        search: Optional[str] = Query(None),
+        pagination: PaginationInput = Query(...),
+    ):
+        from .models import CreditPurchaseRequest
+        qs = CreditPurchaseRequest.objects.select_related("user", "product", "plan").order_by("-created_at")
+        if status:
+            qs = qs.filter(status=status)
+        if search:
+            qs = qs.filter(user__email__icontains=search)
+
+        from common.utils import get_paginated_data_async
+        results, meta = await get_paginated_data_async(qs, pagination.page, pagination.page_size)
+
+        return {"meta": meta, "results": [{
+            "id": r.id, "user_email": r.user.email,
+            "product_name": r.product.name, "plan_name": r.plan.name,
+            "amount_cents": r.amount_cents, "currency": r.currency,
+            "bank_name": r.bank_name, "account_holder_name": r.account_holder_name,
+            "account_number": r.account_number,
+            "transaction_reference": r.transaction_reference,
+            "payment_proof_note": r.payment_proof_note,
+            "status": r.status, "created_at": r.created_at,
+        } for r in results]}
+
+    @http_post(
+        "/credit-requests/{request_id}/approve",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Approve credit request",
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def approve_credit_request(self, request: HttpRequest, request_id: int):
+        from .models import CreditPurchaseRequest
+        from .services import BillingService
+        from .tasks import send_credit_request_approved_email
+        from django.utils import timezone as dj_tz
+        from django.db import transaction
+
+        # CRIT-03/FIX: Use select_for_update to prevent race condition where
+        # two admins could approve the same request simultaneously
+        async with transaction.atomic():
+            try:
+                cr = await CreditPurchaseRequest.objects.select_related(
+                    "user", "product", "plan"
+                ).select_for_update().aget(pk=request_id)
+            except CreditPurchaseRequest.DoesNotExist:
+                raise NotFoundException("Credit request not found.")
+
+            if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
+                raise BadRequestException(f"Cannot approve request with status '{cr.status}'.")
+
+            pool, invoice = await sync_to_async(BillingService.create_credit_pool)(
+                user=cr.user, plan=cr.plan, amount_cents=cr.amount_cents,
+                source="bank_transfer", payment_reference=cr.transaction_reference,
+                created_by=request.user, currency=cr.currency, tax_cents=0,
+                notes=f"Approved from credit request #{cr.id}. Bank: {cr.bank_name}",
+            )
+
+            cr.status = CreditPurchaseRequest.RequestStatus.APPROVED
+            cr.reviewed_by = request.user
+            cr.reviewed_at = dj_tz.now()
+            cr.created_credit_pool = pool
+            await cr.asave(update_fields=["status", "reviewed_by", "reviewed_at", "created_credit_pool", "updated_at"])
+
+        # Send approval email notification via Celery (outside transaction)
+        send_credit_request_approved_email.delay(
+            user_email=cr.user.email,
+            user_name=cr.user.first_name or cr.user.email.split('@')[0],
+            product_name=cr.product.name,
+            plan_name=cr.plan.name,
+            amount_cents=cr.amount_cents,
+            currency=cr.currency,
+            credit_pool_id=pool.id,
+            invoice_number=invoice.invoice_number,
+            periods=pool.credit_periods,
+        )
+
+        return {"id": cr.id, "status": cr.status, "credit_pool_id": pool.id,
+                "invoice_number": invoice.invoice_number, "message": "Approved."}
+
+    @http_post(
+        "/credit-requests/{request_id}/reject",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Reject credit request",
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def reject_credit_request(
+        self,
+        request: HttpRequest,
+        request_id: int,
+        payload: dict = None,
+    ):
+        from .models import CreditPurchaseRequest
+        from .tasks import send_credit_request_rejected_email
+        from django.utils import timezone as dj_tz
+
+        try:
+            cr = await CreditPurchaseRequest.objects.select_related("user", "product", "plan").aget(pk=request_id)
+        except CreditPurchaseRequest.DoesNotExist:
+            raise NotFoundException("Credit request not found.")
+
+        if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
+            raise BadRequestException(f"Cannot reject request with status '{cr.status}'.")
+
+        reason = ""
+        if payload and isinstance(payload, dict):
+            reason = payload.get("reason", "")
+
+        cr.status = CreditPurchaseRequest.RequestStatus.REJECTED
+        cr.reviewed_by = request.user
+        cr.reviewed_at = dj_tz.now()
+        cr.review_note = reason
+        await cr.asave(update_fields=["status", "reviewed_by", "reviewed_at", "review_note", "updated_at"])
+
+        # Send rejection email notification via Celery
+        send_credit_request_rejected_email.delay(
+            user_email=cr.user.email,
+            user_name=cr.user.first_name or cr.user.email.split('@')[0],
+            product_name=cr.product.name,
+            plan_name=cr.plan.name,
+            amount_cents=cr.amount_cents,
+            currency=cr.currency,
+            reason=reason,
+        )
+
+        return {"id": cr.id, "status": cr.status, "message": "Rejected."}
+
+
+# =============================================================================
+# Admin Controller — Credit Invoice Endpoints
+# =============================================================================
+
+
+@api_controller(
+    "/admin",
+    tags=["Admin — Credit Invoices"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated, IsAdmin],
+)
+class AdminCreditInvoiceController:
+    """Admin endpoints for credit invoice management."""
+
+    @http_get(
+        "/credit-invoices",
+        response={200: dict},
+        summary="List credit invoices",
+        description="List all credit invoices with filters and pagination.",
+    )
+    @admin_read_rate_limit
+    async def list_credit_invoices(
+        self,
+        request: HttpRequest,
+        status: Optional[str] = Query(None),
+        search: Optional[str] = Query(
+            None, description="Search by invoice number or email"
+        ),
+        pagination: PaginationInput = Query(...),
+    ):
+        qs = CreditInvoice.objects.select_related(
+            "user", "product", "plan"
+        ).order_by("-issued_at")
+
+        if status:
+            qs = qs.filter(status=status)
+        if search:
+            qs = qs.filter(
+                models.Q(invoice_number__icontains=search)
+                | models.Q(user__email__icontains=search)
+            )
+
+        from common.utils import get_paginated_data_async
+
+        results, meta = await get_paginated_data_async(
+            qs, pagination.page, pagination.page_size
+        )
+
+        items = []
+        for inv in results:
+            items.append({
+                "id": inv.id,
+                "invoice_number": inv.invoice_number,
+                "user_email": inv.user.email,
+                "product_name": inv.product.name,
+                "plan_name": inv.plan.name,
+                "amount_cents": inv.amount_cents,
+                "tax_cents": inv.tax_cents,
+                "total_cents": inv.total_cents,
+                "currency": inv.currency,
+                "status": inv.status,
+                "issued_at": inv.issued_at,
+            })
+
+        return {
+            "items": items,
+            "total": meta["total_items"],
+            "page": meta["current_page"],
+            "page_size": meta["page_size"],
+            "has_next": meta["has_next"],
+            "has_previous": meta["has_previous"],
+        }
+
+    @http_get(
+        "/credit-invoices/{invoice_number}",
+        response={200: dict, 404: dict},
+        summary="Credit invoice detail",
+        description="Get full credit invoice detail.",
+    )
+    @admin_read_rate_limit
+    async def get_credit_invoice(
+        self,
+        request: HttpRequest,
+        invoice_number: str,
+    ):
+        try:
+            inv = await CreditInvoice.objects.select_related(
+                "user", "product", "plan", "credit_pool"
+            ).aget(invoice_number=invoice_number)
+        except CreditInvoice.DoesNotExist:
+            raise NotFoundException(
+                "Credit invoice '%s' not found." % invoice_number
+            )
+
+        return {
+            "id": inv.id,
+            "invoice_number": inv.invoice_number,
+            "user_email": inv.user.email,
+            "product_name": inv.product.name,
+            "plan_name": inv.plan.name,
+            "amount_cents": inv.amount_cents,
+            "tax_cents": inv.tax_cents,
+            "total_cents": inv.total_cents,
+            "currency": inv.currency,
+            "status": inv.status,
+            "period_start": inv.period_start,
+            "period_end": inv.period_end,
+            "payment_reference": inv.payment_reference,
+            "notes": inv.notes,
+            "issued_at": inv.issued_at,
+            "credit_pool_id": inv.credit_pool_id,
+        }
+
+    @http_get(
+        "/credit-invoices/{invoice_number}/pdf",
+        response={200: dict},
+        summary="Download credit invoice PDF",
+        description="Generate and download a PDF version of the credit invoice.",
+    )
+    @admin_read_rate_limit
+    async def get_credit_invoice_pdf(
+        self,
+        request: HttpRequest,
+        invoice_number: str,
+    ):
+        """Generate professional PDF for credit invoice."""
+        from django.http import HttpResponse
+        from asgiref.sync import sync_to_async
+        from .pdf_utils import generate_credit_invoice_pdf
+
+        try:
+            inv = await CreditInvoice.objects.select_related(
+                "user", "product", "plan", "credit_pool"
+            ).aget(invoice_number=invoice_number)
+        except CreditInvoice.DoesNotExist:
+            raise NotFoundException(
+                "Credit invoice '%s' not found." % invoice_number
+            )
+
+        # Generate professional PDF using shared utility
+        try:
+            pdf_bytes = await sync_to_async(generate_credit_invoice_pdf)(inv)
+        except ImportError:
+            raise BadRequestException(
+                "PDF generation is not available. Please install reportlab."
+            )
+
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{inv.invoice_number}.pdf"'
+        return response
+
+
+# =============================================================================
+# Admin Bank Settings Controller
+# =============================================================================
+
+
+@api_controller(
+    "/admin/bank-settings",
+    tags=["Admin — Bank Settings"],
+    auth=JWTAuth(),
+    permissions=[IsAuthenticated, IsAdmin],
+)
+class AdminBankSettingsController:
+    """Admin endpoints for bank settings management.
+
+    Bank settings define the bank accounts where users can send payments
+    for credit purchases via bank transfer. Multiple active accounts are allowed.
+    """
+
+    @http_get(
+        "",
+        response={200: dict},
+        summary="List all bank settings",
+        description="Get all bank settings (active and inactive) for management.",
+    )
+    @admin_read_rate_limit
+    async def list_bank_settings(self, request: HttpRequest):
+        from .models import BankSettings
+
+        settings = []
+        async for bank in BankSettings.objects.all().order_by("-is_active", "id"):
+            settings.append({
+                "id": bank.id,
+                "bank_name": bank.bank_name,
+                "account_holder_name": bank.account_holder_name,
+                "account_number": bank.account_number,
+                "routing_number": bank.routing_number,
+                "is_active": bank.is_active,
+            })
+
+        return {"banks": settings, "count": len(settings)}
+
+    @http_post(
+        "",
+        response={200: dict, 400: dict},
+        summary="Create bank settings",
+        description="Create a new bank account setting.",
+    )
+    @admin_write_rate_limit
+    async def create_bank_settings(
+        self,
+        request: HttpRequest,
+        bank_name: str = Body(...),
+        account_holder_name: str = Body(...),
+        account_number: str = Body(...),
+        routing_number: str = Body(""),
+        is_active: bool = Body(True),
+    ):
+        from .models import BankSettings
+
+        # MED-13 FIX: Check for duplicate bank account
+        # Prevent creating duplicate bank settings with same bank_name and account_number
+        existing = await BankSettings.objects.filter(
+            bank_name=bank_name,
+            account_number=account_number,
+        ).afirst()
+        
+        if existing:
+            raise ConflictException(
+                f"Bank account already exists for '{bank_name}' with this account number. "
+                f"Existing ID: {existing.id}"
+            )
+
+        settings = await BankSettings.objects.acreate(
+            bank_name=bank_name,
+            account_holder_name=account_holder_name,
+            account_number=account_number,
+            routing_number=routing_number,
+            is_active=is_active,
+        )
+
+        logger.info(
+            "ADMIN_BANK_SETTINGS_CREATED: id=%s, bank_name='%s', is_active=%s, created_by=%s",
+            settings.id,
+            settings.bank_name,
+            settings.is_active,
+            request.user.email,
+        )
+
+        return {
+            "id": settings.id,
+            "bank_name": settings.bank_name,
+            "account_holder_name": settings.account_holder_name,
+            "account_number": settings.account_number,
+            "routing_number": settings.routing_number,
+            "is_active": settings.is_active,
+            "message": "Bank settings created successfully.",
+        }
+
+    @http_put(
+        "/{settings_id}",
+        response={200: dict, 404: dict},
+        summary="Update bank settings",
+        description="Update an existing bank account setting.",
+    )
+    @admin_write_rate_limit
+    async def update_bank_settings(
+        self,
+        request: HttpRequest,
+        settings_id: int,
+        bank_name: str = Body(...),
+        account_holder_name: str = Body(...),
+        account_number: str = Body(...),
+        routing_number: str = Body(""),
+        is_active: bool = Body(True),
+    ):
+        from .models import BankSettings
+
+        try:
+            settings = await BankSettings.objects.aget(pk=settings_id)
+        except BankSettings.DoesNotExist:
+            raise NotFoundException("Bank settings not found.")
+
+        settings.bank_name = bank_name
+        settings.account_holder_name = account_holder_name
+        settings.account_number = account_number
+        settings.routing_number = routing_number
+        settings.is_active = is_active
+        await settings.asave()
+
+        logger.info(
+            "ADMIN_BANK_SETTINGS_UPDATED: id=%s, bank_name='%s', is_active=%s, updated_by=%s",
+            settings.id,
+            settings.bank_name,
+            settings.is_active,
+            request.user.email,
+        )
+
+        return {
+            "id": settings.id,
+            "bank_name": settings.bank_name,
+            "account_holder_name": settings.account_holder_name,
+            "account_number": settings.account_number,
+            "routing_number": settings.routing_number,
+            "is_active": settings.is_active,
+            "message": "Bank settings updated successfully.",
+        }
+
+    @http_patch(
+        "/{settings_id}/toggle",
+        response={200: dict, 404: dict},
+        summary="Toggle bank settings active status",
+        description="Activate or deactivate a bank account setting.",
+    )
+    @admin_write_rate_limit
+    async def toggle_bank_settings(self, request: HttpRequest, settings_id: int):
+        from .models import BankSettings
+
+        try:
+            settings = await BankSettings.objects.aget(pk=settings_id)
+        except BankSettings.DoesNotExist:
+            raise NotFoundException("Bank settings not found.")
+
+        settings.is_active = not settings.is_active
+        await settings.asave()
+
+        status = "activated" if settings.is_active else "deactivated"
+        logger.info(
+            "ADMIN_BANK_SETTINGS_TOGGLED: id=%s, bank_name='%s', status=%s, toggled_by=%s",
+            settings.id,
+            settings.bank_name,
+            status,
+            request.user.email,
+        )
+
+        return {
+            "id": settings.id,
+            "bank_name": settings.bank_name,
+            "is_active": settings.is_active,
+            "message": f"Bank settings {status} successfully.",
+        }
+
+    @http_delete(
+        "/{settings_id}",
+        response={200: dict, 404: dict},
+        summary="Delete bank settings",
+        description="Delete a bank account setting permanently.",
+    )
+    @admin_write_rate_limit
+    async def delete_bank_settings(self, request: HttpRequest, settings_id: int):
+        from .models import BankSettings
+
+        try:
+            settings = await BankSettings.objects.aget(pk=settings_id)
+        except BankSettings.DoesNotExist:
+            raise NotFoundException("Bank settings not found.")
+
+        bank_name = settings.bank_name
+        await settings.adelete()
+
+        logger.info(
+            "ADMIN_BANK_SETTINGS_DELETED: id=%s, bank_name='%s', deleted_by=%s",
+            settings_id,
+            bank_name,
+            request.user.email,
+        )
+
+        return {"message": f"Bank settings '{bank_name}' deleted successfully."}

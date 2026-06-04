@@ -1,0 +1,17 @@
+---
+/**
+ * Credit Request — /dashboard/billing/credits/request
+ *
+ * Form for users to request credits via bank transfer.
+ * Mounts CreditRequestClient Vue component.
+ */
+import DashboardLayout from "@/layouts/DashboardLayout.astro";
+import CreditRequestClient from "@/components/vue/CreditRequestClient.vue";
+---
+
+<DashboardLayout
+  title="Request Credits — SattaBase"
+  description="Pay via bank transfer and receive credits for your subscription."
+>
+  <CreditRequestClient client:only="vue" />
+</DashboardLayout>

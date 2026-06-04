@@ -8,6 +8,7 @@
  * Available composables:
  *   useAuth()             — Shared auth + billing state (user, subscription, access, error, refetch)
  *   useSubscription()     — Shared subscription list state (deduplicates concurrent fetches)
+ *   useProducts()         — Shared product catalog state (deduplicates concurrent fetches, caches details + matrices)
  *   useAccess()           — Reactive feature-access checking (hasAccess, getAccess, accessKeys)
  *   useBillingRedirect()  — Detect billing return from Sattabase (triggers useAuth refetch)
  *   usePasswordStrength() — Password validation + strength indicator
@@ -21,6 +22,7 @@
 
 export { useAuth } from "./useAuth";
 export { useSubscription } from "./useSubscription";
+export { useProducts } from "./useProducts";
 export { useAccess } from "./useAccess";
 export { useBillingRedirect } from "./useBillingRedirect";
 export { usePasswordStrength } from "./usePasswordStrength";
@@ -35,3 +37,5 @@ export { useAsyncAction } from "./useAsyncAction";
 export type { AsyncActionOptions } from "./useAsyncAction";
 export { useMediaQuery } from "./useMediaQuery";
 export { useAdminGuard } from "./useAdminGuard";
+export { useTransactions } from "./useTransactions";
+export { useAdminData } from "./useAdminData";

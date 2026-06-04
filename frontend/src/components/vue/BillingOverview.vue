@@ -11,8 +11,10 @@
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
-import { useSubscription } from "@/composables";
+import { authHelpers } from "@/lib/api";
+import { useSubscription, useProducts } from "@/composables";
 import { showToast } from "@/lib/toast";
+import { creditsApi } from "@/lib/credits";
 import {
   billingApi,
   formatPrice,
@@ -47,17 +49,21 @@ function storeReturnUrl(url: string | null) {
 }
 
 /** Redirect to return_url with billing_updated param */
+// VUE 3 CONVENTION: Use authHelpers.navigateTo() (Astro's navigate())
+// instead of window.location.href for internal redirects to avoid the
+// "querySelector null" error during View Transitions.
 function redirectToReturnUrl(updated: 1 | 0) {
   const url = returnUrl.value || getStoredReturnUrl();
   if (!url) return;
   storeReturnUrl(null); // Clean up
   const separator = url.includes("?") ? "&" : "?";
-  window.location.href = `${url}${separator}billing_updated=${updated}`;
+  const fullUrl = `${url}${separator}billing_updated=${updated}`;
+  setTimeout(() => authHelpers.navigateTo(fullUrl), 0);
 }
 
 const loading = ref(true);
 const loadError = ref(false);
-const products = ref<ProductSchema[]>([]);
+const { products, fetchProducts } = useProducts();
 const { subscriptions, refetchSubscriptions } = useSubscription();
 const actionLoading = ref<string | null>(null);
 const transactions = ref<TransactionItemSchema[]>([]);
@@ -251,32 +257,21 @@ onMounted(async () => {
   // Moved out of onMounted so it's accessible from the template
   async function fetchInitialData() {
     try {
-      const [productsData] = await Promise.all([
-        billingApi.getProducts(),
+      // API-5 FIX: Use useProducts composable instead of direct API call.
+      // Products are now cached and shared across components (BillingOverview,
+      // PlansLanding, PlanComparison). If another component already fetched
+      // products, this returns cached data instantly.
+      await Promise.all([
+        fetchProducts(),
         refetchSubscriptions(),
       ]);
-      products.value = productsData;
 
-      // Fetch user's preferred currency from auth/me (F13)
-      try {
-        const authData = await billingApi.getAuthMe();
-        if (authData?.user?.currency) {
-          const cur = authData.user.currency as string;
-          userCurrency.value = cur;
-          // Also update the global default so PlanComparison etc. benefit
-          setUserCurrency(cur);
-
-          // UX-03: Detect currency mismatch between user preference and
-          // the global default that was set by Navbar before this fetch
-          // completed (race condition recovery).
-          const prevGlobal = getUserCurrency();
-          if (prevGlobal && prevGlobal !== cur) {
-            currencyMismatch.value = true;
-            lockedCurrency.value = cur;
-          }
-        }
-      } catch {
-        // Non-critical — falls back to "USD"
+      // Get user's preferred currency from the global store (already
+      // fetched by useAuth or Navbar — no need for another API call).
+      // Previously this called billingApi.getAuthMe() redundantly.
+      const cur = getUserCurrency();
+      if (cur && cur !== "USD") {
+        userCurrency.value = cur;
       }
 
       // UX-01: Auto-load initial billing history for paid subscribers
@@ -493,6 +488,27 @@ async function loadTransactions() {
     showToast(getErrorMessage(err), "error");
   } finally {
     transactionsLoading.value = false;
+  }
+}
+
+// ── Credit Invoice PDF Download ────────────────────────────────────────────────
+// Same mechanism as TransactionHistory.vue: credit invoice PDFs require
+// Authorization header, so we can't use a plain <a href> link.
+// We use fetch() with Bearer token, then open the resulting Blob URL.
+
+const downloadingInvoice = ref<string | null>(null);
+
+async function downloadCreditInvoicePdf(tx: TransactionItemSchema) {
+  if (tx.type !== "credit_invoice" || !tx.number) return;
+  downloadingInvoice.value = tx.number;
+  try {
+    const blobUrl = await creditsApi.downloadCreditInvoicePdf(tx.number);
+    window.open(blobUrl, "_blank");
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  } catch (err: any) {
+    showToast(err.message || "Failed to download invoice PDF", "error");
+  } finally {
+    downloadingInvoice.value = null;
   }
 }
 </script>
@@ -890,27 +906,7 @@ async function loadTransactions() {
               <!-- Detail content -->
               <template v-else-if="subDetails.get(sub.product_slug)">
                 <div class="space-y-4">
-                  <!-- Plan Features -->
-                  <div v-if="Object.keys(subDetails.get(sub.product_slug)!.plan.features).length > 0">
-                    <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)] mb-2">Plan Features</h4>
-                    <div class="grid gap-1.5 sm:grid-cols-2">
-                      <div
-                        v-for="(value, key) in subDetails.get(sub.product_slug)!.plan.features"
-                        :key="key"
-                        class="flex items-start gap-2 text-sm"
-                      >
-                        <svg class="h-4 w-4 shrink-0 mt-0.5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                        </svg>
-                        <div class="min-w-0">
-                          <span class="font-medium text-foreground">{{ key }}</span>
-                          <span class="text-[var(--color-muted-foreground)]">: {{ value }}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Access Entries -->
+                  <!-- Access Entries (source of truth from admin Access Matrix) -->
                   <div v-if="subDetails.get(sub.product_slug)!.plan.access_entries.length > 0">
                     <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)] mb-2">Access Limits</h4>
                     <div class="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -1089,22 +1085,24 @@ async function loadTransactions() {
                   class="text-sm font-medium truncate"
                   :class="{
                     'text-green-700 dark:text-green-400': tx.status === 'paid',
+                    'text-blue-700 dark:text-blue-400': tx.status === 'issued',
                     'text-orange-600 dark:text-orange-400': tx.status === 'open',
-                    'text-red-600 dark:text-red-400': tx.status === 'uncollectible',
+                    'text-red-600 dark:text-red-400': tx.status === 'uncollectible' || tx.status === 'void',
                     'text-[var(--color-muted-foreground)]': tx.status === 'draft',
                   }"
                 >
-                  {{ tx.status === 'paid' ? 'Paid' : tx.status === 'draft' ? 'Pending' : tx.status }}
+                  {{ tx.status === 'paid' ? 'Paid' : tx.status === 'issued' ? 'Issued' : tx.status === 'draft' ? 'Pending' : tx.status === 'open' ? 'Pending' : tx.status }}
                 </span>
                 <span v-if="tx.number" class="text-xs text-[var(--color-muted-foreground)]">
                   #{{ tx.number }}
                 </span>
-                <span v-if="tx.card_brand" class="text-xs text-[var(--color-muted-foreground)]">
+                <span v-if="tx.type === 'credit_invoice'" class="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-950/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">Bank Transfer</span>
+                <span v-else-if="tx.card_brand" class="text-xs text-[var(--color-muted-foreground)]">
                   • {{ tx.card_brand }} **** {{ tx.payment_method }}
                 </span>
               </div>
               <div class="text-sm text-[var(--color-muted-foreground)]">
-                {{ tx.description || (tx.type === 'invoice' ? 'Invoice' : 'Charge') }}
+                {{ tx.description || (tx.type === 'credit_invoice' ? 'Credit Purchase' : tx.type === 'invoice' ? 'Invoice' : 'Charge') }}
                 <span v-if="tx.period_start" class="ml-2 text-xs">
                   ({{ formatDate(tx.period_start) }} – {{ formatDate(tx.period_end) }})
                 </span>
@@ -1119,12 +1117,27 @@ async function loadTransactions() {
                   + {{ formatPrice(Math.round(tx.tax * 100), tx.currency) }} tax
                 </span>
               </div>
-              <!-- UX-14 Fix: Added PDF download button using tx.pdf_url.
-                   Previously, only hosted_url (Stripe invoice page) was rendered.
-                   Users had no way to download the PDF directly from the UI. -->
+              <!-- PDF download: credit invoices use fetch+Blob (needs auth header),
+                   Stripe invoices use direct URL links -->
               <div class="flex items-center gap-2 shrink-0">
+                <button
+                  v-if="tx.type === 'credit_invoice' && tx.number"
+                  :disabled="downloadingInvoice === tx.number"
+                  class="btn-ghost text-xs text-[var(--color-muted-foreground)] hover:text-foreground disabled:opacity-50 disabled:cursor-wait"
+                  title="Download PDF"
+                  @click="downloadCreditInvoicePdf(tx)"
+                >
+                  <svg v-if="downloadingInvoice === tx.number" class="h-3.5 w-3.5 mr-1 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <svg v-else class="h-3.5 w-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  PDF
+                </button>
                 <a
-                  v-if="tx.pdf_url"
+                  v-else-if="tx.pdf_url && tx.type !== 'credit_invoice'"
                   :href="tx.pdf_url"
                   target="_blank"
                   rel="noopener noreferrer"

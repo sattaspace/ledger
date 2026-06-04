@@ -579,3 +579,597 @@ def recognize_revenue(self, target_date: str = None):
     except Exception as exc:
         logger.error(f"Revenue recognition task failed: {exc}", exc_info=True)
         raise self.retry(exc=exc)
+
+
+# =============================================================================
+# Credit Request Email Notifications
+# =============================================================================
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,  # 1 min between retries
+)
+def send_credit_request_approved_email(
+    self,
+    user_email: str,
+    user_name: str,
+    product_name: str,
+    plan_name: str,
+    amount_cents: int,
+    currency: str,
+    credit_pool_id: int,
+    invoice_number: str,
+    periods: int,
+):
+    """Send email notification when a credit request is approved.
+
+    Called after admin approves a CreditPurchaseRequest. Sends a professional
+    HTML confirmation email to the user with their credit pool details and
+    invoice number.
+
+    Args:
+        user_email: Recipient email address.
+        user_name: User's first name or display name.
+        product_name: Product name for the credit.
+        plan_name: Plan name for the credit.
+        amount_cents: Amount paid in cents.
+        currency: ISO 4217 currency code.
+        credit_pool_id: ID of the created CreditPool.
+        invoice_number: Invoice number for reference.
+        periods: Number of billing periods credited.
+    """
+    from django.core.mail import send_mail
+    from django.conf import settings
+
+    try:
+        # Format amount
+        amount_display = f"{amount_cents / 100:.2f} {currency}"
+
+        # Build email body
+        subject = f"Credit Purchase Approved — {product_name}"
+        app_domain = getattr(settings, 'STRIPE_APP_DOMAIN', '')
+
+        display_name = user_name or user_email.split('@')[0]
+
+        # Professional HTML email body
+        html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;padding:32px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+
+<!-- Header -->
+<tr><td style="background-color:#2563EB;padding:32px 40px;">
+<h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.3px;">SattaBase</h1>
+<p style="margin:4px 0 0;color:#BFDBFE;font-size:13px;">Billing &amp; Subscription Platform</p>
+</td></tr>
+
+<!-- Success Badge -->
+<tr><td style="padding:32px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:#ECFDF5;border-radius:6px;padding:6px 14px;">
+<span style="color:#059669;font-size:13px;font-weight:600;">&#10003; Approved</span>
+</td></tr></table>
+</td></tr>
+
+<!-- Greeting -->
+<tr><td style="padding:20px 40px 0;">
+<h2 style="margin:0;color:#111827;font-size:22px;font-weight:700;">Credit Purchase Confirmed</h2>
+<p style="margin:8px 0 0;color:#6B7280;font-size:15px;line-height:1.5;">
+Hi {display_name}, great news! Your credit purchase request has been approved and your credits are now active.
+</p>
+</td></tr>
+
+<!-- Details Card -->
+<tr><td style="padding:24px 40px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F9FAFB;border-radius:8px;border:1px solid #E5E7EB;">
+<tr><td style="padding:20px 24px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Product</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{product_name}</span>
+</td>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Plan</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{plan_name}</span>
+</td>
+</tr>
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Amount</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{amount_display}</span>
+</td>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Periods</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{periods}</span>
+</td>
+</tr>
+<tr>
+<td style="padding:8px 0;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Invoice</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{invoice_number}</span>
+</td>
+<td style="padding:8px 0;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Payment</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">Bank Transfer</span>
+</td>
+</tr>
+</table>
+</td></tr></table>
+</td></tr>
+
+<!-- Action Buttons -->
+<tr><td style="padding:28px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:#2563EB;border-radius:6px;padding:0;">
+<a href="{app_domain}/dashboard/billing/credits" style="display:inline-block;padding:12px 24px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">View My Credits</a>
+</td>
+<td style="width:12px;"></td>
+<td style="background-color:#F3F4F6;border-radius:6px;padding:0;">
+<a href="{app_domain}/dashboard/billing/transactions" style="display:inline-block;padding:12px 24px;color:#374151;font-size:14px;font-weight:600;text-decoration:none;">Download Invoice</a>
+</td>
+</tr></table>
+</td></tr>
+
+<!-- Info -->
+<tr><td style="padding:24px 40px 0;">
+<p style="margin:0;color:#6B7280;font-size:13px;line-height:1.6;">
+Your credits are now active and will be applied to your subscription automatically each billing cycle. You can download your invoice PDF from the Transactions page at any time.
+</p>
+</td></tr>
+
+<!-- Footer -->
+<tr><td style="padding:32px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #E5E7EB;">
+<tr><td style="padding-top:20px;">
+<p style="margin:0;color:#9CA3AF;font-size:11px;line-height:1.5;">
+This email was sent by SattaBase. If you have any questions, please contact our support team.
+</p>
+</td></tr></table>
+</td></tr>
+
+</table>
+</td></tr></table>
+</body>
+</html>"""
+
+        # Plain text fallback for email clients that don't support HTML
+        body = (
+            f"Hi {display_name},\n\n"
+            f"Great news! Your credit purchase request has been approved.\n\n"
+            f"Product: {product_name}\n"
+            f"Plan: {plan_name}\n"
+            f"Amount: {amount_display}\n"
+            f"Billing Periods: {periods}\n"
+            f"Invoice: {invoice_number}\n\n"
+            f"Your credits are now active and will be applied to your subscription "
+            f"automatically each billing cycle.\n\n"
+            f"View your credits: {app_domain}/dashboard/billing/credits\n"
+            f"Download invoice: {app_domain}/dashboard/billing/transactions\n\n"
+            f"Thank you for your payment!\n\n"
+            f"— The SattaBase Team"
+        )
+
+        sent = send_mail(
+            subject=subject,
+            message=body,
+            html_message=html_body,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@sattabase.com"),
+            recipient_list=[user_email],
+            fail_silently=False,
+        )
+
+        if sent:
+            logger.info(
+                f"CREDIT_EMAIL: Sent approval notification to {user_email} "
+                f"for credit_pool={credit_pool_id}"
+            )
+            return {"status": "sent", "user_email": user_email}
+        else:
+            logger.warning(
+                f"CREDIT_EMAIL: Failed to send approval notification to {user_email}"
+            )
+            return {"status": "failed", "user_email": user_email}
+
+    except Exception as exc:
+        logger.error(
+            f"CREDIT_EMAIL: Error sending approval email to {user_email}: {exc}",
+            exc_info=True,
+        )
+        raise self.retry(exc=exc)
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,  # 1 min between retries
+)
+def send_credit_request_rejected_email(
+    self,
+    user_email: str,
+    user_name: str,
+    product_name: str,
+    plan_name: str,
+    amount_cents: int,
+    currency: str,
+    reason: str = "",
+):
+    """Send email notification when a credit request is rejected.
+
+    Called after admin rejects a CreditPurchaseRequest. Sends a professional
+    HTML notification email to the user explaining the rejection.
+
+    Args:
+        user_email: Recipient email address.
+        user_name: User's first name or display name.
+        product_name: Product name for the request.
+        plan_name: Plan name for the request.
+        amount_cents: Amount in cents that was requested.
+        currency: ISO 4217 currency code.
+        reason: Optional rejection reason from admin.
+    """
+    from django.core.mail import send_mail
+    from django.conf import settings
+
+    try:
+        # Format amount
+        amount_display = f"{amount_cents / 100:.2f} {currency}"
+        display_name = user_name or user_email.split('@')[0]
+        app_domain = getattr(settings, 'STRIPE_APP_DOMAIN', '')
+
+        # Build email body
+        subject = f"Credit Request Update — {product_name}"
+
+        # Professional HTML email body
+        reason_section = ""
+        if reason:
+            reason_section = f"""
+<!-- Reason Section -->
+<tr><td style="padding:24px 40px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FEF2F2;border-radius:8px;border:1px solid #FECACA;">
+<tr><td style="padding:16px 20px;">
+<span style="color:#991B1B;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Reason</span><br>
+<span style="color:#7F1D1D;font-size:14px;line-height:1.5;">{reason}</span>
+</td></tr></table>
+</td></tr>"""
+
+        html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;padding:32px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+
+<!-- Header -->
+<tr><td style="background-color:#2563EB;padding:32px 40px;">
+<h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.3px;">SattaBase</h1>
+<p style="margin:4px 0 0;color:#BFDBFE;font-size:13px;">Billing &amp; Subscription Platform</p>
+</td></tr>
+
+<!-- Status Badge -->
+<tr><td style="padding:32px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:#FEF2F2;border-radius:6px;padding:6px 14px;">
+<span style="color:#DC2626;font-size:13px;font-weight:600;">&#10007; Not Approved</span>
+</td></tr></table>
+</td></tr>
+
+<!-- Greeting -->
+<tr><td style="padding:20px 40px 0;">
+<h2 style="margin:0;color:#111827;font-size:22px;font-weight:700;">Credit Request Update</h2>
+<p style="margin:8px 0 0;color:#6B7280;font-size:15px;line-height:1.5;">
+Hi {display_name}, we've reviewed your credit purchase request for {product_name} ({plan_name}), but unfortunately we were unable to process it at this time.
+</p>
+</td></tr>
+
+<!-- Details Card -->
+<tr><td style="padding:24px 40px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F9FAFB;border-radius:8px;border:1px solid #E5E7EB;">
+<tr><td style="padding:20px 24px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Product</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{product_name}</span>
+</td>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Plan</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{plan_name}</span>
+</td>
+</tr>
+<tr>
+<td style="padding:8px 0;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Amount Requested</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{amount_display}</span>
+</td>
+<td style="padding:8px 0;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Payment</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">Bank Transfer</span>
+</td>
+</tr>
+</table>
+</td></tr></table>
+</td></tr>
+
+{reason_section}
+
+<!-- Action Button -->
+<tr><td style="padding:28px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:#2563EB;border-radius:6px;padding:0;">
+<a href="{app_domain}/dashboard/billing/credits/request" style="display:inline-block;padding:12px 24px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Submit New Request</a>
+</td>
+</tr></table>
+</td></tr>
+
+<!-- Info -->
+<tr><td style="padding:24px 40px 0;">
+<p style="margin:0;color:#6B7280;font-size:13px;line-height:1.6;">
+If you believe this is an error or would like to submit a new request, please visit the credit request page. For further assistance, please contact our support team.
+</p>
+</td></tr>
+
+<!-- Footer -->
+<tr><td style="padding:32px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #E5E7EB;">
+<tr><td style="padding-top:20px;">
+<p style="margin:0;color:#9CA3AF;font-size:11px;line-height:1.5;">
+This email was sent by SattaBase. If you have any questions, please contact our support team.
+</p>
+</td></tr></table>
+</td></tr>
+
+</table>
+</td></tr></table>
+</body>
+</html>"""
+
+        # Plain text fallback
+        body = (
+            f"Hi {display_name},\n\n"
+            f"We've reviewed your credit purchase request for {product_name} "
+            f"({plan_name}), but unfortunately we were unable to process it at this time.\n\n"
+            f"Product: {product_name}\n"
+            f"Plan: {plan_name}\n"
+            f"Amount: {amount_display}\n\n"
+        )
+
+        if reason:
+            body += f"Reason: {reason}\n\n"
+
+        body += (
+            f"If you believe this is an error or would like to submit a new request, "
+            f"please visit:\n"
+            f"{app_domain}/dashboard/billing/credits/request\n\n"
+            f"For assistance, please contact our support team.\n\n"
+            f"— The SattaBase Team"
+        )
+
+        sent = send_mail(
+            subject=subject,
+            message=body,
+            html_message=html_body,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@sattabase.com"),
+            recipient_list=[user_email],
+            fail_silently=False,
+        )
+
+        if sent:
+            logger.info(
+                f"CREDIT_EMAIL: Sent rejection notification to {user_email}"
+            )
+            return {"status": "sent", "user_email": user_email}
+        else:
+            logger.warning(
+                f"CREDIT_EMAIL: Failed to send rejection notification to {user_email}"
+            )
+            return {"status": "failed", "user_email": user_email}
+
+    except Exception as exc:
+        logger.error(
+            f"CREDIT_EMAIL: Error sending rejection email to {user_email}: {exc}",
+            exc_info=True,
+        )
+        raise self.retry(exc=exc)
+
+
+# =============================================================================
+# Credit Period Consumption
+# =============================================================================
+
+
+@shared_task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=600,  # 10 min between retries
+)
+def consume_credit_periods(self):
+    """Periodic task to consume billing periods from active credit pools.
+
+    Called daily by Celery Beat. For each active credit pool:
+      1. Check if current_period_end has passed
+      2. If yes, consume one period and start a new billing period
+      3. If no periods remaining, mark as exhausted
+
+    This task ensures that credit pools behave like subscriptions — each
+    billing period is "consumed" as time passes, and the pool becomes
+    exhausted when all periods are used.
+
+    Returns:
+        {"consumed": int, "exhausted": int, "errors": int}
+    """
+    from django.utils import timezone
+    from django.db import transaction
+    from .models import CreditPool, CreditTransaction
+
+    try:
+        now = timezone.now()
+        stats = {"consumed": 0, "exhausted": 0, "errors": 0}
+
+        # CRIT-04 FIX: Find active pools with select_for_update to prevent race conditions
+        # when multiple workers or task overlap attempt to process the same pool
+        active_pools = list(CreditPool.objects.filter(
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+            current_period_end__lte=now,
+        ).select_related("user", "product", "plan").select_for_update())
+
+        for pool in active_pools:
+            try:
+                with transaction.atomic():
+                    # Check if this is the first period (not yet activated)
+                    if not pool.current_period_start:
+                        # Activate the pool - first period starts now
+                        pool.current_period_start = now
+                        pool.current_period_end = now + timezone.timedelta(
+                            days=30 if pool.plan.billing_cycle == "monthly" else 365
+                        )
+                        pool.activated_at = now
+                        pool.save(update_fields=[
+                            "current_period_start", "current_period_end",
+                            "activated_at", "updated_at"
+                        ])
+                        continue
+
+                    # Consume one period
+                    pool.periods_consumed += 1
+                    periods_remaining = pool.credit_periods - pool.periods_consumed
+
+                    # Create transaction record
+                    CreditTransaction.objects.create(
+                        credit_pool=pool,
+                        action=CreditTransaction.TransactionType.PERIOD_CONSUME,
+                        periods_delta=-1,
+                        amount_cents_delta=0,
+                        periods_balance=periods_remaining,
+                        reason=f"Period {pool.periods_consumed} of {pool.credit_periods} consumed",
+                    )
+
+                    if periods_remaining <= 0:
+                        # Pool is exhausted
+                        pool.status = CreditPool.CreditPoolStatus.EXHAUSTED
+                        pool.current_period_start = None
+                        pool.current_period_end = None
+                        pool.save(update_fields=[
+                            "periods_consumed", "status",
+                            "current_period_start", "current_period_end",
+                            "updated_at"
+                        ])
+                        stats["exhausted"] += 1
+                        logger.info(
+                            f"CREDIT_CONSUME: Pool {pool.id} exhausted "
+                            f"(user={pool.user.email}, product={pool.product.slug})"
+                        )
+                    else:
+                        # Start next billing period
+                        pool.current_period_start = now
+                        pool.current_period_end = now + timezone.timedelta(
+                            days=30 if pool.plan.billing_cycle == "monthly" else 365
+                        )
+                        pool.save(update_fields=[
+                            "periods_consumed", "current_period_start",
+                            "current_period_end", "updated_at"
+                        ])
+                        stats["consumed"] += 1
+                        logger.info(
+                            f"CREDIT_CONSUME: Pool {pool.id} period consumed, "
+                            f"{periods_remaining} remaining (user={pool.user.email})"
+                        )
+
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error(
+                    f"CREDIT_CONSUME: Error processing pool {pool.id}: {e}",
+                    exc_info=True,
+                )
+
+        logger.info(
+            f"Credit period consumption complete: "
+            f"{stats['consumed']} consumed, {stats['exhausted']} exhausted, "
+            f"{stats['errors']} errors"
+        )
+        return stats
+
+    except Exception as exc:
+        logger.error(f"Credit period consumption task failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc)
+
+
+@shared_task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=600,
+)
+def expire_credit_pools(self):
+    """Periodic task to mark expired credit pools.
+
+    Called daily by Celery Beat. Finds active pools where expires_at
+    has passed and marks them as expired, regardless of remaining periods.
+
+    This handles the case where an admin sets a hard expiry date on a
+    credit pool (e.g., promotional credits that expire after 6 months).
+
+    Returns:
+        {"expired": int, "errors": int}
+    """
+    from django.utils import timezone
+    from django.db import transaction
+    from .models import CreditPool, CreditTransaction
+
+    try:
+        now = timezone.now()
+        stats = {"expired": 0, "errors": 0}
+
+        # Find active pools that have expired
+        expired_pools = CreditPool.objects.filter(
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+            expires_at__lte=now,
+        ).select_related("user", "product", "plan")
+
+        for pool in expired_pools:
+            try:
+                with transaction.atomic():
+                    periods_remaining = pool.credit_periods - pool.periods_consumed
+
+                    # Create transaction record
+                    CreditTransaction.objects.create(
+                        credit_pool=pool,
+                        action=CreditTransaction.TransactionType.EXPIRE,
+                        periods_delta=-periods_remaining,
+                        amount_cents_delta=0,
+                        periods_balance=0,
+                        reason="Credit pool expired (hard expiry date reached)",
+                    )
+
+                    # Mark as expired
+                    pool.status = CreditPool.CreditPoolStatus.EXPIRED
+                    pool.save(update_fields=["status", "updated_at"])
+
+                    stats["expired"] += 1
+                    logger.info(
+                        f"CREDIT_EXPIRE: Pool {pool.id} expired "
+                        f"(user={pool.user.email}, {periods_remaining} periods lost)"
+                    )
+
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error(
+                    f"CREDIT_EXPIRE: Error expiring pool {pool.id}: {e}",
+                    exc_info=True,
+                )
+
+        if stats["expired"] > 0:
+            logger.info(
+                f"Credit expiry complete: {stats['expired']} expired, "
+                f"{stats['errors']} errors"
+            )
+        return stats
+
+    except Exception as exc:
+        logger.error(f"Credit expiry task failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc)

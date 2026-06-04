@@ -1,0 +1,17 @@
+---
+/**
+ * Admin Credit Requests — /admin/credit-requests
+ *
+ * Credit purchase requests management page for administrators.
+ * Mounts CreditRequestsAdmin Vue component.
+ */
+import AdminLayout from "@/layouts/AdminLayout.astro";
+import CreditRequestsAdmin from "@/components/admin/CreditRequestsAdmin.vue";
+---
+
+<AdminLayout
+  title="Credit Requests — Admin — SattaBase"
+  description="Review and manage bank transfer credit purchase requests."
+>
+  <CreditRequestsAdmin client:only="vue" />
+</AdminLayout>

@@ -145,6 +145,10 @@ class SubscriptionInfoSchema(Schema):
     )
     trial_end: Optional[datetime] = Field(None, description="End of the trial period")
     is_active: bool = Field(..., description="Whether subscription grants access")
+    is_credit_based: bool = Field(
+        False,
+        description="True if active via prepaid credits rather than Stripe subscription",
+    )
 
 
 class SubscriptionOutputSchema(Schema):
@@ -542,3 +546,130 @@ class ConfirmPlanChangeOutputSchema(Schema):
         description="Amount charged immediately (proration), in major units",
     )
     currency: str = Field(..., description="ISO 4217 currency code")
+
+
+# =============================================================================
+# Credit Schemas
+# =============================================================================
+
+
+class CreditPoolOutputSchema(Schema):
+    """Credit pool in API responses."""
+
+    id: int
+    plan_name: str
+    plan_slug: str
+    product_name: str
+    amount_cents: int
+    display_amount: str
+    currency: str
+    credit_periods: int
+    periods_consumed: int
+    periods_remaining: int
+    source: str
+    payment_reference: str
+    status: str
+    is_effectively_active: bool
+    current_period_start: Optional[str] = Field(None, description="Start of current period (ISO 8601)")
+    current_period_end: Optional[str] = Field(None, description="End of current period (ISO 8601)")
+    expires_at: Optional[str] = Field(None, description="Hard expiry (ISO 8601)")
+    created_at: Optional[str] = Field(None, description="Creation timestamp (ISO 8601)")
+
+
+class CreditInvoiceOutputSchema(Schema):
+    """Credit invoice in API responses."""
+
+    id: int
+    invoice_number: str
+    status: str
+    amount_cents: int
+    tax_cents: int
+    total_cents: int
+    currency: str
+    plan_name: str
+    plan_slug: str
+    product_name: str
+    period_start: Optional[str] = Field(None, description="Period start (ISO 8601)")
+    period_end: Optional[str] = Field(None, description="Period end (ISO 8601)")
+    payment_reference: str
+    issued_at: Optional[str] = Field(null=True, description="Issue timestamp (ISO 8601)")
+    created_at: Optional[str] = Field(None, description="Creation timestamp (ISO 8601)")
+
+
+class CreditTransactionOutputSchema(Schema):
+    """Credit transaction in API responses."""
+
+    id: int
+    action: str
+    periods_delta: int
+    amount_cents_delta: int
+    periods_balance: int
+    reason: str
+    created_at: str = Field(..., description="Transaction timestamp (ISO 8601)")
+
+
+class CreditPurchaseResponseSchema(Schema):
+    """Response after creating a credit pool purchase."""
+
+    pool: CreditPoolOutputSchema
+    invoice: CreditInvoiceOutputSchema
+    message: str = Field(..., description="Human-readable confirmation message")
+
+
+class CreditPoolListResponse(Schema):
+    """Paginated list of credit pools."""
+
+    items: list[CreditPoolOutputSchema]
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
+    has_previous: bool
+
+
+class CreditInvoiceListResponse(Schema):
+    """Paginated list of credit invoices."""
+
+    items: list[CreditInvoiceOutputSchema]
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
+    has_previous: bool
+
+
+class CreditTransactionListResponse(Schema):
+    """List of credit transactions for a pool."""
+
+    items: list[CreditTransactionOutputSchema]
+
+
+# =============================================================================
+# Credit Request Schemas
+# =============================================================================
+
+
+class CreditRequestInputSchema(Schema):
+    """Schema for a user submitting a credit purchase request.
+    
+    LOW-07 FIX: Added maximum limit to prevent excessively large credit purchases.
+    Maximum is set to 10,000,000 cents ($100,000) which should cover most legitimate
+    use cases while preventing accidental or malicious extreme values.
+    """
+
+    product_slug: str = Field(..., description="Product slug")
+    plan_slug: str = Field(..., description="Plan slug")
+    # LOW-07 FIX: Added maximum limit (10,000,000 cents = $100,000)
+    amount_cents: int = Field(
+        ...,
+        ge=100,
+        le=10_000_000,
+        description="Amount in cents (min 100 = $1.00, max 10,000,000 = $100,000)"
+    )
+    currency: str = Field("USD", max_length=3)
+    bank_name: str = Field(..., max_length=100, description="Name of the bank")
+    account_holder_name: str = Field(..., max_length=200, description="Account holder full name")
+    account_number: str = Field(..., max_length=50, description="Bank account number")
+    routing_number: str = Field("", max_length=50, description="Routing/SWIFT code")
+    transaction_reference: str = Field(..., max_length=255, description="Transaction ID or UPI reference")
+    payment_proof_note: str = Field("", description="Optional note about the payment")

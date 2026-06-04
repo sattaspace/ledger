@@ -43,7 +43,18 @@ const managementNav: NavSection = {
       icon: "subscriptions",
     },
     { label: "Users", href: "/admin/users", icon: "users" },
+    { label: "Credits", href: "/admin/credits", icon: "credits" },
+    {
+      label: "Credit Requests",
+      href: "/admin/credit-requests",
+      icon: "credit-requests",
+    },
     { label: "Refunds", href: "/admin/refunds", icon: "refunds" },
+    {
+      label: "Bank Settings",
+      href: "/admin/bank-settings",
+      icon: "bank-settings",
+    },
   ],
 };
 
@@ -257,6 +268,51 @@ const currentPath = Astro.url.pathname;
                       stroke-linejoin="round"
                       stroke-width="1.5"
                       d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+                    />
+                  </svg>
+                )}
+                {item.icon === "credits" && (
+                  <svg
+                    class="nav-icon h-5 w-5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.5"
+                      d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                )}
+                {item.icon === "credit-requests" && (
+                  <svg
+                    class="nav-icon h-5 w-5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.5"
+                      d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+                    />
+                  </svg>
+                )}
+                {item.icon === "bank-settings" && (
+                  <svg
+                    class="nav-icon h-5 w-5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.5"
+                      d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"
                     />
                   </svg>
                 )}
@@ -606,26 +662,134 @@ const currentPath = Astro.url.pathname;
         const { logout } = await import("@/lib/auth");
         await logout();
       } catch {
-        sessionStorage.removeItem("auth_access_token");
-        sessionStorage.removeItem("auth_refresh_token");
-        localStorage.removeItem("auth_access_token");
-        localStorage.removeItem("auth_refresh_token");
-        localStorage.removeItem("auth_remember_me");
-        window.location.href = "/auth/login";
+        const { authHelpers } = await import("@/lib/api");
+        authHelpers.clearAuth();
+        // VUE 3 CONVENTION: Use navigate() instead of window.location.href
+        try {
+          const { navigate } = await import("astro:transitions/client");
+          navigate("/auth/login", { history: "replace" });
+        } catch {
+          window.location.href = "/auth/login";
+        }
       }
     });
 
     // ── Populate user info ──
+    // API-1 FIX: Use useAuth() shared state instead of a separate /users/me call.
+    // AUTH-13 FIX: Track whether user info was successfully loaded so we can
+    // retry on astro:page-load if the initial load failed (e.g., auth init
+    // hadn't completed yet). Previously, populateAdminUserInfo() only ran once
+    // on DOMContentLoaded and never retried, leaving "Loading..." permanently.
+    // AUTH-14 FIX: Added fallback to /users/me when fetchUser() (which calls
+    // /billing/auth/me) fails. Also added more aggressive retry with polling
+    // instead of just one attempt, and dispatch a custom event so other
+    // components (navbar) can react when user data becomes available.
+    const SB_ADMIN_SIDEBAR_KEY = "__sb_admin_sidebar";
+    function getAdminSidebarCache(): {
+      userInfoLoaded: boolean;
+      retryCount: number;
+    } {
+      if (
+        typeof window !== "undefined" &&
+        !(window as any)[SB_ADMIN_SIDEBAR_KEY]
+      ) {
+        (window as any)[SB_ADMIN_SIDEBAR_KEY] = {
+          userInfoLoaded: false,
+          retryCount: 0,
+        };
+      }
+      return typeof window !== "undefined"
+        ? (window as any)[SB_ADMIN_SIDEBAR_KEY]
+        : { userInfoLoaded: false, retryCount: 0 };
+    }
+
     async function populateAdminUserInfo() {
+      if (getAdminSidebarCache().userInfoLoaded) return;
       try {
-        const { apiClient } = await import("@/lib/api");
-        const user = await apiClient.get<{
+        // Wait for auth initialization to complete
+        const { authHelpers } = await import("@/lib/api");
+        const maxWait = 8000; // 8 seconds — generous for slow connections
+        const start = Date.now();
+        while (!authHelpers.isAuthReady() && Date.now() - start < maxWait) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        // If auth still not ready after waiting, schedule a retry
+        if (!authHelpers.isAuthReady()) {
+          const cache = getAdminSidebarCache();
+          if (cache.retryCount < 3) {
+            cache.retryCount++;
+            setTimeout(() => populateAdminUserInfo(), 2000);
+          }
+          return;
+        }
+
+        const win = window as any;
+        const sharedAuth = win.__sb_auth_composable;
+        let user: {
           display_name?: string;
           email: string;
           role: string;
           is_staff: boolean;
-        }>("/users/me");
-        const displayName = user.display_name || user.email;
+          first_name?: string;
+          last_name?: string;
+        } | null = null;
+
+        // Path 1: Read from shared Vue reactive state (already cached by AdminGuard/SessionGuard)
+        if (sharedAuth?.userRef?.value) {
+          user = sharedAuth.userRef.value;
+        }
+
+        // Path 2: Fetch via useAuth() (calls /billing/auth/me — deduplicated)
+        if (!user) {
+          try {
+            const { useAuth } = await import("@/composables/useAuth");
+            const { fetchUser } = useAuth();
+            const fetchedUser = await fetchUser();
+            if (fetchedUser) {
+              user = fetchedUser as any;
+            }
+          } catch {
+            // /billing/auth/me failed — try fallback below
+          }
+        }
+
+        // Path 3: Fallback to /users/me directly if fetchUser failed
+        if (!user) {
+          try {
+            const { apiClient } = await import("@/lib/api");
+            const userData = await apiClient.get<{
+              display_name?: string;
+              email: string;
+              role: string;
+              is_staff: boolean;
+              first_name?: string;
+              last_name?: string;
+            }>("/users/me");
+            if (userData) {
+              user = userData;
+            }
+          } catch {
+            // Both paths failed — user truly not authenticated
+          }
+        }
+
+        if (!user) {
+          // All fetch paths failed — schedule retry if we haven't exhausted attempts
+          const cache = getAdminSidebarCache();
+          if (cache.retryCount < 3) {
+            cache.retryCount++;
+            setTimeout(() => populateAdminUserInfo(), 3000);
+          }
+          return;
+        }
+
+        const displayName =
+          user.display_name ||
+          (user.first_name && user.last_name
+            ? `${user.first_name} ${user.last_name}`
+            : null) ||
+          user.email;
         const roleLabel = user.is_staff
           ? "Super Admin"
           : user.role === "owner"
@@ -648,11 +812,81 @@ const currentPath = Astro.url.pathname;
         if (avatarEl) avatarEl.textContent = initials;
         if (nameEl) nameEl.textContent = displayName;
         if (roleEl) roleEl.textContent = roleLabel;
+
+        getAdminSidebarCache().userInfoLoaded = true;
+
+        // Dispatch event so other components (AdminNavbar) can update too
+        document.dispatchEvent(
+          new CustomEvent("sb:admin-user-info-loaded", {
+            detail: { displayName, initials, roleLabel, email: user.email },
+          }),
+        );
       } catch {
-        // Not authenticated — will redirect via middleware
+        // Not authenticated — schedule retry
+        const cache = getAdminSidebarCache();
+        if (cache.retryCount < 3) {
+          cache.retryCount++;
+          setTimeout(() => populateAdminUserInfo(), 3000);
+        }
       }
     }
     populateAdminUserInfo();
+
+    // AUTH-13 FIX: Retry populating user info on page navigation if it failed
+    // on initial load. Also re-apply from cached data if sidebar DOM was
+    // replaced by View Transitions.
+    document.addEventListener("astro:page-load", () => {
+      const cache = getAdminSidebarCache();
+      if (!cache.userInfoLoaded) {
+        // Reset retry count on new page load to allow fresh attempts
+        cache.retryCount = 0;
+        populateAdminUserInfo();
+      } else {
+        // Re-apply cached user data to DOM elements that may have been
+        // replaced by View Transitions.
+        const win = window as any;
+        const userRef = win.__sb_auth_composable?.userRef;
+        if (userRef?.value) {
+          const user = userRef.value;
+          const displayName = user.display_name || user.email;
+          const nameEl = document.getElementById("admin-sidebar-user-name");
+          if (nameEl) nameEl.textContent = displayName;
+          // Also update role
+          const roleLabel = user.is_staff
+            ? "Super Admin"
+            : user.role === "owner"
+              ? "Owner"
+              : user.role === "admin"
+                ? "Admin"
+                : "Staff";
+          const roleEl = document.getElementById("admin-sidebar-user-role");
+          if (roleEl) roleEl.textContent = roleLabel;
+          // Also update avatar
+          const initials = displayName
+            .split(" ")
+            .map((n: string) => n[0])
+            .join("")
+            .slice(0, 2)
+            .toUpperCase();
+          const avatarEl = document.getElementById("admin-sidebar-user-avatar");
+          if (avatarEl) avatarEl.textContent = initials;
+        }
+      }
+    });
+
+    // Listen for user info loaded by AdminNavbar (cross-component sync)
+    document.addEventListener("sb:admin-user-info-loaded", ((
+      e: CustomEvent,
+    ) => {
+      const { displayName, initials, roleLabel } = e.detail;
+      const avatarEl = document.getElementById("admin-sidebar-user-avatar");
+      const nameEl = document.getElementById("admin-sidebar-user-name");
+      const roleEl = document.getElementById("admin-sidebar-user-role");
+      if (avatarEl) avatarEl.textContent = initials;
+      if (nameEl) nameEl.textContent = displayName;
+      if (roleEl) roleEl.textContent = roleLabel;
+      getAdminSidebarCache().userInfoLoaded = true;
+    }) as EventListener);
 
     // ── Active nav highlight (client-side, works with transition:persist) ──
     function updateActiveNav() {

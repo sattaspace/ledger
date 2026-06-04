@@ -2,8 +2,9 @@
  * Auth utilities — provides helper functions for authentication state
  * management across Vue components (client-side only).
  *
- * Tokens are persisted in sessionStorage (default) or localStorage
- * (when "Remember me" is checked). See api.ts for details.
+ * Access tokens are stored in memory (window.__sb_auth shared state).
+ * Refresh tokens are stored in httpOnly cookies by the backend.
+ * See api.ts for details.
  */
 
 import { authHelpers, apiClient } from "./api";
@@ -29,7 +30,7 @@ export interface RegisterPayload {
 
 export interface AuthTokens {
   access: string;
-  refresh: string;
+  refresh?: string; // AUTH-1 FIX: No longer returned in response body; set via httpOnly cookie
 }
 
 export interface UserProfile {
@@ -109,13 +110,21 @@ export function getCachedChoices(): Choices | null {
 // ─── Auth functions ─────────────────────────────────────────────────────────
 
 /**
- * Login — POST /auth/login → store tokens
- * @param payload.remember - If true, tokens persist in localStorage (30 days).
- *                          If false/omitted, tokens use sessionStorage (tab-only).
+ * Login — POST /auth/login → store access token in memory
+ *
+ * HIGH-03 FIX: The refresh token is stored in an httpOnly cookie by the backend.
+ * AUTH-1 FIX: The response body NO LONGER contains the refresh token.
+ * It only returns the access token. The refresh token is set exclusively
+ * in the httpOnly cookie, preventing XSS from stealing it.
+ *
+ * @param payload.remember - If true, the cookie persists for 30 days.
+ *                          If false/omitted, the cookie is session-only.
  */
 export async function login(payload: LoginPayload): Promise<AuthTokens> {
   const data = await apiClient.post<AuthTokens>("/auth/login", payload);
-  authHelpers.setTokens(data.access, data.refresh, payload.remember ?? false);
+  // HIGH-03 FIX: Only store access token - refresh token is in httpOnly cookie
+  // AUTH-1 FIX: data.refresh is no longer returned by the backend
+  authHelpers.setAccessToken(data.access);
   return data;
 }
 
@@ -128,26 +137,39 @@ export async function register(payload: RegisterPayload): Promise<void> {
 
 /**
  * Logout — clear tokens and redirect
+ *
+ * HIGH-03 FIX: Uses the cookie-based logout endpoint that:
+ * 1. Validates the refresh token from the httpOnly cookie
+ * 2. Blacklists the refresh token
+ * 3. Clears the auth cookies
+ *
+ * AUTH-2 FIX: The backend now validates the refresh cookie before processing
+ * logout. If the cookie is missing/invalid (e.g., already logged out or CSRF
+ * attack), the backend returns 401. We treat 401 as "already logged out" and
+ * continue with local cleanup.
  */
 export async function logout(): Promise<void> {
-  // Blacklist the refresh token server-side before clearing local state.
-  // If blacklisting fails (network error, etc.) we still clear locally.
+  // HIGH-03 FIX: Use cookie-based logout endpoint
+  // AUTH-2 FIX: Backend validates refresh cookie — 401 means already logged out
   try {
-    const refreshToken = authHelpers.getRefreshToken();
-    if (refreshToken) {
-      await apiClient.post("/auth/token/blacklist", { refresh: refreshToken });
+    await apiClient.post("/auth/logout");
+  } catch (err: any) {
+    // AUTH-2 FIX: 401 means no valid refresh cookie — already logged out.
+    // This is fine — continue with local cleanup. Any other error is also
+    // non-blocking; local cleanup should still happen.
+    if (err?.status !== 401) {
+      console.warn("Logout API call failed:", err?.message);
     }
-  } catch {
-    // Continue with local cleanup even if blacklist fails
   }
-  try {
-    await apiClient.post("/users/me/logout");
-  } catch {
-    // Even if the API call fails, clear local tokens
-  }
-  authHelpers.clearTokens();
+  // Clear access token from memory
+  authHelpers.clearAuth();
   if (typeof window !== "undefined") {
-    window.location.href = "/auth/login";
+    // VUE 3 CONVENTION: Use navigateTo() (Astro's navigate()) instead of
+    // window.location.href to avoid the "querySelector null" error during
+    // View Transitions. Defer with setTimeout to avoid race conditions.
+    setTimeout(() => {
+      authHelpers.navigateTo("/auth/login");
+    }, 0);
   }
 }
 
@@ -334,15 +356,21 @@ export async function deleteAvatar(): Promise<UserProfile> {
  * the user to the Sattabase base domain with an authorization code.
  * The code is consumed upon use and cannot be reused.
  *
+ * HIGH-03 FIX: The refresh token is stored in an httpOnly cookie by the backend.
+ * AUTH-1 FIX: The response body NO LONGER contains the refresh token.
+ * It only returns the access token. The refresh token is set exclusively
+ * in the httpOnly cookie.
+ *
  * POST /auth/token/exchange
  */
 export async function exchangeAuthCode(code: string): Promise<AuthTokens> {
   const data = await apiClient.post<AuthTokens>("/auth/token/exchange", {
     code,
   });
-  // Store the tokens (use sessionStorage by default for SSO callbacks;
-  // the user can upgrade to localStorage on next explicit login)
-  authHelpers.setTokens(data.access, data.refresh, false);
+  // HIGH-03 FIX: Only store access token - refresh token is in httpOnly cookie
+  // AUTH-1 FIX: data.refresh is no longer returned by the backend
+  // SSO always uses session cookies (not persistent) for security
+  authHelpers.setAccessToken(data.access);
   return data;
 }
 
@@ -350,8 +378,14 @@ export async function exchangeAuthCode(code: string): Promise<AuthTokens> {
 
 /**
  * Check if user is authenticated (has a non-expired access token).
- * Note: This checks the in-memory token (recovered from storage on init).
- * It doesn't validate the token with the server.
+ *
+ * This checks the in-memory token (recovered from storage on init).
+ * It doesn't validate the token with the server, but does check
+ * the JWT expiry claim if available.
+ *
+ * If the token appears to be expired, it attempts a background refresh
+ * before returning false. This gives the cookie-based refresh a chance
+ * to work before declaring the user unauthenticated.
  */
 export function isAuthenticated(): boolean {
   return authHelpers.isAuthenticated();
@@ -359,11 +393,30 @@ export function isAuthenticated(): boolean {
 
 /**
  * Redirect to login if not authenticated.
+ *
+ * This is a synchronous check — it does NOT wait for a token refresh.
+ * If the access token is expired but the refresh cookie is still valid,
+ * the 401 handler in api.ts will handle the refresh and retry.
+ *
+ * Use initAuth() from useAuth() for an async version that waits for
+ * token initialization before checking.
  */
 export function requireAuth(): boolean {
   if (!isAuthenticated()) {
     if (typeof window !== "undefined") {
-      window.location.href = "/auth/login";
+      // Don't redirect immediately — give the refresh system a chance.
+      // The api.ts 401 handler will redirect if the refresh truly fails.
+      // But if there's no token at all (first load, after logout), redirect now.
+      if (!window.location.pathname.startsWith("/auth/")) {
+        // VUE 3 CONVENTION: Use navigateTo() (Astro's navigate()) instead of
+        // window.location.href to avoid the "querySelector null" error during
+        // View Transitions. Defer with setTimeout to avoid race conditions.
+        setTimeout(() => {
+          if (!window.location.pathname.startsWith("/auth/")) {
+            authHelpers.navigateTo("/auth/login");
+          }
+        }, 0);
+      }
     }
     return false;
   }

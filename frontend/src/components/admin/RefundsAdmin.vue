@@ -14,7 +14,11 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage, getCurrentUser } from "@/lib/auth";
+import { requireAuth, getErrorMessage } from "@/lib/auth";
+// API-3 FIX: Use useAuth() instead of separate getCurrentUser() call.
+// Previously this called getCurrentUser() which hit /users/me separately,
+// wasting 1 API call per refunds page. Now we reuse useAuth() shared state.
+import { useAuth } from "@/composables/useAuth";
 import { showToast } from "@/lib/toast";
 import {
   adminApi,
@@ -160,12 +164,12 @@ async function fetchRefunds() {
 onMounted(async () => {
   if (!requireAuth()) return;
 
-  // Fetch current admin user for two-person rule
-  try {
-    const user = await getCurrentUser();
-    currentAdminId.value = user.id;
-  } catch {
-    // Non-blocking — two-person rule will still be enforced server-side
+  // API-3 FIX: Use useAuth() shared state for admin user ID instead of
+  // separate getCurrentUser() call. The user data is already fetched by
+  // useAuth().initAuth() in AdminGuard, so we read the cached value.
+  const { user: authUser } = useAuth();
+  if (authUser.value?.id) {
+    currentAdminId.value = authUser.value.id;
   }
 
   await fetchRefunds();

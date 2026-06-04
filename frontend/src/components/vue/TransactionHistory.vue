@@ -24,6 +24,7 @@ import {
   formatDate,
   getUserCurrency,
 } from "@/lib/billing";
+import { creditsApi } from "@/lib/credits";
 import type { TransactionItemSchema } from "@/lib/billing";
 
 // ── State ──
@@ -72,7 +73,7 @@ const paidCount = computed(() =>
 );
 
 const pendingCount = computed(() =>
-  transactions.value.filter((tx) => tx.status === "open" || tx.status === "draft").length,
+  transactions.value.filter((tx) => tx.status === "open" || tx.status === "draft" || tx.status === "issued").length,
 );
 
 const failedCount = computed(() =>
@@ -141,6 +142,7 @@ function formatStatusLabel(status: string): string {
     paid: "Paid",
     draft: "Pending",
     open: "Pending",
+    issued: "Issued",
     void: "Void",
     uncollectible: "Uncollectible",
   };
@@ -162,6 +164,12 @@ function getStatusColor(status: string) {
         text: "text-amber-700 dark:text-amber-400",
         icon: "text-amber-600 dark:text-amber-400",
       };
+    case "issued":
+      return {
+        bg: "bg-blue-100 dark:bg-blue-950/40",
+        text: "text-blue-700 dark:text-blue-400",
+        icon: "text-blue-600 dark:text-blue-400",
+      };
     case "void":
     case "uncollectible":
       return {
@@ -178,7 +186,53 @@ function getStatusColor(status: string) {
   }
 }
 
-// Re-fetch when filter changes (apply locally; pagination always loads all statuses)
+// Track which invoice PDFs are currently being downloaded (for loading spinner)
+const downloadingInvoice = ref<string | null>(null);
+
+/**
+ * Get PDF download URL for Stripe invoices (direct URL from Stripe API).
+ * Credit invoices use a different download mechanism (fetch + Blob URL)
+ * and are handled by downloadCreditInvoicePdf() instead.
+ */
+function getPdfUrl(tx: TransactionItemSchema): string | null {
+  // Stripe invoices have a full hosted PDF URL from the Stripe API
+  if (tx.pdf_url && tx.type !== "credit_invoice") return tx.pdf_url;
+  // Credit invoices are handled via fetch+Blob — not a direct URL
+  return null;
+}
+
+/**
+ * Check if a transaction has a downloadable PDF.
+ * Both Stripe invoices (with pdf_url) and credit invoices are downloadable.
+ */
+function hasPdf(tx: TransactionItemSchema): boolean {
+  if (tx.type === "credit_invoice" && tx.number) return true;
+  return !!tx.pdf_url;
+}
+
+/**
+ * Download a credit invoice PDF using fetch() with proper auth headers.
+ *
+ * We cannot use a plain <a href> link because the backend uses JWT Bearer auth
+ * which requires the Authorization header. Browser navigation doesn't send
+ * Authorization headers, so we fetch the PDF programmatically and open it
+ * as a Blob URL.
+ */
+async function downloadCreditInvoicePdf(tx: TransactionItemSchema) {
+  if (tx.type !== "credit_invoice" || !tx.number) return;
+  downloadingInvoice.value = tx.number;
+  try {
+    const blobUrl = await creditsApi.downloadCreditInvoicePdf(tx.number);
+    // Open the PDF in a new tab
+    window.open(blobUrl, "_blank");
+    // Revoke the blob URL after a short delay to free memory
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  } catch (err: any) {
+    showToast(err.message || "Failed to download invoice PDF", "error");
+  } finally {
+    downloadingInvoice.value = null;
+  }
+}
 </script>
 
 <template>
@@ -344,10 +398,13 @@ function getStatusColor(status: string) {
           </div>
           <h3 class="text-base font-semibold">No transactions yet</h3>
           <p class="mt-1 text-sm text-[var(--color-muted-foreground)] max-w-sm">
-            Your billing history will appear here once you subscribe to a paid plan.
+            Your billing history will appear here once you subscribe to a paid plan or purchase credits via bank transfer.
           </p>
           <a href="/dashboard/billing" class="mt-4 btn-primary text-xs">
             Browse Plans
+          </a>
+          <a href="/dashboard/billing/credits/request" class="mt-2 text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">
+            Or purchase credits via bank transfer
           </a>
         </div>
 
@@ -404,11 +461,12 @@ function getStatusColor(status: string) {
                   </div>
                   <div class="min-w-0">
                     <p class="text-sm font-medium truncate">
-                      {{ tx.description || (tx.type === "invoice" ? "Invoice" : "Charge") }}
+                      {{ tx.description || (tx.type === "credit_invoice" ? "Credit Purchase" : tx.type === "invoice" ? "Invoice" : "Charge") }}
                     </p>
                     <div class="flex items-center gap-2 text-xs text-[var(--color-muted-foreground)] mt-0.5">
                       <span v-if="tx.number">#{{ tx.number }}</span>
-                      <span v-if="tx.card_brand">{{ tx.card_brand }} ****{{ tx.payment_method }}</span>
+                      <span v-if="tx.type === 'credit_invoice'" class="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-950/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">Bank Transfer</span>
+                      <span v-else-if="tx.card_brand">{{ tx.card_brand }} ****{{ tx.payment_method }}</span>
                       <span v-if="tx.period_start && tx.period_end">
                         &middot; {{ formatPeriodRange(tx.period_start, tx.period_end) }}
                       </span>
@@ -425,7 +483,7 @@ function getStatusColor(status: string) {
                 >
                   <span
                     class="h-1.5 w-1.5 rounded-full"
-                    :class="tx.status === 'paid' ? 'bg-green-500' : tx.status === 'open' || tx.status === 'draft' ? 'bg-amber-500' : 'bg-red-500'"
+                    :class="tx.status === 'paid' ? 'bg-green-500' : tx.status === 'open' || tx.status === 'draft' ? 'bg-amber-500' : tx.status === 'issued' ? 'bg-blue-500' : 'bg-red-500'"
                   />
                   {{ formatStatusLabel(tx.status) }}
                 </span>
@@ -451,9 +509,26 @@ function getStatusColor(status: string) {
 
               <!-- Actions -->
               <div class="col-span-1 flex items-center justify-end gap-1">
+                <!-- Credit invoice PDF: fetch+Blob download (not a direct link) -->
+                <button
+                  v-if="tx.type === 'credit_invoice' && tx.number"
+                  :disabled="downloadingInvoice === tx.number"
+                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-[var(--color-muted-foreground)] hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-wait"
+                  title="Download PDF"
+                  @click="downloadCreditInvoicePdf(tx)"
+                >
+                  <svg v-if="downloadingInvoice === tx.number" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3" />
+                  </svg>
+                </button>
+                <!-- Stripe invoice PDF: direct URL link -->
                 <a
-                  v-if="tx.pdf_url"
-                  :href="tx.pdf_url"
+                  v-else-if="getPdfUrl(tx)"
+                  :href="getPdfUrl(tx)"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-[var(--color-muted-foreground)] hover:text-foreground hover:bg-accent transition-colors"
@@ -496,11 +571,12 @@ function getStatusColor(status: string) {
                   </div>
                   <div class="min-w-0">
                     <p class="text-sm font-medium truncate">
-                      {{ tx.description || (tx.type === "invoice" ? "Invoice" : "Charge") }}
+                      {{ tx.description || (tx.type === "credit_invoice" ? "Credit Purchase" : tx.type === "invoice" ? "Invoice" : "Charge") }}
                     </p>
                     <div class="flex items-center gap-1.5 text-xs text-[var(--color-muted-foreground)] mt-0.5 flex-wrap">
                       <span v-if="tx.number">#{{ tx.number }}</span>
-                      <span v-if="tx.card_brand">{{ tx.card_brand }} ****{{ tx.payment_method }}</span>
+                      <span v-if="tx.type === 'credit_invoice'" class="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-950/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">Bank Transfer</span>
+                      <span v-else-if="tx.card_brand">{{ tx.card_brand }} ****{{ tx.payment_method }}</span>
                       <span v-if="tx.period_start && tx.period_end">
                         &middot; {{ formatPeriodRange(tx.period_start, tx.period_end) }}
                       </span>
@@ -524,7 +600,7 @@ function getStatusColor(status: string) {
                   >
                     <span
                       class="h-1.5 w-1.5 rounded-full"
-                      :class="tx.status === 'paid' ? 'bg-green-500' : tx.status === 'open' || tx.status === 'draft' ? 'bg-amber-500' : 'bg-red-500'"
+                      :class="tx.status === 'paid' ? 'bg-green-500' : tx.status === 'open' || tx.status === 'draft' ? 'bg-amber-500' : tx.status === 'issued' ? 'bg-blue-500' : 'bg-red-500'"
                     />
                     {{ formatStatusLabel(tx.status) }}
                   </span>
@@ -533,9 +609,26 @@ function getStatusColor(status: string) {
                   </span>
                 </div>
                 <div class="flex items-center gap-1">
+                  <!-- Credit invoice PDF: fetch+Blob download (not a direct link) -->
+                  <button
+                    v-if="tx.type === 'credit_invoice' && tx.number"
+                    :disabled="downloadingInvoice === tx.number"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-[var(--color-muted-foreground)] hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-wait"
+                    title="Download PDF"
+                    @click="downloadCreditInvoicePdf(tx)"
+                  >
+                    <svg v-if="downloadingInvoice === tx.number" class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3" />
+                    </svg>
+                  </button>
+                  <!-- Stripe invoice PDF: direct URL link -->
                   <a
-                    v-if="tx.pdf_url"
-                    :href="tx.pdf_url"
+                    v-else-if="getPdfUrl(tx)"
+                    :href="getPdfUrl(tx)"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="inline-flex items-center justify-center h-7 w-7 rounded-md text-[var(--color-muted-foreground)] hover:text-foreground hover:bg-accent transition-colors"

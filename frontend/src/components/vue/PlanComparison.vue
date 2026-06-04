@@ -14,7 +14,7 @@
  */
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import { requireAuth, getErrorMessage, getCurrentUser } from "@/lib/auth";
+import { requireAuth, getErrorMessage } from "@/lib/auth";
 import { useAuth } from "@/composables";
 import { useSubscription } from "@/composables";
 import { showToast } from "@/lib/toast";
@@ -25,11 +25,16 @@ import {
   formatDate,
   getUserCurrency,
   setUserCurrency,
+  getFeatureValueType,
+  formatFeatureValue,
+  formatMatrixValue,
+  getMatrixCellType,
 } from "@/lib/billing";
 import type {
   ProductDetailSchema,
   PlanSchema,
   SubscriptionOutputSchema,
+  AccessMatrixSchema,
 } from "@/lib/billing";
 
 const props = defineProps<{ slug: string }>();
@@ -38,6 +43,10 @@ const emit = defineEmits<{ (e: "plan-changed"): void }>();
 const loading = ref(true);
 const product = ref<ProductDetailSchema | null>(null);
 const { subscriptions, refetchSubscriptions } = useSubscription();
+// API-2 FIX: Use useAuth() shared state instead of separate getCurrentUser() call.
+// Previously this called getCurrentUser() which hit /users/me separately, wasting
+// 1 API call per plan page. Now we reuse the user data from useAuth().
+const { user: authUser, initAuth } = useAuth();
 const actionLoading = ref<string | null>(null);
 const tosAccepted = ref(false);
 const prorationBehavior = ref<"create_prorations" | "none">("create_prorations");
@@ -54,6 +63,37 @@ const prorationPreview = ref<{
 } | null>(null);
 const prorationLoading = ref(false);
 const isRedirecting = ref(false);
+const accessMatrix = ref<AccessMatrixSchema | null>(null);
+
+// Per-plan feature lists built from the access matrix (dynamic data from API).
+// When available, these replace the static plan.features in plan cards.
+const planMatrixFeatures = computed(() => {
+  if (!accessMatrix.value || accessMatrix.value.rows.length === 0) return null;
+  const result: Record<
+    string,
+    Array<{
+      key: string;
+      description: string | null;
+      value: string | null;
+      value_type: "boolean" | "integer" | "string";
+    }>
+  > = {};
+  for (const plan of accessMatrix.value.plans) {
+    result[plan.slug] = accessMatrix.value.rows
+      .filter(
+        (row) =>
+          row.values[plan.slug] !== undefined &&
+          row.values[plan.slug] !== null,
+      )
+      .map((row) => ({
+        key: row.key,
+        description: row.description,
+        value: row.values[plan.slug],
+        value_type: row.value_type,
+      }));
+  }
+  return result;
+});
 
 // 6.5: Return URL for sister-domain billing redirect
 const returnUrl = ref<string | null>(null);
@@ -81,18 +121,6 @@ const trialEnd = computed(() => {
 
 const periodEnd = computed(() => {
   return currentSubscription.value?.current_period_end || null;
-});
-
-// Collect all unique feature keys across all plans
-const featureKeys = computed(() => {
-  if (!product.value) return [];
-  const keys = new Set<string>();
-  for (const plan of product.value.plans) {
-    for (const key of Object.keys(plan.features)) {
-      keys.add(key);
-    }
-  }
-  return Array.from(keys);
 });
 
 // UX-10: Calculate annual savings when both monthly and yearly plans exist
@@ -131,25 +159,23 @@ onMounted(async () => {
   }
 
   try {
-    // Fetch user's preferred currency directly from /users/me to avoid
-    // race condition with Navbar's async populateUserInfo(). Also update
-    // the global _userCurrency so other components benefit.
+    // API-2 FIX: Use useAuth().user for currency instead of separate getCurrentUser() call.
+    // The authUser data is already fetched by initAuth/SessionGuard, so we just read
+    // the cached value. If not yet loaded, initAuth() will fetch it (deduplicated).
+    await initAuth();
     let userCurrency = getUserCurrency(); // default from Navbar (may be "USD")
-    try {
-      const user = await getCurrentUser();
-      if (user?.currency) {
-        userCurrency = user.currency;
-        setUserCurrency(user.currency);
-      }
-    } catch {
-      // Non-critical — fall back to global default
+    if (authUser.value?.currency) {
+      userCurrency = authUser.value.currency;
+      setUserCurrency(authUser.value.currency);
     }
 
-    const [productData] = await Promise.all([
+    const [productData, , matrixData] = await Promise.all([
       billingApi.getProductBySlug(props.slug, userCurrency),
       refetchSubscriptions(),
+      billingApi.getProductAccessMatrix(props.slug).catch(() => null),
     ]);
     product.value = productData;
+    accessMatrix.value = matrixData;
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -494,6 +520,19 @@ async function executeChangePlan(planSlug: string) {
              downgrades apply at next billing cycle. No manual toggle needed. -->
       </div>
 
+      <!-- Alternative payment: bank transfer credits -->
+      <div v-if="!loading && product" class="mb-6 flex items-start gap-2.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-4 py-3">
+        <svg class="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="text-sm">
+          <p class="text-blue-800 dark:text-blue-300 font-medium">Can't pay with an international card?</p>
+          <p class="text-blue-700 dark:text-blue-400 mt-0.5">
+            You can also <a href="/dashboard/billing/credits/request" class="font-semibold underline underline-offset-2 hover:text-blue-900 dark:hover:text-blue-200">purchase credits via bank transfer</a> to activate this plan. No international payment method required.
+          </p>
+        </div>
+      </div>
+
       <!-- Plans Grid -->
       <div
         class="grid gap-6"
@@ -562,59 +601,144 @@ async function executeChangePlan(planSlug: string) {
             </p>
           </div>
 
-          <!-- UX-07 Part 2 Fix: Enhanced feature display with usage limit badges.
-               Each feature now shows a visual badge for its type:
-               - Numeric limits (10, 5GB, etc.) get a blue "limit" badge
-               - Unlimited/infinity get a purple "unlimited" badge
-               - Boolean/other values get a green checkmark
-               This makes it immediately obvious what's limited vs unlimited. -->
+          <!-- Feature list — uses access matrix data when available, falls back to static plan.features -->
           <ul class="flex-1 space-y-3 mb-6" role="list">
-            <li
-              v-for="(value, key) in plan.features"
-              :key="key"
-              class="flex items-start gap-2.5 text-sm"
-            >
-              <!-- UX-07: Semantic feature icons with enhanced usage badges -->
-              <!-- Numeric limit (e.g. "10", "5GB") — show limit badge -->
-              <svg
-                v-if="typeof value === 'number' || String(value).match(/^\d+/)"
-                class="mt-0.5 h-4 w-4 shrink-0 text-blue-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+            <!-- Dynamic features from Access Matrix (synchronized with admin) -->
+            <template v-if="planMatrixFeatures && planMatrixFeatures[plan.slug]">
+              <li
+                v-for="feat in planMatrixFeatures[plan.slug]"
+                :key="feat.key"
+                class="flex items-start gap-2.5 text-sm"
               >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
-              </svg>
-              <svg
-                v-else-if="String(value).match(/unlimited|infinity/i)"
-                class="mt-0.5 h-4 w-4 shrink-0 text-purple-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+                <!-- Boolean true: green checkmark -->
+                <svg
+                  v-if="getMatrixCellType(feat.value, feat.value_type) === 'boolean-true'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <!-- Boolean false: red cross -->
+                <svg
+                  v-else-if="getMatrixCellType(feat.value, feat.value_type) === 'boolean-false'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-red-400"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                <!-- Unlimited (integer 0): purple infinity -->
+                <svg
+                  v-else-if="getMatrixCellType(feat.value, feat.value_type) === 'unlimited'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-purple-500"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 0C9.5 2 7 4.5 7 7.5S9.5 13 12 13s5-2.5 5-5.5S14.5 2 12 2zm0 0c2.5 0 5 2.5 5 5.5S14.5 13 12 13" />
+                </svg>
+                <!-- Numeric limit (integer N>0): blue hash -->
+                <svg
+                  v-else-if="getMatrixCellType(feat.value, feat.value_type) === 'numeric'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-blue-500"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+                </svg>
+                <!-- String: green checkmark -->
+                <svg
+                  v-else
+                  class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <div>
+                  <span class="font-medium capitalize" :class="{ 'text-brand-700 dark:text-brand-300': feat.key === 'all' }">
+                    {{ feat.key === 'all' ? 'All Features' : feat.key.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) }}
+                  </span>
+                  <span
+                    class="text-[var(--color-muted-foreground)]"
+                    :class="{
+                      'text-brand-600 dark:text-brand-400 font-medium ml-1.5': getMatrixCellType(feat.value, feat.value_type) === 'boolean-true',
+                      'text-red-500 dark:text-red-400 font-medium ml-1.5': getMatrixCellType(feat.value, feat.value_type) === 'boolean-false',
+                      'text-purple-600 dark:text-purple-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold bg-purple-50 dark:bg-purple-950/50': getMatrixCellType(feat.value, feat.value_type) === 'unlimited',
+                      'text-blue-600 dark:text-blue-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold bg-blue-50 dark:bg-blue-950/50': getMatrixCellType(feat.value, feat.value_type) === 'numeric',
+                      'ml-1.5': getMatrixCellType(feat.value, feat.value_type) === 'string',
+                    }"
+                  >{{ formatMatrixValue(feat.value, feat.value_type) }}</span>
+                </div>
+              </li>
+            </template>
+            <!-- Fallback: static plan.features (legacy, used when access matrix has no data) -->
+            <template v-else>
+              <li
+                v-for="(value, key) in plan.features"
+                :key="key"
+                class="flex items-start gap-2.5 text-sm"
               >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 0C9.5 2 7 4.5 7 7.5S9.5 13 12 13s5-2.5 5-5.5S14.5 2 12 2zm0 0c2.5 0 5 2.5 5 5.5S14.5 13 12 13" />
-              </svg>
-              <!-- Boolean/Default: checkmark -->
-              <svg
-                v-else
-                class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-              </svg>
-              <div>
-                <span class="font-medium capitalize">{{ String(key).replace(/_/g, ' ') }}</span>
-                <span
-                  class="text-[var(--color-muted-foreground)]"
-                  :class="{
-                    'inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold': typeof value === 'number' || String(value).match(/^\d+/),
-                    'text-purple-600 dark:text-purple-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold': String(value).match(/unlimited|infinity/i),
-                  }"
-                >{{ value }}</span>
-              </div>
-            </li>
+                <!-- Boolean true: green checkmark -->
+                <svg
+                  v-if="getFeatureValueType(value) === 'boolean-true'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <!-- Boolean false: red cross -->
+                <svg
+                  v-else-if="getFeatureValueType(value) === 'boolean-false'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-red-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                <!-- Unlimited (integer 0): purple infinity -->
+                <svg
+                  v-else-if="getFeatureValueType(value) === 'unlimited'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-purple-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 0C9.5 2 7 4.5 7 7.5S9.5 13 12 13s5-2.5 5-5.5S14.5 2 12 2zm0 0c2.5 0 5 2.5 5 5.5S14.5 13 12 13" />
+                </svg>
+                <!-- Numeric limit (integer N>0): blue hash -->
+                <svg
+                  v-else-if="getFeatureValueType(value) === 'numeric'"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-blue-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+                </svg>
+                <!-- String: green checkmark -->
+                <svg
+                  v-else
+                  class="mt-0.5 h-4 w-4 shrink-0 text-brand-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <div>
+                  <span class="font-medium capitalize">{{ String(key).replace(/_/g, ' ') }}</span>
+                  <span
+                    class="text-[var(--color-muted-foreground)]"
+                    :class="{
+                      'text-brand-600 dark:text-brand-400 font-medium ml-1.5': getFeatureValueType(value) === 'boolean-true',
+                      'text-red-500 dark:text-red-400 font-medium ml-1.5': getFeatureValueType(value) === 'boolean-false',
+                      'text-purple-600 dark:text-purple-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold bg-purple-50 dark:bg-purple-950/50': getFeatureValueType(value) === 'unlimited',
+                      'text-blue-600 dark:text-blue-400 inline-flex items-center ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-semibold bg-blue-50 dark:bg-blue-950/50': getFeatureValueType(value) === 'numeric',
+                      'ml-1.5': getFeatureValueType(value) === 'string',
+                    }"
+                  >{{ formatFeatureValue(value) }}</span>
+                </div>
+              </li>
+            </template>
           </ul>
 
           <!-- CTA Button -->
@@ -651,6 +775,108 @@ async function executeChangePlan(planSlug: string) {
           >
             {{ actionLoading === `change-${plan.slug}` ? 'Switching...' : (isSubscriptionCanceled ? 'Subscribe' : 'Upgrade Now') }}
           </button>
+        </div>
+      </div>
+
+      <!-- Access Matrix Comparison Table -->
+      <div v-if="accessMatrix && accessMatrix.rows.length > 0" class="mt-10">
+        <h2 class="text-xl font-bold mb-1">Feature Comparison</h2>
+        <p class="text-sm text-[var(--color-muted-foreground)] mb-4">
+          Detailed access matrix across all plans. <span v-if="accessMatrix.rows.some(r => r.key === 'all')" class="text-brand-600 dark:text-brand-400">The "All Features" row grants access to every feature.</span>
+        </p>
+        <div class="card overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-[var(--color-border)] bg-[var(--color-muted)]/50">
+                  <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--color-muted-foreground)]" scope="col">
+                    Feature
+                  </th>
+                  <th
+                    v-for="plan in accessMatrix.plans"
+                    :key="plan.slug"
+                    class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-[var(--color-muted-foreground)]"
+                    scope="col"
+                  >
+                    {{ plan.name }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-[var(--color-border)]">
+                <tr
+                  v-for="row in accessMatrix.rows"
+                  :key="row.key"
+                  class="hover:bg-[var(--color-muted)]/30 transition-colors"
+                  :class="{ 'bg-brand-50/50 dark:bg-brand-950/20': row.key === 'all' }"
+                >
+                  <td class="px-4 py-3">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium text-sm" :class="{ 'text-brand-700 dark:text-brand-300': row.key === 'all' }">
+                        {{ row.key === 'all' ? 'All Features' : row.key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) }}
+                      </span>
+                      <span
+                        v-if="row.key === 'all'"
+                        class="inline-flex items-center rounded-full gradient-brand px-2 py-0.5 text-[10px] font-semibold text-white"
+                      >
+                        Wildcard
+                      </span>
+                    </div>
+                    <p v-if="row.description && row.key !== 'all'" class="text-xs text-[var(--color-muted-foreground)] mt-0.5">
+                      {{ row.description }}
+                    </p>
+                    <p v-else-if="row.key === 'all'" class="text-xs text-brand-600 dark:text-brand-400 mt-0.5">
+                      Grants access to all features — overrides individual settings
+                    </p>
+                  </td>
+                  <td
+                    v-for="plan in accessMatrix.plans"
+                    :key="plan.slug"
+                    class="px-4 py-3 text-center"
+                  >
+                    <!-- Boolean true: green checkmark -->
+                    <svg
+                      v-if="getMatrixCellType(row.values[plan.slug], row.value_type) === 'boolean-true'"
+                      class="mx-auto h-5 w-5 text-green-600 dark:text-green-400"
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <!-- Boolean false: red X -->
+                    <svg
+                      v-else-if="getMatrixCellType(row.values[plan.slug], row.value_type) === 'boolean-false'"
+                      class="mx-auto h-5 w-5 text-red-400"
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <!-- Unlimited (integer 0): purple badge -->
+                    <span
+                      v-else-if="getMatrixCellType(row.values[plan.slug], row.value_type) === 'unlimited'"
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-purple-50 text-purple-600 dark:bg-purple-950/50 dark:text-purple-400"
+                    >
+                      Unlimited
+                    </span>
+                    <!-- Numeric: blue badge -->
+                    <span
+                      v-else-if="getMatrixCellType(row.values[plan.slug], row.value_type) === 'numeric'"
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-400"
+                    >
+                      {{ row.values[plan.slug] }}
+                    </span>
+                    <!-- String value -->
+                    <span
+                      v-else-if="getMatrixCellType(row.values[plan.slug], row.value_type) === 'string'"
+                      class="text-sm font-medium text-foreground"
+                    >
+                      {{ row.values[plan.slug] }}
+                    </span>
+                    <!-- Not defined: dash -->
+                    <span v-else class="text-[var(--color-muted-foreground)]/40">&mdash;</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </template>

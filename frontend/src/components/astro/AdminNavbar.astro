@@ -290,7 +290,29 @@
 </header>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
+  // ── Admin Navbar initialization ──
+  // Same pattern as Navbar.astro: use window-level flags to prevent
+  // duplicate initialization across View Transitions, and wait for
+  // auth init before populating user info.
+
+  const SB_ADMIN_NAVBAR_INIT = "__sb_admin_navbar_init";
+
+  function isAdminNavbarInitialized(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      (window as any)[SB_ADMIN_NAVBAR_INIT] === true
+    );
+  }
+
+  function markAdminNavbarInitialized(): void {
+    if (typeof window !== "undefined") {
+      (window as any)[SB_ADMIN_NAVBAR_INIT] = true;
+    }
+  }
+
+  if (!isAdminNavbarInitialized()) {
+    markAdminNavbarInitialized();
+
     const mobileMenuToggle = document.getElementById(
       "admin-mobile-menu-toggle",
     );
@@ -339,12 +361,15 @@
         const { logout } = await import("@/lib/auth");
         await logout();
       } catch {
-        sessionStorage.removeItem("auth_access_token");
-        sessionStorage.removeItem("auth_refresh_token");
-        localStorage.removeItem("auth_access_token");
-        localStorage.removeItem("auth_refresh_token");
-        localStorage.removeItem("auth_remember_me");
-        window.location.href = "/auth/login";
+        const { authHelpers } = await import("@/lib/api");
+        authHelpers.clearAuth();
+        // VUE 3 CONVENTION: Use navigate() instead of window.location.href
+        try {
+          const { navigate } = await import("astro:transitions/client");
+          navigate("/auth/login", { history: "replace" });
+        } catch {
+          window.location.href = "/auth/login";
+        }
       }
     });
 
@@ -368,16 +393,110 @@
     }
 
     // ── Populate user info ──
+    // API-1 FIX: Use cached user from useAuth() shared state instead of
+    // making a separate GET /users/me call. The user data is already fetched
+    // by useAuth().initAuth() in the AdminGuard/SessionGuard, so we can read
+    // it from the window-level shared state without another API call.
+    // This saves 1 duplicate /users/me call per admin page load.
+    // AUTH-14 FIX: Added fallback to /users/me when fetchUser() (which calls
+    // /billing/auth/me) fails. Also added retry logic and cross-component
+    // sync via custom events.
     async function populateAdminUserInfo() {
       try {
-        const { apiClient } = await import("@/lib/api");
-        const user = await apiClient.get<{
+        // Wait for auth initialization to complete before fetching user info.
+        // Without this, fetchUser() fires before the access token is restored
+        // from the cookie-based refresh, causing a 401.
+        const { authHelpers } = await import("@/lib/api");
+        const maxWait = 8000; // 8 second timeout — generous for slow connections
+        const start = Date.now();
+        while (!authHelpers.isAuthReady() && Date.now() - start < maxWait) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        // If auth still not ready, schedule retry
+        if (!authHelpers.isAuthReady()) {
+          const navbarCache = (window as any).__sb_admin_navbar || {};
+          if (!navbarCache.userInfoRetries || navbarCache.userInfoRetries < 3) {
+            (window as any).__sb_admin_navbar = {
+              ...navbarCache,
+              userInfoRetries: (navbarCache.userInfoRetries || 0) + 1,
+            };
+            setTimeout(() => populateAdminUserInfo(), 2000);
+          }
+          return;
+        }
+
+        // API-1 FIX: Read from useAuth's window-level shared state
+        const win = window as any;
+        const sharedAuth = win.__sb_auth_composable;
+        let user: {
           display_name?: string;
           email: string;
           role: string;
           is_staff: boolean;
-        }>("/users/me");
-        const displayName = user.display_name || user.email;
+          first_name?: string;
+          last_name?: string;
+        } | null = null;
+
+        // Path 1: Read from shared Vue reactive state (already cached by AdminGuard/SessionGuard)
+        if (sharedAuth?.userRef?.value) {
+          // User data already cached by useAuth() — use it directly
+          user = sharedAuth.userRef.value;
+        }
+
+        // Path 2: Fetch via useAuth (deduplicated)
+        if (!user) {
+          try {
+            const { useAuth } = await import("@/composables/useAuth");
+            const { fetchUser } = useAuth();
+            const fetchedUser = await fetchUser();
+            if (fetchedUser) {
+              user = fetchedUser as any;
+            }
+          } catch {
+            // /billing/auth/me failed — try fallback below
+          }
+        }
+
+        // Path 3: Fallback to /users/me directly if fetchUser failed
+        if (!user) {
+          try {
+            const { apiClient } = await import("@/lib/api");
+            const userData = await apiClient.get<{
+              display_name?: string;
+              email: string;
+              role: string;
+              is_staff: boolean;
+              first_name?: string;
+              last_name?: string;
+            }>("/users/me");
+            if (userData) {
+              user = userData;
+            }
+          } catch {
+            // Both paths failed — user truly not authenticated
+          }
+        }
+
+        if (!user) {
+          // All fetch paths failed — schedule retry
+          const navbarCache = (window as any).__sb_admin_navbar || {};
+          if (!navbarCache.userInfoRetries || navbarCache.userInfoRetries < 3) {
+            (window as any).__sb_admin_navbar = {
+              ...navbarCache,
+              userInfoRetries: (navbarCache.userInfoRetries || 0) + 1,
+            };
+            setTimeout(() => populateAdminUserInfo(), 3000);
+          }
+          return;
+        }
+
+        const displayName =
+          user.display_name ||
+          (user.first_name && user.last_name
+            ? `${user.first_name} ${user.last_name}`
+            : null) ||
+          user.email;
         const roleLabel = user.is_staff
           ? "Super Admin"
           : user.role === "owner"
@@ -418,11 +537,147 @@
           "#admin-user-menu-toggle .rounded-full",
         );
         if (avatarEl) avatarEl.textContent = initials;
+
+        // Also update admin sidebar user name
+        const sidebarNameEl = document.getElementById(
+          "admin-sidebar-user-name",
+        );
+        if (sidebarNameEl) sidebarNameEl.textContent = displayName;
+        const sidebarAvatarEl = document.getElementById(
+          "admin-sidebar-user-avatar",
+        );
+        if (sidebarAvatarEl) sidebarAvatarEl.textContent = initials;
+        const sidebarRoleEl = document.getElementById(
+          "admin-sidebar-user-role",
+        );
+        if (sidebarRoleEl) sidebarRoleEl.textContent = roleLabel;
+
+        // Mark as loaded
+        (window as any).__sb_admin_navbar = {
+          ...(window as any).__sb_admin_navbar,
+          userInfoLoaded: true,
+        };
+
+        // Dispatch event so other components (AdminSidebar) can update too
+        document.dispatchEvent(
+          new CustomEvent("sb:admin-user-info-loaded", {
+            detail: { displayName, initials, roleLabel, email: user.email },
+          }),
+        );
       } catch {
-        // Not authenticated — will redirect via middleware
+        // Not authenticated — schedule retry
+        const navbarCache = (window as any).__sb_admin_navbar || {};
+        if (!navbarCache.userInfoRetries || navbarCache.userInfoRetries < 3) {
+          (window as any).__sb_admin_navbar = {
+            ...navbarCache,
+            userInfoRetries: (navbarCache.userInfoRetries || 0) + 1,
+          };
+          setTimeout(() => populateAdminUserInfo(), 3000);
+        }
       }
     }
 
     populateAdminUserInfo();
-  });
+
+    // Re-populate user info after View Transitions.
+    document.addEventListener("astro:page-load", () => {
+      const navbarCache = (window as any).__sb_admin_navbar || {};
+      if (navbarCache.userInfoLoaded) {
+        // Re-apply cached user data from shared auth state
+        const win = window as any;
+        const userRef = win.__sb_auth_composable?.userRef;
+        if (userRef?.value) {
+          const user = userRef.value;
+          const displayName = user.display_name || user.email;
+          const sidebarNameEl = document.getElementById(
+            "admin-sidebar-user-name",
+          );
+          if (sidebarNameEl) sidebarNameEl.textContent = displayName;
+          // Re-apply navbar elements too
+          const navbarNameEl = document.getElementById(
+            "admin-navbar-user-name",
+          );
+          if (navbarNameEl) navbarNameEl.textContent = displayName;
+          const dropdownNameEl = document.getElementById(
+            "admin-user-dropdown-name",
+          );
+          if (dropdownNameEl) dropdownNameEl.textContent = displayName;
+          // Update avatar/role too
+          const initials = displayName
+            .split(" ")
+            .map((n: string) => n[0])
+            .join("")
+            .slice(0, 2)
+            .toUpperCase();
+          const avatarEl = document.querySelector(
+            "#admin-user-menu-toggle .rounded-full",
+          );
+          if (avatarEl) avatarEl.textContent = initials;
+          const sidebarAvatarEl = document.getElementById(
+            "admin-sidebar-user-avatar",
+          );
+          if (sidebarAvatarEl) sidebarAvatarEl.textContent = initials;
+          const roleLabel = user.is_staff
+            ? "Super Admin"
+            : user.role === "owner"
+              ? "Owner"
+              : user.role === "admin"
+                ? "Admin"
+                : "Staff";
+          const navbarRoleEl = document.getElementById(
+            "admin-navbar-user-role",
+          );
+          if (navbarRoleEl) navbarRoleEl.textContent = roleLabel;
+          const dropdownRoleEl = document.getElementById(
+            "admin-dropdown-role-badge",
+          );
+          if (dropdownRoleEl) dropdownRoleEl.textContent = roleLabel;
+          const sidebarRoleEl = document.getElementById(
+            "admin-sidebar-user-role",
+          );
+          if (sidebarRoleEl) sidebarRoleEl.textContent = roleLabel;
+        }
+      } else {
+        // Reset retry count and try again
+        (window as any).__sb_admin_navbar = {
+          ...navbarCache,
+          userInfoRetries: 0,
+        };
+        populateAdminUserInfo();
+      }
+    });
+
+    // Listen for user info loaded by AdminSidebar (cross-component sync)
+    document.addEventListener("sb:admin-user-info-loaded", ((
+      e: CustomEvent,
+    ) => {
+      const { displayName, initials, roleLabel, email } = e.detail;
+      // Update navbar elements
+      const nameEls = [
+        document.getElementById("admin-navbar-user-name"),
+        document.getElementById("admin-user-dropdown-name"),
+      ];
+      nameEls.forEach((el) => {
+        if (el) el.textContent = displayName;
+      });
+      const emailEl = document.getElementById("admin-user-dropdown-email");
+      if (emailEl) emailEl.textContent = email;
+      const roleEls = [
+        document.getElementById("admin-navbar-user-role"),
+        document.getElementById("admin-dropdown-role-badge"),
+      ];
+      roleEls.forEach((el) => {
+        if (el) el.textContent = roleLabel;
+      });
+      const avatarEl = document.querySelector(
+        "#admin-user-menu-toggle .rounded-full",
+      );
+      if (avatarEl) avatarEl.textContent = initials;
+      // Mark as loaded
+      (window as any).__sb_admin_navbar = {
+        ...(window as any).__sb_admin_navbar,
+        userInfoLoaded: true,
+      };
+    }) as EventListener);
+  }
 </script>

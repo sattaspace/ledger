@@ -242,6 +242,7 @@ export interface AccessEntryBulkPayload {
 export interface AccessMatrixRow {
   key: string;
   description: string | null;
+  value_type: "boolean" | "integer" | "string";
   values: Record<string, string | null>; // plan_slug → value
   entry_ids: Record<string, number | null>; // plan_slug → entry ID (for edit/delete)
 }

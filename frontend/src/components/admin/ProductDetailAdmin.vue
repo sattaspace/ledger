@@ -17,6 +17,7 @@
 
 import { ref, computed, onMounted, watch, onUnmounted } from "vue";
 import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { authHelpers } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
 import type {
@@ -307,9 +308,12 @@ watch(activeTab, (tab) => {
 
 // ─── Plan navigation ─────────────────────────────────────────────────────────
 
+// VUE 3 CONVENTION: Use authHelpers.navigateTo() (Astro's navigate())
+// instead of window.location.href to avoid the "querySelector null" error
+// during View Transitions. Defer with setTimeout to avoid race conditions.
 function handlePlanRowClick(row: Record<string, unknown>) {
   const plan = row as PlanItem;
-  window.location.href = `/admin/plans/${plan.id}`;
+  setTimeout(() => authHelpers.navigateTo(`/admin/plans/${plan.id}`), 0);
 }
 
 // ─── Format price ────────────────────────────────────────────────────────────
@@ -395,7 +399,8 @@ async function confirmDeleteProduct() {
     await adminApi.deleteProduct(productId.value!);
     showToast("Product deleted.", "success");
     showDeleteProductDialog.value = false;
-    window.location.href = "/admin/products";
+    // VUE 3 CONVENTION: Use authHelpers.navigateTo() instead of window.location.href
+    setTimeout(() => authHelpers.navigateTo("/admin/products"), 0);
   } catch (err) {
     showToast(getErrorMessage(err), "error");
   } finally {
@@ -703,11 +708,21 @@ async function handleAddEntry() {
   }
 }
 
-/** Infer value_type from a string value */
-function inferValueType(val: string | null | undefined): "boolean" | "integer" | "string" {
+/** Infer value_type from a context (key and value) */
+function inferValueType(key: string, val: string | null | undefined): "boolean" | "integer" | "string" {
   if (val == null) return "string";
   const lower = String(val).toLowerCase();
-  if (lower === "true" || lower === "false" || lower === "0" || lower === "1") {
+  
+  // 1. Explicitly check key patterns for preference
+  if (key.startsWith("max_") || key.includes("limit") || key.includes("count")) {
+    return "integer";
+  }
+  if (key.startsWith("is_") || key.includes("enabled") || key.includes("allow")) {
+    return "boolean";
+  }
+
+  // 2. Fallback to value-based inference
+  if (lower === "true" || lower === "false") {
     return "boolean";
   } else if (/^-?\d+$/.test(String(val))) {
     return "integer";
@@ -734,7 +749,7 @@ function handleEditCell(row: AccessMatrixRow, planSlug: string) {
         selectedPlanIds.push(id);
         const cellValue = row.values[plan.slug] ?? "true";
         valuesByPlan[id] = cellValue;
-        valueTypesByPlan[id] = inferValueType(cellValue);
+        valueTypesByPlan[id] = inferValueType(row.key, cellValue);
       }
     }
   }
@@ -744,7 +759,7 @@ function handleEditCell(row: AccessMatrixRow, planSlug: string) {
     selectedPlanIds.push(clickedPlanId);
     const cellValue = row.values[planSlug] ?? "true";
     valuesByPlan[clickedPlanId] = cellValue;
-    valueTypesByPlan[clickedPlanId] = inferValueType(cellValue);
+    valueTypesByPlan[clickedPlanId] = inferValueType(row.key, cellValue);
   }
 
   editEntryForm.value = {
@@ -778,7 +793,7 @@ function handleEditRow(row: AccessMatrixRow) {
       selectedPlanIds.push(id);
       const cellValue = row.values[plan.slug] ?? "true";
       valuesByPlan[id] = cellValue;
-      valueTypesByPlan[id] = inferValueType(cellValue);
+      valueTypesByPlan[id] = inferValueType(row.key, cellValue);
     }
   }
 
