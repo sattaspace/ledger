@@ -14,8 +14,11 @@ import {
   Check,
   Edit,
   Trash2,
-  Settings
+  Settings,
+  Download
 } from 'lucide-vue-next';
+import VirtualList from './VirtualList.vue';
+import BulkActionsBar from './BulkActionsBar.vue';
 import type { Product, RestockRecord, Supplier, DSR, Brand, Category } from '../types';
 import { BaseChart, ChartCard } from './charts';
 import type { ChartData, ChartOptions } from 'chart.js';
@@ -108,6 +111,14 @@ const deletingProduct = ref<Product | null>(null);
 const currentPage = ref(1);
 const itemsPerPage = 20;
 
+// Auto-save state
+const AUTO_SAVE_KEY = 'dealercore_product_draft';
+const lastSaved = ref<Date | null>(null);
+const hasUnsavedChanges = ref(false);
+
+// Export loading state
+const isExporting = ref(false);
+
 // Compact view toggle
 const viewMode = ref<'card' | 'table'>('card');
 const compactView = computed(() => viewMode.value === 'table');
@@ -157,6 +168,31 @@ watch(() => props.quickActionProduct, (newVal) => {
     showHistory.value = false;
   }
 }, { immediate: true });
+
+// Auto-save form data
+watch(newProdFields, () => {
+  hasUnsavedChanges.value = true;
+  localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(newProdFields.value));
+  lastSaved.value = new Date();
+}, { deep: true });
+
+// Restore draft on mount
+onMounted(() => {
+  const saved = localStorage.getItem(AUTO_SAVE_KEY);
+  if (saved) {
+    try {
+      const draft = JSON.parse(saved);
+      if (draft.name || draft.sku) {
+        newProdFields.value = draft;
+        // Show toast notification about restored draft
+        setTimeout(() => {
+          formSuccess.value = '📝 Restored unsaved draft';
+          setTimeout(() => formSuccess.value = '', 3000);
+        }, 500);
+      }
+    } catch {}
+  }
+});
 
 // Filter products based on search and selected category
 const filteredProducts = computed(() => {
@@ -392,6 +428,7 @@ const handleAddProductSubmit = async () => {
       sellingPrice: Number(sellingPrice),
       location: location || 'Main Rack'
     });
+    clearDraft();
     newProdFields.value = {
       name: '',
       sku: '',
@@ -408,6 +445,40 @@ const handleAddProductSubmit = async () => {
   } finally {
     isSubmitting.value = false;
   }
+};
+
+// Export to CSV
+const handleExportInventory = async () => {
+  isExporting.value = true;
+  try {
+    const headers = ['ID', 'Name', 'SKU', 'Brand', 'Category', 'Stock', 'Min Stock', 'Cost Price', 'Selling Price', 'Location'];
+    const rows = filteredProducts.value.map(p => [
+      p.id, p.name, p.sku, p.brand, p.category, p.stock, p.minStockAlert, p.unitPrice, p.sellingPrice, p.location
+    ]);
+    
+    const csv = [headers.join(','), ...rows.map((r: any[]) => r.map((field: any) => `"${field}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory_export_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    formSuccess.value = `✓ Exported ${rows.length} products to CSV`;
+    setTimeout(() => formSuccess.value = '', 3000);
+  } catch (err: any) {
+    formError.value = 'Export failed: ' + (err.message || 'Unknown error');
+  } finally {
+    isExporting.value = false;
+  }
+};
+
+const clearDraft = () => {
+  localStorage.removeItem(AUTO_SAVE_KEY);
+  hasUnsavedChanges.value = false;
 };
 
 const handleRestockSubmit = async () => {
@@ -583,6 +654,21 @@ const handleConfirmDeleteProduct = async () => {
           <span>Restock History ({{ restocks.length }})</span>
         </button>
 
+        <!-- Export to CSV -->
+        <button 
+          id="inv-btn-export"
+          @click="handleExportInventory"
+          :disabled="isExporting"
+          :class="['min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 transition font-semibold text-sm cursor-pointer border',
+            isExporting 
+              ? 'bg-slate-100 text-slate-400 border-slate-200' 
+              : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300 shadow-sm'
+          ]"
+        >
+          <Download v-if="!isExporting" class="h-4 w-4" />
+          <span v-else class="animate-spin">⟳</span>
+          <span>{{ isExporting ? 'Exporting...' : 'Export CSV' }}</span>
+        </button>
 
       </div>
     </div>

@@ -9,7 +9,8 @@ import {
   X, 
   Phone, 
   AlertTriangle, 
-  Check 
+  Check,
+  Download
 } from 'lucide-vue-next';
 import type { Supplier, Category } from '../types';
 
@@ -54,6 +55,36 @@ const isSubmitting = ref(false);
 
 // Delete confirmation
 const deleteConfirmSupplier = ref<Supplier | null>(null);
+const isExporting = ref(false);
+
+// Export to CSV
+const handleExportSuppliers = async () => {
+  isExporting.value = true;
+  try {
+    const headers = ['ID', 'Name', 'Phone', 'Category'];
+    const rows = filteredSuppliers.value.map(s => [
+      s.id, s.name, s.phone, s.category
+    ]);
+    
+    const csv = [headers.join(','), ...rows.map((r: any[]) => r.map((field: any) => `"${field}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `suppliers_export_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    formSuccess.value = `✓ Exported ${rows.length} suppliers to CSV`;
+    setTimeout(() => formSuccess.value = '', 3000);
+  } catch (err: any) {
+    formError.value = 'Export failed: ' + (err.message || 'Unknown error');
+  } finally {
+    isExporting.value = false;
+  }
+};
 
 // Computed category list: combine hardcoded + API categories
 const allCategories = computed(() => {
@@ -215,6 +246,21 @@ const handleConfirmDeleteSupplier = async () => {
           >
             <Plus class="h-4 w-4" />
             <span>Add Supplier</span>
+          </button>
+
+          <button 
+            id="sup-btn-export"
+            @click="handleExportSuppliers"
+            :disabled="isExporting"
+            :class="['min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 transition font-semibold text-sm cursor-pointer border',
+              isExporting 
+                ? 'bg-slate-100 text-slate-400 border-slate-200' 
+                : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300 shadow-sm'
+            ]"
+          >
+            <Download v-if="!isExporting" class="h-4 w-4" />
+            <span v-else class="animate-spin">⟳</span>
+            <span>{{ isExporting ? 'Exporting...' : 'Export CSV' }}</span>
           </button>
         </div>
       </div>

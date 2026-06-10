@@ -89,7 +89,6 @@ const printData = ref<{
 const selectedPeriod = ref<'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'QUARTER' | 'YEAR'>('ALL');
 const expandedVehicle = ref<string | null>(null);
 const expandedRep = ref<string | null>(null);
-
 const vehicleQuery = ref('');
 const repSearchQuery = ref('');
 
@@ -1092,12 +1091,19 @@ const revenueTrendOptions = computed(() => ({
           <p class="text-xs text-rose-500">Awaiting collection</p>
         </div>
 
-        <!-- Written Off -->
-        <div v-if="periodTotals.writtenOff > 0" class="bg-white p-5 rounded-xl border border-amber-200 shadow-sm space-y-2 relative overflow-hidden">
+        <!-- Written Off Summary -->
+        <div v-if="periodTotals.writtenOff > 0" class="bg-gradient-to-br from-amber-50 to-amber-100 p-5 rounded-xl border border-amber-200 shadow-sm relative overflow-hidden">
           <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-400 to-amber-600"></div>
-          <span class="text-xs uppercase text-amber-500 font-semibold tracking-wide">Written Off</span>
-          <h3 class="text-2xl font-bold text-amber-600 font-mono">{{ formatCurrency(periodTotals.writtenOff) }}</h3>
-          <p class="text-xs text-amber-500">Bad debt (excluded from revenue)</p>
+          <div class="space-y-1">
+            <span class="text-xs uppercase text-amber-600 font-semibold tracking-wide">Uncollected Bad Debt</span>
+            <h3 class="text-2xl font-bold text-amber-700 font-mono">{{ formatCurrency(periodTotals.writtenOff) }}</h3>
+            <p class="text-xs text-amber-600">
+              {{ periodFilteredSales.filter(s => s.isClosedWithDue).length }} invoices written off
+            </p>
+            <p class="text-xs text-slate-500 mt-2">
+              View details in "Bad Debt" tab
+            </p>
+          </div>
         </div>
       </div>
 

@@ -433,7 +433,7 @@ const rankBadgeClass = (idx: number) => {
 
         <!-- WRITTEN-OFF BAD DEBT (only shown if > 0) -->
         <div 
-          v-if="summary.writtenOffAmount > 0"
+          v-if="summary.writtenOffOutstanding > 0"
           class="col-span-2 relative overflow-hidden rounded-2xl shadow-lg hover:shadow-xl transition-shadow duration-300"
         >
           <div class="bg-gradient-to-br from-amber-500 to-amber-700 p-4 flex items-center justify-between">
@@ -442,14 +442,14 @@ const rankBadgeClass = (idx: number) => {
                 <AlertTriangle class="h-4 w-4 text-white" />
               </div>
               <div>
-                <span class="text-amber-100 text-xs font-semibold tracking-wide block">Bad Debt Written Off</span>
+                <span class="text-amber-100 text-xs font-semibold tracking-wide block">Uncollected Bad Debt</span>
                 <span class="text-lg font-display font-bold text-white">
-                  {{ formatCurrency(summary.writtenOffAmount) }}
+                  {{ formatCurrency(summary.writtenOffOutstanding) }}
                 </span>
               </div>
             </div>
             <span class="text-xs text-amber-100 bg-white/15 backdrop-blur-sm px-3 py-1 rounded-full font-medium">
-              Excluded from revenue
+              Written off, not collected
             </span>
             <div class="absolute -right-4 -bottom-4 w-20 h-20 bg-white/5 rounded-full"></div>
           </div>

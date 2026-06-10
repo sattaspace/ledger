@@ -18,7 +18,8 @@ import {
   Edit,
   ArrowDownCircle,
   XCircle,
-  RotateCcw
+  RotateCcw,
+  Download
 } from 'lucide-vue-next';
 import type { Product, SaleRecord, DSR } from '../types';
 import { BaseChart, ChartCard } from './charts';
@@ -71,11 +72,47 @@ const selectedPeriod = ref<'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'QUARTER' | 'YEA
 const sortBy = ref<'DATE_DESC' | 'DATE_ASC' | 'AMOUNT_DESC' | 'AMOUNT_ASC'>('DATE_DESC');
 const currentPage = ref(1);
 const itemsPerPage = 10;
+const isExporting = ref(false);
 
 // Watch details to reset page boundaries
 watch([searchQuery, selectedPeriod, sortBy], () => {
   currentPage.value = 1;
 });
+
+// Export to CSV
+const handleExportSales = async () => {
+  isExporting.value = true;
+  try {
+    const headers = ['Sale ID', 'Date', 'Product', 'Customer', 'Quantity', 'Total Amount', 'Amount Paid', 'Payment Type', 'Status', 'DSR'];
+    const rows = sortedSales.value.map(s => [
+      s.id,
+      new Date(s.date).toLocaleDateString(),
+      s.productName,
+      s.customerName,
+      s.quantity,
+      s.totalAmount,
+      s.amountPaid,
+      s.paymentType,
+      s.collectionStatus,
+      s.dsrName || 'N/A'
+    ]);
+    
+    const csv = [headers.join(','), ...rows.map((r: any[]) => r.map((field: any) => `"${field}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sales_export_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    alert(`✓ Exported ${rows.length} sales to CSV`);
+  } finally {
+    isExporting.value = false;
+  }
+};
 
 const EXISTING_CUSTOMERS = [
   { name: 'Krishna Grocery Store', address: 'G Block, Pocket 2, Rohini', phone: '9911223344' },
@@ -785,6 +822,22 @@ const handleReturnSubmit = async () => {
       >
         <component :is="showLogForm ? X : Plus" class="h-4 w-4" />
         <span>{{ showLogForm ? 'Close Form' : 'New Sale' }}</span>
+      </button>
+
+      <!-- Export to CSV -->
+      <button 
+        id="sales-btn-export"
+        @click="handleExportSales"
+        :disabled="isExporting"
+        :class="['py-2.5 px-5 rounded-lg flex items-center gap-2 transition font-semibold text-sm cursor-pointer',
+          isExporting 
+            ? 'bg-slate-100 text-slate-400' 
+            : 'bg-blue-100 text-blue-700 hover:bg-blue-200 shadow-sm'
+        ]"
+      >
+        <Download v-if="!isExporting" class="h-4 w-4" />
+        <span v-else class="animate-spin">⟳</span>
+        <span>{{ isExporting ? 'Exporting...' : 'Export CSV' }}</span>
       </button>
     </div>
 

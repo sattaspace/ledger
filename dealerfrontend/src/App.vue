@@ -9,6 +9,7 @@ import {
   Menu, 
   X, 
   AlertCircle,
+  AlertTriangle,
   Smartphone,
   RefreshCw,
   LogOut,
@@ -24,6 +25,7 @@ import Sales from './components/Sales.vue';
 import Collections from './components/Collections.vue';
 import Reports from './components/Reports.vue';
 import Suppliers from './components/Suppliers.vue';
+import BadDebt from './components/BadDebt.vue';
 
 // ─── Centralized API Services ──────────────────────────────────────────
 // All API communication flows through these service singletons.
@@ -557,6 +559,7 @@ const navItems = [
   { id: 'suppliers', name: 'Suppliers', icon: '🏪' },
   { id: 'sales', name: 'Sales Entry', icon: '🧾' },
   { id: 'collections', name: 'Pending Collections', icon: '⏳' },
+  { id: 'bad-debt', name: 'Bad Debt', icon: '⚠️' },
   { id: 'reports', name: 'Financial Reports', icon: '📊' }
 ];
 </script>
@@ -596,6 +599,7 @@ const navItems = [
           <Users v-else-if="item.id === 'suppliers'" class="nav-icon" />
           <ShoppingCart v-else-if="item.id === 'sales'" class="nav-icon" />
           <Coins v-else-if="item.id === 'collections'" class="nav-icon" />
+          <AlertTriangle v-else-if="item.id === 'bad-debt'" class="nav-icon" />
           <FilePieChart v-else-if="item.id === 'reports'" class="nav-icon" />
           
           <span class="nav-label">{{ item.name }}</span>
@@ -858,6 +862,13 @@ const navItems = [
             @refreshData="fetchFullDetails"
           />
 
+          <BadDebt 
+            v-else-if="activeTab === 'bad-debt'" 
+            :sales="sales"
+            :formatCurrency="formatCurrency"
+            @refreshData="fetchFullDetails"
+          />
+
           <Reports 
             v-else-if="activeTab === 'reports'" 
             :summary="summary"
@@ -903,6 +914,7 @@ const navItems = [
           <Users v-else-if="item.id === 'suppliers'" class="mobile-bottomnav-icon" />
           <ShoppingCart v-else-if="item.id === 'sales'" class="mobile-bottomnav-icon" />
           <Coins v-else-if="item.id === 'collections'" class="mobile-bottomnav-icon" />
+          <AlertTriangle v-else-if="item.id === 'bad-debt'" class="mobile-bottomnav-icon" />
           <FilePieChart v-else-if="item.id === 'reports'" class="mobile-bottomnav-icon" />
           <span class="mobile-bottomnav-label">{{ item.id === 'overview' ? 'Home' : item.id === 'inventory' ? 'Inventory' : item.id === 'suppliers' ? 'Suppliers' : item.id === 'sales' ? 'Sales' : item.id === 'collections' ? 'Dues' : 'Reports' }}</span>
         </button>
