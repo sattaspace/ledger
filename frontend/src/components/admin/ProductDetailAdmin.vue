@@ -16,7 +16,7 @@
  */
 
 import { ref, computed, onMounted, watch, onUnmounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { authHelpers } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
@@ -265,7 +265,8 @@ async function fetchMatrix() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchProduct();
   // Check if URL has ?tab=matrix to auto-switch to the Access Matrix tab
   const params = new URLSearchParams(window.location.search);

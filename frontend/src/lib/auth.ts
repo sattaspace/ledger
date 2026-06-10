@@ -398,8 +398,11 @@ export function isAuthenticated(): boolean {
  * If the access token is expired but the refresh cookie is still valid,
  * the 401 handler in api.ts will handle the refresh and retry.
  *
- * Use initAuth() from useAuth() for an async version that waits for
- * token initialization before checking.
+ * ⚠️ IMPORTANT: During a FULL PAGE RELOAD (not a View Transition), there is
+ * a race condition: the Vue component mounts and calls requireAuth() before
+ * api.ts's async initAccessToken() has completed. Since getAccessToken()
+ * returns null during initialization, requireAuth() incorrectly redirects
+ * to login. Use requireAuthAsync() instead in onMounted() hooks to avoid this.
  */
 export function requireAuth(): boolean {
   if (!isAuthenticated()) {
@@ -417,6 +420,44 @@ export function requireAuth(): boolean {
           }
         }, 0);
       }
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Async version of requireAuth() that waits for token initialization.
+ *
+ * AUTH-13 FIX: During a full page reload (e.g., when @click.stop blocks
+ * Astro's View Transition and causes a full reload), the Vue component's
+ * onMounted() fires before api.ts's initAccessToken() completes. The
+ * synchronous requireAuth() sees no token and redirects to login.
+ *
+ * This async version waits for initAccessToken() to finish first, then
+ * checks authentication. If the refresh cookie was valid, the token will
+ * be available after waitForInit() resolves.
+ *
+ * Usage in Vue components:
+ *   onMounted(async () => {
+ *     if (!(await requireAuthAsync())) return;
+ *     await fetchData();
+ *   });
+ */
+export async function requireAuthAsync(): Promise<boolean> {
+  // Wait for the token initialization to complete
+  await authHelpers.waitForInit();
+  // Now check if we have a valid token
+  if (!isAuthenticated()) {
+    if (
+      typeof window !== "undefined" &&
+      !window.location.pathname.startsWith("/auth/")
+    ) {
+      setTimeout(() => {
+        if (!window.location.pathname.startsWith("/auth/")) {
+          authHelpers.navigateTo("/auth/login");
+        }
+      }, 0);
     }
     return false;
   }

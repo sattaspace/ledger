@@ -4,10 +4,11 @@
  *
  * Features:
  *   - Subscription info card (user, plan, product, status, period, trial, Stripe)
- *   - Tab navigation: Overview | Plan Changes | Invoices | Refunds
+ *   - Tab navigation: Overview | Plan Changes | Invoices | Credit Pools | Refunds
  *   - Overview tab: subscription info, override form, extend form, cancel/expire
  *   - Plan Changes tab: chronological table of plan changes
- *   - Invoices tab: table of invoices with view hosted URL
+ *   - Invoices tab: table of invoices with type badges and PDF/view links
+ *   - Credit Pools tab: table of credit pools with summary cards
  *   - Refunds tab: table of refunds with status badges
  *   - Override modal (change plan, status, period end)
  *   - Extend modal (extend by N days)
@@ -18,7 +19,8 @@
  */
 
 import { ref, computed, onMounted, watch, onUnmounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
+import { authHelpers } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
 import type {
@@ -27,6 +29,7 @@ import type {
   SubscriptionExtendPayload,
   PlanChangeItem,
   InvoiceItem,
+  CreditPoolItem,
   RefundItem,
   PlanItem,
   IssueRefundPayload,
@@ -71,7 +74,7 @@ const loadError = ref<string | null>(null);
 const actionLoading = ref<string | null>(null);
 
 const subscription = ref<SubscriptionDetail | null>(null);
-const activeTab = ref<"overview" | "plan-changes" | "invoices" | "refunds">("overview");
+const activeTab = ref<"overview" | "plan-changes" | "invoices" | "credit-pools" | "refunds">("overview");
 
 // Tab data (lazy-loaded)
 const planChanges = ref<PlanChangeItem[]>([]);
@@ -81,6 +84,10 @@ const planChangesLoaded = ref(false);
 const invoices = ref<InvoiceItem[]>([]);
 const invoicesLoading = ref(false);
 const invoicesLoaded = ref(false);
+
+const creditPools = ref<CreditPoolItem[]>([]);
+const creditPoolsLoading = ref(false);
+const creditPoolsLoaded = ref(false);
 
 const refunds = ref<RefundItem[]>([]);
 const refundsLoading = ref(false);
@@ -185,9 +192,21 @@ const planChangeColumns = computed<ColumnDef[]>(() => [
 
 const invoiceColumns = computed<ColumnDef[]>(() => [
   { key: "number", label: "Invoice #", sortable: true },
+  { key: "invoice_type", label: "Type", align: "center", width: "90px" },
   { key: "amount_paid_cents", label: "Amount", align: "right", width: "110px" },
   { key: "status", label: "Status", align: "center", width: "110px" },
   { key: "created_at", label: "Date", width: "160px", hideOnMobile: true },
+  { key: "actions", label: "", align: "right", width: "120px" },
+]);
+
+const creditPoolColumns = computed<ColumnDef[]>(() => [
+  { key: "id", label: "Pool #", sortable: true },
+  { key: "plan_name", label: "Plan", sortable: true },
+  { key: "amount_cents", label: "Amount", align: "right", width: "110px" },
+  { key: "periods_remaining", label: "Periods Left", align: "center", width: "110px" },
+  { key: "status", label: "Status", align: "center", width: "110px" },
+  { key: "expiry_type", label: "Expiry", align: "center", width: "80px", hideOnMobile: true },
+  { key: "created_at", label: "Created", width: "160px", hideOnMobile: true },
   { key: "actions", label: "", align: "right", width: "80px" },
 ]);
 
@@ -248,6 +267,20 @@ async function fetchInvoices() {
   }
 }
 
+async function fetchCreditPools() {
+  const id = subscriptionId.value;
+  if (!id) return;
+  creditPoolsLoading.value = true;
+  try {
+    creditPools.value = await adminApi.getSubscriptionCreditPools(id);
+    creditPoolsLoaded.value = true;
+  } catch (err) {
+    console.warn("Failed to load credit pools:", err);
+  } finally {
+    creditPoolsLoading.value = false;
+  }
+}
+
 async function fetchRefunds() {
   const id = subscriptionId.value;
   if (!id) return;
@@ -276,12 +309,16 @@ async function fetchAvailablePlans() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() instead of requireAuth() to wait
+  // for token initialization before checking auth. During a full page reload,
+  // the synchronous requireAuth() fires before initAccessToken() completes,
+  // sees no token, and incorrectly redirects to login.
+  if (!(await requireAuthAsync())) return;
   await fetchSubscription();
   // Check URL for tab parameter
   const params = new URLSearchParams(window.location.search);
   const tab = params.get("tab");
-  if (tab === "plan-changes" || tab === "invoices" || tab === "refunds") {
+  if (tab === "plan-changes" || tab === "invoices" || tab === "credit-pools" || tab === "refunds") {
     activeTab.value = tab;
     window.history.replaceState({}, "", window.location.pathname);
   }
@@ -296,16 +333,18 @@ function handlePageLoad() {
     activeTab.value = "overview";
     planChangesLoaded.value = false;
     invoicesLoaded.value = false;
+    creditPoolsLoaded.value = false;
     refundsLoaded.value = false;
     planChanges.value = [];
     invoices.value = [];
+    creditPools.value = [];
     refunds.value = [];
     fetchSubscription();
   }
   // Also check for ?tab= on client-side navigations
   const params = new URLSearchParams(window.location.search);
   const tab = params.get("tab");
-  if (tab === "plan-changes" || tab === "invoices" || tab === "refunds") {
+  if (tab === "plan-changes" || tab === "invoices" || tab === "credit-pools" || tab === "refunds") {
     activeTab.value = tab;
     window.history.replaceState({}, "", window.location.pathname);
   }
@@ -321,6 +360,8 @@ watch(activeTab, (tab) => {
     fetchPlanChanges();
   } else if (tab === "invoices" && !invoicesLoaded.value) {
     fetchInvoices();
+  } else if (tab === "credit-pools" && !creditPoolsLoaded.value) {
+    fetchCreditPools();
   } else if (tab === "refunds" && !refundsLoaded.value) {
     fetchRefunds();
   }
@@ -354,6 +395,10 @@ function formatDate(dateStr: string | null | undefined): string {
     month: "short",
     day: "numeric",
   });
+}
+
+function navigateToCreditPool(poolId: number) {
+  window.location.href = `/admin/credits/${poolId}`;
 }
 
 // ─── Override Subscription ──────────────────────────────────────────────────
@@ -408,6 +453,7 @@ async function handleOverrideSubmit() {
     // Invalidate tab data since overrides may affect plan changes/invoices
     planChangesLoaded.value = false;
     invoicesLoaded.value = false;
+    creditPoolsLoaded.value = false;
     refundsLoaded.value = false;
   } catch (err) {
     overrideError.value = getErrorMessage(err);
@@ -705,7 +751,7 @@ onUnmounted(() => {
       <div class="border-b border-border">
         <nav class="flex gap-6" aria-label="Subscription tabs">
           <button
-            v-for="tab in (['overview', 'plan-changes', 'invoices', 'refunds'] as const)"
+            v-for="tab in (['overview', 'plan-changes', 'invoices', 'credit-pools', 'refunds'] as const)"
             :key="tab"
             class="border-b-2 pb-3 text-sm font-medium transition-colors"
             :class="
@@ -722,7 +768,9 @@ onUnmounted(() => {
                   ? 'Plan Changes'
                   : tab === 'invoices'
                     ? 'Invoices'
-                    : 'Refunds'
+                    : tab === 'credit-pools'
+                      ? 'Credit Pools'
+                      : 'Refunds'
             }}
             <span
               v-if="tab === 'plan-changes' && planChangesLoaded && planChanges.length"
@@ -735,6 +783,12 @@ onUnmounted(() => {
               class="ml-1.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-foreground"
             >
               {{ invoices.length }}
+            </span>
+            <span
+              v-if="tab === 'credit-pools' && creditPoolsLoaded && creditPools.length"
+              class="ml-1.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-foreground"
+            >
+              {{ creditPools.length }}
             </span>
             <span
               v-if="tab === 'refunds' && refundsLoaded && refunds.length"
@@ -996,6 +1050,22 @@ onUnmounted(() => {
               <span class="font-medium font-mono text-foreground">{{ (row as unknown as InvoiceItem).number }}</span>
             </template>
 
+            <!-- Type cell -->
+            <template #cell-invoice_type="{ row }">
+              <span
+                v-if="(row as unknown as InvoiceItem).invoice_type === 'credit'"
+                class="inline-flex items-center rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-700 dark:bg-teal-950 dark:text-teal-400"
+              >
+                Credit
+              </span>
+              <span
+                v-else
+                class="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700 dark:bg-purple-950 dark:text-purple-400"
+              >
+                Stripe
+              </span>
+            </template>
+
             <!-- Amount cell -->
             <template #cell-amount_paid_cents="{ row }">
               <span class="font-medium text-foreground">{{ formatCents((row as unknown as InvoiceItem).amount_paid_cents, (row as unknown as InvoiceItem).currency) }}</span>
@@ -1014,6 +1084,20 @@ onUnmounted(() => {
             <!-- Actions cell -->
             <template #cell-actions="{ row }">
               <div class="flex items-center justify-end gap-1" @click.stop>
+                <!-- PDF Download -->
+                <a
+                  v-if="(row as unknown as InvoiceItem).pdf_url"
+                  :href="(row as unknown as InvoiceItem).pdf_url!"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-950"
+                >
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  PDF
+                </a>
+                <!-- View on Stripe -->
                 <a
                   v-if="(row as unknown as InvoiceItem).hosted_url"
                   :href="(row as unknown as InvoiceItem).hosted_url!"
@@ -1026,10 +1110,174 @@ onUnmounted(() => {
                   </svg>
                   View
                 </a>
-                <span v-else class="text-xs text-muted-foreground">—</span>
+                <span
+                  v-if="!(row as unknown as InvoiceItem).pdf_url && !(row as unknown as InvoiceItem).hosted_url"
+                  class="text-xs text-muted-foreground"
+                >—</span>
               </div>
             </template>
           </AdminDataTable>
+        </template>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+      <!--  Credit Pools Tab                                                       -->
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+      <div v-if="activeTab === 'credit-pools'">
+        <!-- Loading -->
+        <div v-if="creditPoolsLoading" class="card animate-pulse p-6">
+          <div class="space-y-4">
+            <div class="h-4 w-40 rounded skeleton" />
+            <div class="h-4 w-full rounded skeleton" />
+            <div class="h-4 w-full rounded skeleton" />
+          </div>
+        </div>
+
+        <template v-else-if="creditPoolsLoaded">
+          <!-- Cross-link to credit invoices -->
+          <div class="mb-4 flex items-center justify-between">
+            <p class="text-sm text-muted-foreground">
+              Credit pools for {{ subscription.user_email }} on {{ subscription.product_name }}
+            </p>
+            <!-- AUTH-13 FIX: Use <button> + authHelpers.navigateTo() for internal navigation.
+                 An <a href> causes a full page reload if not intercepted by Astro's ClientRouter,
+                 triggering the middleware token-rotation race condition. -->
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 transition-colors hover:text-brand-800 dark:text-brand-400 dark:hover:text-brand-300"
+              @click="authHelpers.navigateTo(`/admin/credit-invoices?user_id=${subscription.user_id}&product_id=${subscription.product_id}`)"
+            >
+              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              View Credit Invoices
+            </button>
+          </div>
+
+          <AdminEmptyState
+            v-if="creditPools.length === 0"
+            title="No credit pools"
+            description="This subscription has no credit pools for this product."
+            icon="wallet"
+          />
+
+          <AdminDataTable
+            v-else
+            :columns="creditPoolColumns"
+            :rows="creditPools as unknown as Record<string, unknown>[]"
+            :meta="null"
+            :loading="false"
+            :clickable="true"
+            row-key="id"
+            empty-message="No credit pools"
+            @row-click="(row: Record<string, unknown>) => { navigateToCreditPool((row as unknown as CreditPoolItem).id); }"
+          >
+            <!-- Pool # cell -->
+            <template #cell-id="{ row }">
+              <span class="font-medium font-mono text-foreground">#{{ (row as unknown as CreditPoolItem).id }}</span>
+            </template>
+
+            <!-- Plan cell -->
+            <template #cell-plan_name="{ row }">
+              <span class="font-medium text-foreground">{{ (row as unknown as CreditPoolItem).plan_name }}</span>
+            </template>
+
+            <!-- Amount cell -->
+            <template #cell-amount_cents="{ row }">
+              <span class="font-medium text-foreground">{{ formatCents((row as unknown as CreditPoolItem).amount_cents, (row as unknown as CreditPoolItem).currency) }}</span>
+            </template>
+
+            <!-- Periods Left cell -->
+            <template #cell-periods_remaining="{ row }">
+              <div class="text-center">
+                <span
+                  class="font-medium"
+                  :class="(row as unknown as CreditPoolItem).periods_remaining === 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground'"
+                >
+                  {{ (row as unknown as CreditPoolItem).periods_remaining }}
+                </span>
+                <span class="text-muted-foreground"> / {{ (row as unknown as CreditPoolItem).credit_periods }}</span>
+              </div>
+            </template>
+
+            <!-- Status cell -->
+            <template #cell-status="{ row }">
+              <AdminStatusBadge :status="(row as unknown as CreditPoolItem).status" type="credit-pool" />
+            </template>
+
+            <!-- Expiry Type cell -->
+            <template #cell-expiry_type="{ row }">
+              <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="
+                  (row as unknown as CreditPoolItem).expiry_type === 'hard'
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
+                    : 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400'
+                "
+              >
+                {{ (row as unknown as CreditPoolItem).expiry_type }}
+              </span>
+            </template>
+
+            <!-- Created cell -->
+            <template #cell-created_at="{ row }">
+              <span class="text-muted-foreground">{{ formatDateTime((row as unknown as CreditPoolItem).created_at) }}</span>
+            </template>
+
+            <!-- Actions cell -->
+            <template #cell-actions="{ row }">
+              <!-- AUTH-13 FIX: Use <button> + authHelpers.navigateTo() instead of <a href>.
+                   See UserDetailAdmin.vue cell-actions for full explanation. -->
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-950"
+                @click.stop="authHelpers.navigateTo(`/admin/credits/${(row as unknown as CreditPoolItem).id}`)"
+              >
+                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                Detail
+              </button>
+            </template>
+          </AdminDataTable>
+
+          <!-- Active pool summary cards -->
+          <div v-if="creditPools.some(p => p.is_effectively_active)" class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div
+              v-for="pool in creditPools.filter(p => p.is_effectively_active)"
+              :key="pool.id"
+              class="card p-4"
+            >
+              <div class="flex items-center justify-between">
+                <h4 class="text-sm font-semibold text-foreground">Pool #{{ pool.id }}</h4>
+                <AdminStatusBadge status="active" type="credit-pool" />
+              </div>
+              <div class="mt-2 space-y-1 text-xs text-muted-foreground">
+                <div class="flex justify-between">
+                  <span>Plan</span>
+                  <span class="text-foreground">{{ pool.plan_name }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Periods</span>
+                  <span class="text-foreground">{{ pool.periods_remaining }} remaining of {{ pool.credit_periods }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Current Period</span>
+                  <span class="text-foreground">{{ formatDate(pool.current_period_start) }} &rarr; {{ formatDate(pool.current_period_end) }}</span>
+                </div>
+                <div v-if="pool.expires_at" class="flex justify-between">
+                  <span class="text-amber-600 dark:text-amber-400">Hard Expiry</span>
+                  <span class="font-medium text-amber-600 dark:text-amber-400">{{ formatDate(pool.expires_at) }}</span>
+                </div>
+                <div v-if="pool.commitment_end" class="flex justify-between">
+                  <span>Commitment End</span>
+                  <span class="text-foreground">{{ formatDate(pool.commitment_end) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </template>
       </div>
 

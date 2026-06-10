@@ -48,10 +48,11 @@ INSTALLED_APPS = [
     "channels",
     "django_celery_results",
     "django_celery_beat",
+    "corsheaders",
     "ninja_extra",
     "ninja_jwt",
     "ninja_jwt.token_blacklist",
-    "corsheaders",
+    
     # DEALERCORE apps
     "inventory",
     "sales",
@@ -65,6 +66,7 @@ SILENCED_SYSTEM_CHECKS = ["security.W019"]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    "corsheaders.middleware.CorsMiddleware",
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -89,7 +91,7 @@ CORS_EXPOSE_HEADERS = [
     "x-service-domain",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = env("SL_CORS_ALLOW_ALL_ORIGINS", default=DEBUG, cast=bool)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
     "SL_CORS_ALLOWED_ORIGINS",
@@ -98,6 +100,8 @@ CORS_ALLOWED_ORIGINS = env.list(
         "http://localhost:8087",
         "http://127.0.0.1:4322",
         "http://127.0.0.1:8087",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:4321",
     ],
 )
 
@@ -108,6 +112,8 @@ CSRF_TRUSTED_ORIGINS = env.list(
         "http://localhost:8087",
         "http://127.0.0.1:4322",
         "http://127.0.0.1:8087",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:4321",
     ],
 )
 

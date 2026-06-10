@@ -52,6 +52,8 @@ from .models import (
     Refund,
     RefundStatus,
     AccessEntry,
+    CreditInvoice,
+    CreditPool,
 )
 from .admin_schemas import (
     AdminSubscriptionListItemSchema,
@@ -653,8 +655,9 @@ class AdminSubscriptionController:
         response=PaginatedResponse[AdminInvoiceListItemSchema],
         summary="Get invoice history",
         description=(
-            "List invoices for a subscription, ordered by most recent. "
-            "Paginated."
+            "List invoices for a subscription, including both Stripe invoices "
+            "and CreditInvoice records (bank transfer / offline payments). "
+            "Ordered by most recent. Paginated."
         ),
     )
     async def get_subscription_invoices(
@@ -665,27 +668,33 @@ class AdminSubscriptionController:
     ):
         """List invoices for a subscription.
 
-        Returns invoices ordered by creation date descending.
-        Includes amount, status, Stripe hosted/PDF URLs, and
-        fee information for reconciliation.
-        """
-        await self._get_subscription_or_404(subscription_id)
+        Returns a merged list of Stripe Invoice records and CreditInvoice
+        records for this subscription's user + product, ordered by
+        creation date descending. Each item includes an ``invoice_type``
+        field (``stripe`` or ``credit``) to distinguish the source.
 
-        qs = (
+        Stripe invoices have hosted_url / pdf_url pointing to Stripe;
+        Credit invoices have pdf_url pointing to the local PDF endpoint.
+        """
+        sub = await self._get_subscription_or_404(subscription_id)
+
+        # --- Fetch Stripe invoices ---
+        stripe_qs = (
             Invoice.objects.filter(subscription_id=subscription_id)
             .order_by("-created_at")
         )
 
         from common.utils import get_paginated_data_async
 
-        results, meta = await get_paginated_data_async(
-            qs, pagination.page, pagination.page_size
+        stripe_results, stripe_meta = await get_paginated_data_async(
+            stripe_qs, pagination.page, pagination.page_size
         )
 
-        items = []
-        for inv in results:
-            items.append({
+        stripe_items = []
+        for inv in stripe_results:
+            stripe_items.append({
                 "id": inv.id,
+                "invoice_type": "stripe",
                 "stripe_invoice_id": inv.stripe_invoice_id,
                 "subscription_id": inv.subscription_id,
                 "number": inv.number,
@@ -702,6 +711,123 @@ class AdminSubscriptionController:
                 "stripe_fee_cents": inv.stripe_fee_cents,
                 "attempt_count": inv.attempt_count,
                 "created_at": inv.created_at,
+            })
+
+        # --- Fetch Credit Invoices for the same user + product ---
+        credit_qs = (
+            CreditInvoice.objects.filter(
+                user_id=sub.user_id,
+                product_id=sub.product_id,
+            )
+            .select_related("plan", "credit_pool")
+            .order_by("-issued_at")
+        )
+
+        credit_results, _ = await get_paginated_data_async(
+            credit_qs, pagination.page, pagination.page_size
+        )
+
+        credit_items = []
+        for ci in credit_results:
+            # Build the PDF URL for the credit invoice
+            credit_pdf_url = f"/api/v1/admin/credit-invoices/{ci.invoice_number}/pdf"
+            credit_items.append({
+                "id": ci.id,
+                "invoice_type": "credit",
+                "stripe_invoice_id": "",
+                "subscription_id": subscription_id,
+                "number": ci.invoice_number,
+                "status": ci.status,
+                "amount_paid_cents": ci.total_cents,
+                "amount_due_cents": ci.total_cents,
+                "tax_cents": ci.tax_cents,
+                "discount_cents": 0,
+                "currency": ci.currency,
+                "period_start": ci.period_start,
+                "period_end": ci.period_end,
+                "hosted_url": "",
+                "pdf_url": credit_pdf_url,
+                "stripe_fee_cents": 0,
+                "attempt_count": 1,
+                "created_at": ci.issued_at or ci.created_at,
+            })
+
+        # --- Merge and sort by created_at descending ---
+        all_items = stripe_items + credit_items
+        all_items.sort(key=lambda x: x["created_at"] or "", reverse=True)
+
+        return {"meta": stripe_meta, "results": all_items}
+
+    @http_get(
+        "/subscriptions/{subscription_id}/credit-pools",
+        response=PaginatedResponse[dict],
+        summary="Get credit pools for subscription",
+        description=(
+            "List credit pools for the subscription's user + product. "
+            "Includes pool status, periods, expiry info, and transaction "
+            "counts. Paginated."
+        ),
+    )
+    async def get_subscription_credit_pools(
+        self,
+        request: HttpRequest,
+        subscription_id: int,
+        pagination: PaginationInput = Query(...),
+    ):
+        """List credit pools for a subscription's user + product.
+
+        Returns all credit pools matching the subscription's user and
+        product, ordered by most recent first. Each entry includes
+        pool metadata, period consumption, expiry info, and a link
+        to the full credit pool detail at /admin/credits/{id}.
+        """
+        sub = await self._get_subscription_or_404(subscription_id)
+
+        qs = (
+            CreditPool.objects.filter(
+                user_id=sub.user_id,
+                product_id=sub.product_id,
+            )
+            .select_related("plan", "created_by")
+            .order_by("-created_at")
+        )
+
+        from common.utils import get_paginated_data_async
+
+        results, meta = await get_paginated_data_async(
+            qs, pagination.page, pagination.page_size
+        )
+
+        items = []
+        for pool in results:
+            items.append({
+                "id": pool.id,
+                "user_id": pool.user_id,
+                "product_id": pool.product_id,
+                "product_name": sub.product.name,
+                "plan_id": pool.plan_id,
+                "plan_name": pool.plan.name,
+                "amount_cents": pool.amount_cents,
+                "currency": pool.currency,
+                "credit_periods": pool.credit_periods,
+                "periods_consumed": pool.periods_consumed,
+                "periods_remaining": pool.periods_remaining,
+                "source": pool.source,
+                "payment_reference": pool.payment_reference,
+                "status": pool.status,
+                "activated_at": pool.activated_at,
+                "current_period_start": pool.current_period_start,
+                "current_period_end": pool.current_period_end,
+                "expires_at": pool.expires_at,
+                "expiry_type": pool.expiry_type,
+                "commitment_end": pool.commitment_end,
+                "is_effectively_active": pool.is_effectively_active,
+                "created_by_id": pool.created_by_id,
+                "created_by_email": (
+                    pool.created_by.email if pool.created_by else None
+                ),
+                "created_at": pool.created_at,
+                "detail_url": f"/admin/credits/{pool.id}",
             })
 
         return {"meta": meta, "results": items}

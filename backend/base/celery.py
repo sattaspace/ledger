@@ -59,6 +59,11 @@ app.conf.beat_schedule = {
         "task": "billing.tasks.expire_credit_pools",
         "schedule": crontab(minute=30, hour=5),  # 5:30 AM UTC daily
     },
+    # ENHANCEMENT-3: Send pre-expiry warning emails for credit pools daily
+    "send-credit-expiry-warning-daily": {
+        "task": "billing.tasks.send_credit_expiry_warning",
+        "schedule": crontab(minute=15, hour=5),  # 5:15 AM UTC daily
+    },
     # Cleanup expired auth tokens every day at 3 AM UTC
     # "cleanup-expired-tokens": {
     #     "task": "common.tasks.cleanup_expired_tokens",

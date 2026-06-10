@@ -428,6 +428,13 @@ class CreditPurchaseRequest(TimeStampedModel):
     )
     currency = models.CharField(_("Currency"), max_length=3, default="USD")
 
+    # Commitment
+    credit_periods = models.PositiveIntegerField(
+        _("Credit Periods"),
+        default=1,
+        help_text=_("Number of billing periods (months/years) the user is committing to."),
+    )
+
     # Bank details (submitted by user)
     bank_name = models.CharField(_("Bank Name"), max_length=100)
     account_holder_name = models.CharField(_("Account Holder Name"), max_length=200)
@@ -1927,7 +1934,38 @@ class CreditPool(TimeStampedModel):
         return max(0, self.credit_periods - self.periods_consumed)
 
     @property
+    def commitment_end(self):
+        """The date when the commitment naturally ends (all periods consumed).
+
+        ENHANCEMENT-4: Computed from activated_at + credit_periods * billing_cycle.
+        This is distinct from expires_at, which is an optional hard deadline set
+        by admins for promotional credits. When expires_at is None, commitment_end
+        serves as the effective end date for notification and display purposes.
+        """
+        if not self.activated_at:
+            return None
+        from dateutil.relativedelta import relativedelta
+        if self.plan.billing_cycle == "yearly":
+            delta = relativedelta(years=self.credit_periods)
+        elif self.plan.billing_cycle == "lifetime":
+            delta = relativedelta(years=2)
+        else:
+            delta = relativedelta(months=self.credit_periods)
+        return self.activated_at + delta
+
+    @property
     def is_effectively_active(self) -> bool:
+        """Check if this credit pool currently grants access.
+
+        BUG-FIX: Now respects the 24-hour grace period (CREDIT_EXPIRY_GRACE_HOURS)
+        for hard expiry. Previously, is_effectively_active returned False immediately
+        when expires_at <= now, but Enhancement 3 states that users keep access
+        during the 24-hour grace period. This property must be consistent with the
+        expire_credit_pools task which only marks EXPIRED after the grace period.
+
+        For soft expiry (expires_at is None), access is determined solely by
+        periods_remaining — the consume_credit_periods task handles exhaustion.
+        """
         from django.utils import timezone
 
         if self.status != self.CreditPoolStatus.ACTIVE:
@@ -1935,12 +1973,95 @@ class CreditPool(TimeStampedModel):
         if self.periods_remaining <= 0:
             return False
         if self.expires_at and self.expires_at <= timezone.now():
-            return False
+            # BUG-FIX: Check grace period before returning False.
+            # During the 24-hour grace period after expires_at, access is still granted.
+            from .tasks import CREDIT_EXPIRY_GRACE_HOURS
+            grace_period_end = self.expires_at + timezone.timedelta(hours=CREDIT_EXPIRY_GRACE_HOURS)
+            if timezone.now() < grace_period_end:
+                return True  # Still within grace period — access granted
+            return False  # Past grace period — access revoked
         return True
+
+    @property
+    def expiry_type(self) -> str:
+        """Classify the pool's expiry mechanism.
+
+        ENHANCEMENT-5: Returns "hard" if an admin-imposed expires_at deadline
+        is set (promotional credits, accounting deadlines), or "soft" if the
+        pool expires naturally when all periods are consumed (commitment_end).
+
+        This distinction matters for:
+        - Frontend display: hard expiry shows a deadline warning
+        - Grace period: only applies to hard expiry (expires_at)
+        - Notification: different messaging for "commitment ending" vs "deadline approaching"
+        """
+        return "hard" if self.expires_at else "soft"
 
     @property
     def display_amount(self) -> str:
         return f"{self.amount_cents / 100:.2f} {self.currency}"
+
+
+# =============================================================================
+# Credit Notification Log (Enhancement 3: Pre-Expiry Notifications)
+# =============================================================================
+
+
+class CreditNotificationLog(TimeStampedModel):
+    """Tracks credit expiry warning emails to prevent duplicate notifications.
+
+    Each notification type (e.g., expiry_14d, expiry_7d, expiry_1d) is sent
+    at most once per credit pool. The unique_together constraint on
+    (credit_pool, notification_type) enforces this at the database level,
+    ensuring idempotent task execution even if the Celery task runs multiple
+    times or is retried.
+    """
+
+    # Notification types — each corresponds to a specific warning threshold
+    class NotificationType(models.TextChoices):
+        EXPIRY_14D = "expiry_14d", _("14-Day Expiry Warning")
+        EXPIRY_7D = "expiry_7d", _("7-Day Expiry Warning")
+        EXPIRY_1D = "expiry_1d", _("1-Day Expiry Warning (Final Notice)")
+
+    id = models.BigAutoField(primary_key=True)
+    credit_pool = models.ForeignKey(
+        CreditPool,
+        on_delete=models.CASCADE,
+        related_name="notification_logs",
+        db_index=True,
+        verbose_name=_("Credit Pool"),
+    )
+    notification_type = models.CharField(
+        _("Notification Type"),
+        max_length=30,
+        choices=NotificationType.choices,
+        db_index=True,
+        help_text=_("The type of expiry warning that was sent"),
+    )
+    sent_at = models.DateTimeField(
+        _("Sent At"),
+        auto_now_add=True,
+        help_text=_("When the notification email was sent"),
+    )
+
+    class Meta:
+        db_table = "billing_credit_notification_log"
+        ordering = ["-sent_at"]
+        verbose_name = _("Credit Notification Log")
+        verbose_name_plural = _("Credit Notification Logs")
+        # Ensure each warning type is sent at most once per pool
+        constraints = [
+            models.UniqueConstraint(
+                fields=["credit_pool", "notification_type"],
+                name="unique_notification_per_pool",
+                violation_error_message=_(
+                    "This notification type has already been sent for this credit pool."
+                ),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Pool #{self.credit_pool_id} → {self.notification_type} at {self.sent_at}"
 
 
 # =============================================================================

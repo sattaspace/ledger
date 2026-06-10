@@ -14,7 +14,7 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { useAdminGuard } from "@/composables/useAdminGuard";
 import { showToast } from "@/lib/toast";
 import {
@@ -93,7 +93,8 @@ onMounted(async () => {
   // Use a small delay to let the guard's onMounted async check complete
   await new Promise((resolve) => setTimeout(resolve, 100));
   if (!isAuthorized.value) return;
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchDashboardData();
 });
 

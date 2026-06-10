@@ -1,7 +1,7 @@
 """
 DEALERCORE v3.0 — Project URL Configuration
 ----------------------------------------------
-Mounts the NinjaAPI at /api/ and the Django admin at /admin/.
+Mounts the NinjaExtraAPI at /api/ and the Django admin at /admin/.
 
 Required INSTALLED_APPS:
     - django.contrib.admin
@@ -10,7 +10,7 @@ Required INSTALLED_APPS:
     - django.contrib.sessions
     - django.contrib.messages
     - django.contrib.staticfiles
-    - ninja
+    - ninja_extra          (auto-adds ninja)
     - inventory
     - sales
     - dsr
@@ -19,7 +19,7 @@ Required INSTALLED_APPS:
     - reports
 
 Required packages:
-    pip install django ninja pydantic
+    pip install django ninja-extra
 """
 
 from django.contrib import admin

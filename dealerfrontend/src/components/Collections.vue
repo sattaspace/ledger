@@ -14,23 +14,29 @@ import {
   UserCheck,
   X,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  RotateCcw
 } from 'lucide-vue-next';
 import type { SaleRecord } from '../types';
+import { BaseChart, ChartCard } from './charts';
+import type { ChartData, ChartOptions } from 'chart.js';
 
 const props = withDefaults(defineProps<{
   sales: SaleRecord[];
   formatCurrency?: (amt: number) => string;
+  onCollectPayment?: (saleId: string, amount: number, receivedBy: string) => Promise<any>;
+  onCloseWithDue?: (saleId: string) => Promise<any>;
 }>(), {});
 
 const emit = defineEmits<{
-  (e: 'collectPayment', saleId: string, amount: number, receivedBy: string): void;
-  (e: 'closeWithDue', saleId: string): void;
   (e: 'refreshData'): void;
 }>();
 
 const searchQuery = ref('');
 const selectedSale = ref<SaleRecord | null>(null);
+
+// Window helpers for template access
+const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
 // Collect Form fields
 const amount = ref('');
@@ -62,7 +68,7 @@ watch(searchQuery, () => {
 });
 
 const handleCloseWithDue = (sale: SaleRecord) => {
-  const balanceDue = sale.totalAmount - sale.amountPaid;
+  const balanceDue = sale.balanceDue || (sale.netAmount - sale.amountPaid) || (sale.totalAmount - sale.amountPaid);
   if (balanceDue <= 0) return;
   closingInvoiceSale.value = sale;
   errorClosing.value = '';
@@ -73,14 +79,9 @@ const handleConfirmClose = async () => {
   isClosingSubmitting.value = true;
   errorClosing.value = '';
   try {
-    // Notify parent to trigger standard closeWithDue endpoint flow
-    emit('closeWithDue', closingInvoiceSale.value.id);
-    
-    // Auto-timeout success
-    setTimeout(() => {
-      closingInvoiceSale.value = null;
-      emit('refreshData');
-    }, 1000);
+    await props.onCloseWithDue!(closingInvoiceSale.value.id);
+    closingInvoiceSale.value = null;
+    emit('refreshData');
   } catch (err: any) {
     errorClosing.value = err.message || 'Error writing off dues.';
   } finally {
@@ -101,7 +102,7 @@ const formatCurrency = computed(() => {
 // Filter credits
 const pendingCreditSales = computed(() => {
   return (props.sales || []).filter(s => 
-    s.paymentType === 'Credit' && s.collectionStatus !== 'Fully Paid' && !s.isClosedWithDue
+    s.paymentType === 'Credit' && s.collectionStatus !== 'Fully Paid' && !s.isClosedWithDue && !s.isVoided
   );
 });
 
@@ -124,7 +125,7 @@ const handleCollectSubmit = async () => {
   if (!selectedSale.value) return;
 
   const amt = Number(amount.value);
-  const balanceDue = selectedSale.value.totalAmount - selectedSale.value.amountPaid;
+  const balanceDue = selectedSale.value.balanceDue || (selectedSale.value.netAmount - selectedSale.value.amountPaid) || (selectedSale.value.totalAmount - selectedSale.value.amountPaid);
 
   if (!amount.value || isNaN(amt) || amt <= 0) {
     formError.value = 'Please enter a valid amount greater than ₹0!';
@@ -132,30 +133,25 @@ const handleCollectSubmit = async () => {
   }
 
   if (amt > balanceDue) {
-    formError.value = `Cannot collect more than balance due. Max Collectible: ${formatCurrency.value(balanceDue)}`;
+    formError.value = `Cannot collect more than balance due. Max: ${formatCurrency.value(balanceDue)}`;
     return;
   }
 
   if (!receivedBy.value) {
-    formError.value = 'Please input who is receiving or registering this cash collection!';
+    formError.value = 'Please enter who is receiving this payment!';
     return;
   }
 
   isSubmitting.value = true;
   try {
-    emit('collectPayment', selectedSale.value.id, amt, receivedBy.value);
+    await props.onCollectPayment!(selectedSale.value.id, amt, receivedBy.value);
     
-    formSuccess.value = `Outstanding Payment of ${formatCurrency.value(amt)} successfully credited!`;
     amount.value = '';
     receivedBy.value = '';
-    
-    setTimeout(() => {
-      selectedSale.value = null;
-      formSuccess.value = '';
-      emit('refreshData');
-    }, 1800);
+    selectedSale.value = null;
+    emit('refreshData');
   } catch (err: any) {
-    formError.value = err.message || 'Error processing ledger.';
+    formError.value = err.message || 'Error processing payment.';
   } finally {
     isSubmitting.value = false;
   }
@@ -165,17 +161,22 @@ const activeSubTab = ref<'individual' | 'vehicles' | 'reps'>('individual');
 
 // Group vehicle stats dynamically
 const vehicleGroups = computed(() => {
-  const groups: { [key: string]: { total: number; pending: number; count: number } } = {};
+  const groups: { [key: string]: { total: number; pending: number; collected: number; count: number } } = {};
   (props.sales || []).forEach(sale => {
+    // Exclude voided and written-off sales from vehicle tracking
+    if (sale.isVoided || sale.isClosedWithDue) return;
     if (sale.isVehicle && sale.vehicleNumber) {
       const v = sale.vehicleNumber.trim().toUpperCase();
       if (!groups[v]) {
-        groups[v] = { total: 0, pending: 0, count: 0 };
+        groups[v] = { total: 0, pending: 0, collected: 0, count: 0 };
       }
-      groups[v].total += sale.totalAmount;
-      if (!sale.isClosedWithDue) {
-        groups[v].pending += (sale.totalAmount - sale.amountPaid);
+      const netAmt = sale.netAmount || (sale.totalAmount - (sale.returnTotalAmount || 0));
+      const dueAmt = sale.balanceDue || (netAmt - sale.amountPaid);
+      groups[v].total += netAmt;
+      if (dueAmt > 0) {
+        groups[v].pending += dueAmt;
       }
+      groups[v].collected = groups[v].total - groups[v].pending;
       groups[v].count += 1;
     }
   });
@@ -190,14 +191,18 @@ const vehicleGroups = computed(() => {
 const repGroups = computed(() => {
   const groups: { [key: string]: { name: string; total: number; pending: number; count: number } } = {};
   (props.sales || []).forEach(sale => {
+    // Exclude voided and written-off sales from rep tracking
+    if (sale.isVoided || sale.isClosedWithDue) return;
     const repId = sale.dsrId || 'counter';
     const repName = sale.dsrName || 'Direct Dealer Counter';
     if (!groups[repId]) {
       groups[repId] = { name: repName, total: 0, pending: 0, count: 0 };
     }
-    groups[repId].total += sale.totalAmount;
-    if (!sale.isClosedWithDue) {
-      groups[repId].pending += (sale.totalAmount - sale.amountPaid);
+    const netAmt = sale.netAmount || (sale.totalAmount - (sale.returnTotalAmount || 0));
+    const dueAmt = sale.balanceDue || (netAmt - sale.amountPaid);
+    groups[repId].total += netAmt;
+    if (dueAmt > 0) {
+      groups[repId].pending += dueAmt;
     }
     groups[repId].count += 1;
   });
@@ -233,159 +238,284 @@ const repsFirst = computed(() => (repsPage.value - 1) * itemsPerPage);
 
 // Outstanding total
 const totalOutstandingSum = computed(() => {
-  return pendingCreditSales.value.reduce((acc, curr) => acc + (curr.totalAmount - curr.amountPaid), 0);
+  return pendingCreditSales.value.reduce((acc, curr) => {
+    const due = curr.balanceDue || (curr.netAmount - curr.amountPaid) || (curr.totalAmount - curr.amountPaid);
+    return acc + due;
+  }, 0);
 });
+
+// Outstanding by vehicle bar chart
+const vehicleOutstandingData = computed(() => {
+  const top5 = vehicleGroups.value.slice(0, 5);
+  return {
+    labels: top5.map(v => v.vehicle),
+    datasets: [{
+      label: 'Outstanding',
+      data: top5.map(v => v.pending),
+      backgroundColor: 'rgba(244, 63, 94, 0.75)',
+      borderColor: 'rgb(244, 63, 94)',
+      borderWidth: 1,
+      borderRadius: 6,
+    }, {
+      label: 'Collected',
+      data: top5.map(v => v.collected),
+      backgroundColor: 'rgba(16, 185, 129, 0.75)',
+      borderColor: 'rgb(16, 185, 129)',
+      borderWidth: 1,
+      borderRadius: 6,
+    }]
+  };
+});
+
+const vehicleOutstandingOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      display: true,
+      position: 'bottom' as const,
+      labels: { usePointStyle: true, pointStyle: 'rectRounded', padding: 12, font: { family: 'Inter', size: 11 } }
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx: any) => `${ctx.dataset.label}: ${formatCurrency.value(ctx.raw as number)}`
+      }
+    }
+  },
+  scales: {
+    x: { grid: { display: false } },
+    y: { 
+      grid: { color: '#EAE4DC' },
+      ticks: {
+        callback: (value: any) => {
+          const val = value as number;
+          if (val >= 100000) return `₹${(val / 100000).toFixed(1)}L`;
+          if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
+          return `₹${val}`;
+        }
+      }
+    }
+  }
+}));
+
+// Collection status doughnut
+const collectionStatusData = computed(() => {
+  const fullyPaid = (props.sales || []).filter(s => s.paymentType === 'Credit' && s.collectionStatus === 'Fully Paid' && !s.isClosedWithDue).length;
+  const partial = (props.sales || []).filter(s => s.paymentType === 'Credit' && s.collectionStatus === 'Partial' && !s.isClosedWithDue).length;
+  const pending = (props.sales || []).filter(s => s.paymentType === 'Credit' && s.collectionStatus === 'Pending' && !s.isClosedWithDue).length;
+  const writtenOff = (props.sales || []).filter(s => s.isClosedWithDue || s.collectionStatus === 'Written Off').length;
+  
+  return {
+    labels: ['Fully Paid', 'Partial', 'Pending', 'Written Off'],
+    datasets: [{
+      data: [fullyPaid, partial, pending, writtenOff],
+      backgroundColor: [
+        'rgba(16, 185, 129, 0.8)',
+        'rgba(245, 158, 11, 0.8)',
+        'rgba(244, 63, 94, 0.8)',
+        'rgba(139, 92, 246, 0.8)',
+      ],
+      borderColor: [
+        'rgb(16, 185, 129)',
+        'rgb(245, 158, 11)',
+        'rgb(244, 63, 94)',
+        'rgb(139, 92, 246)',
+      ],
+      borderWidth: 2,
+      hoverOffset: 6,
+    }]
+  };
+});
+
+const collectionStatusOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  cutout: '62%',
+  plugins: {
+    legend: {
+      display: true,
+      position: 'bottom' as const,
+      labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { family: 'Inter', size: 11 } }
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx: any) => {
+          const total = (ctx.dataset.data as number[]).reduce((a, b) => a + b, 0);
+          const pct = total > 0 ? ((ctx.raw as number) / total * 100).toFixed(1) : 0;
+          return `${ctx.label}: ${ctx.raw} invoices (${pct}%)`;
+        }
+      }
+    }
+  }
+}));
 </script>
 
 <template>
-  <div class="space-y-4 font-sans text-left animate-fadeIn">
-    <!-- HEADER SECTION -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
+  <div class="dashboard-layout font-sans text-left animate-fadeIn">
+    <div class="dashboard-middle space-y-6">
+    <!-- HEADER -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
       <div>
-        <h2 class="text-lg md:text-xl font-display font-bold text-slate-800">📞 Credit Collections & Follow-up Ledger</h2>
-        <p class="text-[11px] text-slate-500 font-sans mt-0.5 font-medium">Reconcile vehicle drops, track outlet-specific pending collection amounts, and monitor DSR responsible followup cash</p>
+        <h2 class="text-xl md:text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <DollarSign class="h-6 w-6 text-rose-600" />
+          Money to Collect
+        </h2>
+        <p class="text-sm text-slate-500 mt-1">Track and collect outstanding credit payments</p>
       </div>
 
-      <!-- Outstanding balance metrics -->
-      <div class="bg-rose-50 border border-rose-150 rounded px-3 py-1.5 flex flex-col justify-center text-right shadow-xs select-none">
-        <p class="text-[10px] text-rose-850 font-bold uppercase tracking-wider font-mono">Total Debts Outstanding</p>
-        <p class="text-sm md:text-base font-display font-black text-rose-600 font-mono mt-0.5">{{ formatCurrency(totalOutstandingSum) }}</p>
+      <!-- Outstanding Balance -->
+      <div class="bg-rose-50 border border-rose-200 rounded-xl px-5 py-3 flex flex-col justify-center text-right shadow-sm select-none">
+        <p class="text-xs text-rose-600 font-semibold uppercase tracking-wider">Total Outstanding</p>
+        <p class="text-xl font-bold text-rose-600 font-mono mt-0.5">{{ formatCurrency(totalOutstandingSum) }}</p>
       </div>
     </div>
 
-    <!-- SUB TAB NAVIGATION CONTROLS -->
-    <div class="grid grid-cols-3 gap-1 bg-slate-105 p-1 rounded border border-slate-200 shadow-xs max-w-2xl">
+    <!-- PILL TAB NAVIGATION -->
+    <div class="inline-flex bg-slate-100 p-1 rounded-lg gap-1">
       <button
         id="tab-sub-individual"
         type="button"
         @click="activeSubTab = 'individual'"
-        :class="['py-1.5 px-2 rounded text-[10px] font-display font-bold transition flex items-center justify-center space-x-1.5 cursor-pointer leading-none',
+        :class="['py-2.5 px-4 rounded-lg text-sm font-semibold transition flex items-center gap-2 cursor-pointer',
           activeSubTab === 'individual'
-            ? 'bg-white text-slate-900 shadow-xs font-black'
-            : 'text-slate-650 hover:bg-white/40'
+            ? 'bg-white text-slate-900 shadow-sm font-bold'
+            : 'text-slate-500 hover:text-slate-700'
         ]"
       >
-        <Coins class="h-3.5 w-3.5 text-blue-600" />
-        <span>Outlet Invoices ({{ filteredPending.length }})</span>
+        <Coins class="h-4 w-4 text-rose-600" />
+        <span>Invoices ({{ filteredPending.length }})</span>
       </button>
 
       <button
         id="tab-sub-vehicles"
         type="button"
         @click="activeSubTab = 'vehicles'"
-        :class="['py-1.5 px-2 rounded text-[10px] font-display font-bold transition flex items-center justify-center space-x-1.5 cursor-pointer leading-none',
+        :class="['py-2.5 px-4 rounded-lg text-sm font-semibold transition flex items-center gap-2 cursor-pointer',
           activeSubTab === 'vehicles'
-            ? 'bg-white text-slate-900 shadow-xs font-black'
-            : 'text-slate-650 hover:bg-white/40'
+            ? 'bg-white text-slate-900 shadow-sm font-bold'
+            : 'text-slate-500 hover:text-slate-700'
         ]"
       >
-        <Truck class="h-3.5 w-3.5 text-amber-600 shrink-0" />
-        <span>Vehicle-Wise Rollups ({{ pendingVehiclesCount = activePendingVehicles.length }})</span>
+        <Truck class="h-4 w-4 text-blue-600 shrink-0" />
+        <span>Vehicles ({{ activePendingVehicles.length }})</span>
       </button>
 
       <button
         id="tab-sub-reps"
         type="button"
         @click="activeSubTab = 'reps'"
-        :class="['py-1.5 px-2 rounded text-[10px] font-display font-bold transition flex items-center justify-center space-x-1.5 cursor-pointer leading-none',
+        :class="['py-2.5 px-4 rounded-lg text-sm font-semibold transition flex items-center gap-2 cursor-pointer',
           activeSubTab === 'reps'
-            ? 'bg-white text-slate-900 shadow-xs font-black'
-            : 'text-slate-650 hover:bg-white/40'
+            ? 'bg-white text-slate-900 shadow-sm font-bold'
+            : 'text-slate-500 hover:text-slate-700'
         ]"
       >
-        <User class="h-3.5 w-3.5 text-cyan-600 shrink-0" />
-        <span>Rep / DSR Liability</span>
+        <User class="h-4 w-4 text-cyan-600 shrink-0" />
+        <span>Reps</span>
       </button>
     </div>
 
-    <!-- FILTER CARDS -->
-    <div v-if="activeSubTab === 'individual'" class="bg-white p-3 rounded border border-slate-200 shadow-xs flex items-center">
+    <!-- SEARCH BAR (for Individual tab) -->
+    <div v-if="activeSubTab === 'individual'" class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
       <div class="relative w-full">
-        <Search class="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+        <Search class="absolute left-3 top-3 h-5 w-5 text-slate-400" />
         <input 
           type="text" 
-          placeholder="Search debtor store name, plate number, or representing salesperson..." 
+          placeholder="Search by customer name, vehicle, or rep..." 
           v-model="searchQuery"
-          class="w-full text-xs pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+          class="w-full text-sm pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
         />
       </div>
     </div>
 
-    <!-- PAYMENT COLLECTION DIALOG PANEL -->
-    <div v-if="selectedSale" class="bg-white p-4 rounded border border-slate-200 shadow-sm space-y-3 animate-fadeIn font-sans">
-      <div class="flex justify-between items-center pb-2 border-b border-slate-100">
-        <h3 class="font-display font-bold text-slate-800 text-xs md:text-sm flex items-center space-x-2">
-          <DollarSign class="h-4.5 w-4.5 text-rose-600" />
-          <span>Record Collections Cash Payment</span>
+    <!-- PAYMENT COLLECTION SLIDE-DOWN PANEL -->
+    <div v-if="selectedSale" class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5 animate-fadeIn font-sans">
+      <div class="flex justify-between items-center pb-3 border-b border-slate-100">
+        <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
+          <DollarSign class="h-5 w-5 text-rose-600" />
+          <span>Collect Payment</span>
         </h3>
         <button 
           id="col-btn-close-form"
           @click="selectedSale = null" 
-          class="text-slate-450 hover:text-slate-700 cursor-pointer"
+          class="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded-lg hover:bg-slate-100 transition"
         >
-          <X class="h-4.5 w-4.5" />
+          <X class="h-5 w-5" />
         </button>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <!-- Details Reference Box -->
-        <div class="p-3 bg-slate-50 border border-slate-200 rounded space-y-2 text-[11px] text-slate-650">
-          <h4 class="font-display font-bold text-slate-800 text-xs uppercase tracking-wider">Sale Reference Details</h4>
-          <p>📍 <span class="font-bold text-slate-500 font-mono text-[10px]">CUSTOMER:</span> <span class="font-black text-slate-850">{{ selectedSale.customerName }} ({{ selectedSale.customerPhone || 'N/A' }})</span></p>
-          <p>📦 <span class="font-bold text-slate-500 font-mono text-[10px]">PRODUCT:</span> <span class="font-bold text-slate-850">{{ selectedSale.productName }} (Qty: {{ selectedSale.quantity }} units)</span></p>
-          <p>🏷️ <span class="font-bold text-slate-500 font-mono text-[10px]">TRACK METHOD:</span>{' '}
-            <span v-if="selectedSale.isVehicle" class="font-bold text-blue-700 uppercase">Vehicle Plate {{ selectedSale.vehicleNumber }}</span>
-            <span v-else class="font-bold text-cyan-800 uppercase">Representative {{ selectedSale.dsrName }}</span>
-          </p>
-          <div class="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2 text-center text-[10px]">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <!-- Sale Reference -->
+        <div class="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-sm text-slate-600">
+          <h4 class="font-bold text-slate-800 text-sm uppercase tracking-wider">Sale Details</h4>
+          <div class="space-y-2">
+            <p class="flex justify-between">
+              <span class="text-slate-400 font-semibold">Customer</span>
+              <span class="font-bold text-slate-800">{{ selectedSale.customerName }}</span>
+            </p>
+            <p class="flex justify-between">
+              <span class="text-slate-400 font-semibold">Phone</span>
+              <span class="font-semibold">{{ selectedSale.customerPhone || 'N/A' }}</span>
+            </p>
+            <p class="flex justify-between">
+              <span class="text-slate-400 font-semibold">Product</span>
+              <span class="font-semibold">{{ selectedSale.productName }} (×{{ selectedSale.quantity }})</span>
+            </p>
+            <p class="flex justify-between">
+              <span class="text-slate-400 font-semibold">Route</span>
+              <span v-if="selectedSale.isVehicle" class="font-semibold text-blue-700">Vehicle {{ selectedSale.vehicleNumber }}</span>
+              <span v-else class="font-semibold text-cyan-700">Rep {{ selectedSale.dsrName }}</span>
+            </p>
+          </div>
+          <div class="pt-3 border-t border-slate-200 grid grid-cols-2 gap-4 text-center">
             <div>
-              <p class="text-slate-400 font-bold uppercase tracking-wider">Original Bill</p>
-              <p class="font-black text-slate-800 mt-1 font-mono">{{ formatCurrency(selectedSale.totalAmount) }}</p>
+              <p class="text-xs text-slate-400 font-semibold uppercase">Original Bill</p>
+              <p class="font-bold text-slate-800 mt-1 font-mono">{{ formatCurrency(selectedSale.totalAmount) }}</p>
             </div>
             <div>
-              <p class="text-rose-600 font-bold uppercase tracking-wider">Outstanding Left</p>
-              <p class="font-black text-rose-600 mt-1 font-mono text-xs">
-                {{ formatCurrency(selectedSale.totalAmount - selectedSale.amountPaid) }}
+              <p class="text-xs text-rose-500 font-semibold uppercase">Amount Left</p>
+              <p class="font-bold text-rose-600 mt-1 font-mono">
+                {{ formatCurrency(selectedSale.balanceDue || (selectedSale.totalAmount - selectedSale.amountPaid)) }}
               </p>
             </div>
           </div>
         </div>
 
-        <!-- Form fields -->
-        <form @submit.prevent="handleCollectSubmit" class="space-y-3">
-          <div class="space-y-1">
-            <label class="text-[10px] font-bold text-rose-800 uppercase tracking-wider">
-              Amount Cash Collected (₹) *
+        <!-- Collect Form -->
+        <form @submit.prevent="handleCollectSubmit" class="space-y-4">
+          <div class="space-y-2">
+            <label class="text-sm font-semibold text-slate-700 block">
+              Amount to Collect (₹) *
             </label>
-            <input 
-              type="number" 
-              :placeholder="`Max outstanding balance to pay is ${selectedSale.totalAmount - selectedSale.amountPaid}`"
+            <input
+              type="number"
+              :placeholder="`Max: ${formatCurrency(selectedSale.balanceDue || (selectedSale.totalAmount - selectedSale.amountPaid))}`"
               v-model="amount"
-              class="w-full text-xs p-2 border border-rose-250 rounded bg-rose-50/10 font-black text-rose-850 font-mono focus:outline-none"
+              class="w-full text-sm py-3 px-4 border border-rose-200 rounded-lg bg-rose-50/30 font-bold text-rose-800 font-mono focus:outline-none focus:ring-2 focus:ring-rose-500"
             />
           </div>
 
-          <div class="space-y-1">
-            <label class="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
-              Collected By / Cash Receiver Staff *
+          <div class="space-y-2">
+            <label class="text-sm font-semibold text-slate-700 block">
+              Collected By *
             </label>
             <input 
               type="text" 
-              placeholder="e.g. Sanjay Sharma, DSR name, or Counter Desk" 
+              placeholder="e.g. Sanjay Sharma or Counter Desk" 
               v-model="receivedBy"
-              class="w-full text-xs p-2 border border-slate-200 rounded font-sans"
+              class="w-full text-sm py-3 px-4 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500"
             />
           </div>
 
-          <div class="flex justify-end space-x-2 pt-1.5 border-t border-slate-100 items-center">
-            <p v-if="formError" class="text-[11px] text-rose-650 font-semibold font-mono mr-auto leading-none">⚠️ {{ formError }}</p>
-            <p v-if="formSuccess" class="text-[11px] text-emerald-655 font-bold font-sans mr-auto leading-none animate-pulse">✨ {{ formSuccess }}</p>
+          <div class="flex justify-end gap-3 pt-3 border-t border-slate-100 items-center">
+            <p v-if="formError" class="text-sm text-rose-600 font-semibold mr-auto">{{ formError }}</p>
+            <p v-if="formSuccess" class="text-sm text-emerald-600 font-semibold mr-auto">{{ formSuccess }}</p>
             
             <button 
               id="col-btn-form-cancel"
               type="button" 
               @click="selectedSale = null" 
-              class="px-3 py-1.5 border border-slate-200 rounded text-xs cursor-pointer hover:bg-slate-50 font-bold"
+              class="py-2.5 px-4 border border-slate-300 rounded-lg text-sm cursor-pointer hover:bg-slate-50 font-semibold"
             >
               Cancel
             </button>
@@ -393,160 +523,180 @@ const totalOutstandingSum = computed(() => {
               id="col-btn-form-save"
               type="submit" 
               :disabled="isSubmitting"
-              class="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-bold cursor-pointer disabled:opacity-50"
+              class="py-2.5 px-5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50 flex items-center gap-2 shadow-sm"
             >
-              {{ isSubmitting ? 'Saving...' : 'Record Collected' }}
+              <DollarSign class="h-4 w-4" />
+              {{ isSubmitting ? 'Saving...' : 'Record Payment' }}
             </button>
           </div>
         </form>
       </div>
     </div>
 
-    <!-- INDIVIDUAL OUTLET DEBTS TAB -->
-    <div v-if="activeSubTab === 'individual'" class="space-y-3">
-      <div class="bg-white rounded border border-slate-200 overflow-hidden shadow-xs">
+    <!-- ========== INDIVIDUAL INVOICES TAB ========== -->
+    <div v-if="activeSubTab === 'individual'" class="space-y-4">
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
         <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs font-sans border-collapse">
+          <table class="w-full text-left text-sm font-sans border-collapse">
             <thead>
-              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[9px] font-extrabold tracking-wider">
-                <th class="py-3 px-4 w-[6%] text-center">Detail</th>
-                <th class="py-3 px-4 w-[28%] text-left">Store Name</th>
-                <th class="py-3 px-4 w-[24%]">Product Issued</th>
-                <th class="py-3 px-4 w-[16%]">Billing Track</th>
-                <th class="py-3 px-4 w-[12%] text-right font-mono text-rose-655">Outstanding</th>
-                <th class="py-3 px-4 w-[14%] text-center">Due Date</th>
-                <th class="py-3 px-4 w-[22%] text-center">Recovery Actions</th>
+              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-xs font-bold tracking-wider">
+                <th class="py-3.5 px-4 w-[5%] text-center"></th>
+                <th class="py-3.5 px-4 w-[26%] text-left">Customer</th>
+                <th class="py-3.5 px-4 w-[22%]">Product</th>
+                <th class="py-3.5 px-4 w-[15%]">Route</th>
+                <th class="py-3.5 px-4 w-[12%] text-right font-mono text-rose-600">Outstanding</th>
+                <th class="py-3.5 px-4 w-[13%] text-center">Due Date</th>
+                <th class="py-3.5 px-4 w-[20%] text-center">Actions</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-150">
+            <tbody class="divide-y divide-slate-100">
               <template v-for="sale in currentIndividualSales" :key="sale.id">
-                <tr :class="['hover:bg-slate-50/50 transition border-b border-slate-100', expandedInvoiceId === sale.id ? 'bg-slate-50/60' : '']">
-                  <!-- Toggle Expansion trigger -->
-                  <td class="py-3 px-4 text-center">
+                <tr :class="['hover:bg-slate-50/50 transition', expandedInvoiceId === sale.id ? 'bg-slate-50/60' : '']">
+                  <td class="py-3.5 px-4 text-center">
                     <button
                       :id="`col-btn-toggle-detail-${sale.id}`"
                       @click="expandedInvoiceId = expandedInvoiceId === sale.id ? null : sale.id"
-                      class="p-1 rounded text-slate-500 hover:bg-slate-100 transition cursor-pointer"
+                      class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition cursor-pointer"
                     >
-                      <ChevronUp v-if="expandedInvoiceId === sale.id" class="h-4.5 w-4.5 text-rose-600" />
-                      <ChevronDown v-else class="h-4.5 w-4.5 text-slate-500 hover:text-blue-600" />
+                      <ChevronUp v-if="expandedInvoiceId === sale.id" class="h-4 w-4 text-rose-600" />
+                      <ChevronDown v-else class="h-4 w-4" />
                     </button>
                   </td>
 
-                  <!-- Customer / Store Identity -->
-                  <td class="py-3 px-4 font-bold">
-                    <div class="space-y-0.5 whitespace-normal">
-                      <span class="font-display font-black text-slate-800 text-xs block" :title="sale.customerName">
-                        {{ sale.customerName }}
-                      </span>
-                      <span class="text-[10px] text-slate-450 font-medium block">
-                        📞 {{ sale.customerPhone || 'N/A' }}
-                      </span>
+                  <td class="py-3.5 px-4">
+                    <div class="space-y-0.5">
+                      <span class="font-bold text-slate-800 block">{{ sale.customerName }}</span>
+                      <span class="text-xs text-slate-400 block">{{ sale.customerPhone || 'N/A' }}</span>
                     </div>
                   </td>
 
-                  <!-- Items load description -->
-                  <td class="py-3 px-4 text-slate-700">
-                    <div class="font-medium text-xs font-semibold whitespace-normal">
+                  <td class="py-3.5 px-4 text-slate-700">
+                    <div class="font-medium whitespace-normal">
                       {{ sale.productName }}
-                      <span class="ml-1 bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded-sm text-[10px] font-bold">
-                        x{{ sale.quantity }}
+                      <span class="ml-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md text-xs font-semibold">
+                        ×{{ sale.quantity }}
                       </span>
                     </div>
                   </td>
 
-                  <!-- Transportation vehicle drop or representative -->
-                  <td class="py-3 px-4">
-                    <span v-if="sale.isVehicle" class="bg-blue-50 border border-blue-100 text-blue-800 font-mono text-[9px] px-1.5 py-0.5 rounded leading-none font-black inline-flex items-center uppercase tracking-wide">
-                      <Truck class="h-2.5 w-2.5 mr-1" />
+                  <td class="py-3.5 px-4">
+                    <span v-if="sale.isVehicle" class="bg-blue-50 border border-blue-100 text-blue-700 font-mono text-xs px-2.5 py-1 rounded-md font-semibold inline-flex items-center gap-1">
+                      <Truck class="h-3 w-3" />
                       {{ sale.vehicleNumber }}
                     </span>
-                    <span v-else class="bg-cyan-50 border border-cyan-100 text-cyan-850 text-[9px] px-1.5 py-0.5 rounded leading-none inline-flex items-center font-black uppercase tracking-wide">
-                      <UserCheck class="h-2.5 w-2.5 mr-1" />
+                    <span v-else class="bg-cyan-50 border border-cyan-100 text-cyan-700 text-xs px-2.5 py-1 rounded-md inline-flex items-center gap-1 font-semibold">
+                      <UserCheck class="h-3 w-3" />
                       {{ sale.dsrName }}
                     </span>
                   </td>
 
-                  <!-- Credit outstanding metrics -->
-                  <td class="py-3 px-4 text-right font-black font-semibold font-mono text-xs text-rose-600">
-                    {{ formatCurrency(sale.totalAmount - sale.amountPaid) }}
+                  <td class="py-3.5 px-4 text-right font-bold font-mono text-rose-600">
+                    {{ formatCurrency(sale.balanceDue || (sale.totalAmount - sale.amountPaid)) }}
                   </td>
 
-                  <!-- Date repayment limits -->
-                  <td class="py-3 px-4 text-center text-[10px] font-bold">
-                    <span class="bg-rose-50 text-rose-700 border border-rose-100 px-2 py-0.5 rounded leading-none">
-                      {{ sale.dueDate ? new Date(sale.dueDate).toLocaleDateString() : 'No repayment date' }}
+                  <td class="py-3.5 px-4 text-center">
+                    <span class="bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-md text-xs font-semibold">
+                      {{ sale.dueDate ? new Date(sale.dueDate).toLocaleDateString() : 'No date' }}
                     </span>
                   </td>
 
-                  <!-- Trigger Payment forms button -->
-                  <td class="py-3 px-4">
-                    <div class="flex gap-1.5 justify-center">
+                  <td class="py-3.5 px-4">
+                    <div class="flex gap-2 justify-center">
                       <button
                         :id="`col-btn-trigger-${sale.id}`"
                         @click="() => {
                           selectedSale = sale;
                           amount = '';
                           receivedBy = sale.dsrName || 'Counter Staff';
-                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                          scrollToTop();
                         }"
-                        class="bg-rose-50 hover:bg-rose-100 text-rose-800 text-[10px] font-display font-medium px-2 py-1 rounded border border-rose-150 flex items-center space-x-1 cursor-pointer transition shadow-xs"
+                        class="bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 flex items-center gap-1.5 cursor-pointer transition"
                       >
-                        <Coins class="h-3 w-3" />
-                        <span>Collect Cash</span>
+                        <Coins class="h-3.5 w-3.5" />
+                        <span>Collect</span>
                       </button>
 
                       <button
                         :id="`col-btn-close-due-${sale.id}`"
                         @click="handleCloseWithDue(sale)"
-                        class="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-display font-black px-2 py-1 rounded border border-emerald-250 flex items-center space-x-1 cursor-pointer transition shadow-xs animate-fadeIn"
-                        title="Instantly close outstanding invoice with remaining balance written off"
+                        class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer transition"
+                        title="Close invoice with remaining balance written off"
                       >
-                        <span>Close with Due</span>
+                        <span>Write Off</span>
                       </button>
                     </div>
                   </td>
                 </tr>
 
-                <!-- Accordion collapsible details panel -->
+                <!-- Expanded Details -->
                 <tr v-if="expandedInvoiceId === sale.id" class="bg-slate-50/40">
-                  <td colSpan="7" class="py-3 px-6 border-y border-slate-100 font-sans">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white rounded border border-slate-200 p-3.5 shadow-xs">
+                  <td colSpan="7" class="py-4 px-6 border-y border-slate-100 font-sans">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
                       <div class="text-left">
-                        <h4 class="font-display font-bold text-slate-800 text-xs mb-2">📄 Outlet Invoice Recovery Summary</h4>
-                        <div class="space-y-1.5 text-[11px] text-slate-550 font-semibold">
-                          <p>🛡️ <span class="text-slate-400 font-bold">Invoice Unique ID:</span> <span class="font-mono font-bold text-slate-700">{{ sale.id }}</span></p>
-                          <p>📅 <span class="text-slate-400 font-bold">Billing Issuance Date:</span> <span class="text-slate-700">{{ new Date(sale.date).toLocaleString() }}</span></p>
-                          <p>🛠️ <span class="text-slate-400 font-bold">Initial Cargo Invoice Total:</span> <span class="text-slate-700 font-mono">{{ formatCurrency(sale.totalAmount) }}</span></p>
-                          <p>💵 <span class="text-slate-400 font-bold">Downpayment Paid Initially:</span> <span class="text-slate-700 font-mono">{{ formatCurrency(sale.amountPaid - (sale.payments ? sale.payments.reduce((a, p) => a + p.amount, 0) : 0)) }}</span></p>
-                          <p>💸 <span class="text-rose-500 font-bold">Current Debts Owed:</span> <span class="text-rose-650 font-extrabold font-mono text-xs">{{ formatCurrency(sale.totalAmount - sale.amountPaid) }}</span></p>
+                        <h4 class="font-bold text-slate-800 text-sm mb-3">Invoice Summary</h4>
+                        <div class="space-y-2 text-sm text-slate-600">
+                          <p class="flex justify-between"><span class="text-slate-400">Invoice ID</span> <span class="font-mono font-bold text-slate-700">{{ sale.id }}</span></p>
+                          <p class="flex justify-between"><span class="text-slate-400">Date</span> <span>{{ new Date(sale.date).toLocaleString() }}</span></p>
+                          <p class="flex justify-between"><span class="text-slate-400">Original Total</span> <span class="font-mono">{{ formatCurrency(sale.totalAmount) }}</span></p>
+                          <p v-if="sale.returnTotalAmount && sale.returnTotalAmount > 0" class="flex justify-between"><span class="text-amber-500 font-semibold">Returns Deducted</span> <span class="font-mono text-amber-600">-{{ formatCurrency(sale.returnTotalAmount) }}</span></p>
+                          <p v-if="sale.returnTotalAmount && sale.returnTotalAmount > 0" class="flex justify-between"><span class="text-slate-400">Net Amount</span> <span class="font-mono font-bold">{{ formatCurrency(sale.netAmount || (sale.totalAmount - sale.returnTotalAmount)) }}</span></p>
+                          <p class="flex justify-between"><span class="text-slate-400">Initial Payment</span> <span class="font-mono">{{ formatCurrency(sale.amountPaid - (sale.payments ? sale.payments.reduce((a, p) => a + p.amount, 0) : 0)) }}</span></p>
+                          <p class="flex justify-between pt-2 border-t border-slate-100"><span class="text-rose-500 font-semibold">Amount Owed</span> <span class="text-rose-600 font-bold font-mono">{{ formatCurrency(sale.balanceDue || (sale.netAmount - sale.amountPaid) || (sale.totalAmount - sale.amountPaid)) }}</span></p>
                         </div>
                       </div>
 
                       <div class="text-left">
-                        <h4 class="font-display font-bold text-slate-800 text-xs mb-2">📋 Ledger Payments Log ({{ sale.payments?.length || 0 }} Partial Collections)</h4>
-                        <div v-if="sale.payments && sale.payments.length > 0" class="border border-slate-150 rounded overflow-hidden max-h-40 overflow-y-auto">
-                          <table class="w-full text-left text-[11px] font-sans">
+                        <h4 class="font-bold text-slate-800 text-sm mb-3">Payment History ({{ sale.payments?.length || 0 }})</h4>
+                        <div v-if="sale.payments && sale.payments.length > 0" class="border border-slate-200 rounded-xl overflow-hidden max-h-40 overflow-y-auto">
+                          <table class="w-full text-left text-sm font-sans">
                             <thead>
-                              <tr class="bg-slate-50 border-b border-slate-200 text-slate-450 font-bold uppercase text-[9px]">
-                                <th class="py-1 px-2.5">Collected Date</th>
-                                <th class="py-1 px-2.5 text-right">Amount Credited</th>
-                                <th class="py-1 px-2.5">Received By</th>
+                              <tr class="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase text-xs">
+                                <th class="py-2 px-3">Date</th>
+                                <th class="py-2 px-3 text-right">Amount</th>
+                                <th class="py-2 px-3">Received By</th>
                               </tr>
                             </thead>
-                            <tbody class="divide-y divide-slate-100 text-slate-755 font-semibold">
+                            <tbody class="divide-y divide-slate-100 text-slate-600 font-medium">
                               <tr v-for="(pRecord, pIdx) in sale.payments" :key="pIdx">
-                                <td class="py-1 px-2.5 text-slate-500">{{ new Date(pRecord.date).toLocaleDateString() }}</td>
-                                <td class="py-1 px-2.5 text-right font-mono text-emerald-650 font-bold">+{{ formatCurrency(pRecord.amount) }}</td>
-                                <td class="py-1 px-2.5 text-slate-650">{{ pRecord.receivedBy }}</td>
+                                <td class="py-2 px-3 text-slate-500">{{ new Date(pRecord.date).toLocaleDateString() }}</td>
+                                <td class="py-2 px-3 text-right font-mono text-emerald-600 font-bold">+{{ formatCurrency(pRecord.amount) }}</td>
+                                <td class="py-2 px-3 text-slate-600">{{ pRecord.receivedBy }}</td>
                               </tr>
                             </tbody>
                           </table>
                         </div>
-                        <div v-else class="flex flex-col items-center justify-center p-4 border border-dashed border-slate-250 rounded text-center text-slate-400 bg-slate-50/50">
-                          <Coins class="h-4 w-4 text-slate-300 mb-1" />
-                          <p class="font-medium text-[10px]">No partial cash collections registered yet.</p>
-                          <p class="text-[9px]">Use "Collect Cash" to log partial payments from this client store.</p>
+                        <div v-else class="flex flex-col items-center justify-center p-6 border border-dashed border-slate-200 rounded-xl text-center text-slate-400 bg-slate-50/50">
+                          <Coins class="h-6 w-6 text-slate-300 mb-2" />
+                          <p class="font-medium text-sm">No payments recorded yet</p>
+                          <p class="text-xs mt-1">Use "Collect" to record a payment</p>
+                        </div>
+                      </div>
+
+                      <!-- Return History -->
+                      <div v-if="sale.returns && sale.returns.length > 0" class="text-left mt-4">
+                        <h4 class="font-bold text-slate-800 text-sm mb-3 flex items-center gap-1.5">
+                          <RotateCcw class="h-4 w-4 text-amber-500" />
+                          Returns ({{ sale.returns.length }})
+                        </h4>
+                        <div class="border border-amber-200 rounded-xl overflow-hidden max-h-40 overflow-y-auto">
+                          <table class="w-full text-left text-sm font-sans">
+                            <thead>
+                              <tr class="bg-amber-50 border-b border-amber-200 text-amber-700 font-bold uppercase text-xs">
+                                <th class="py-2 px-3">Date</th>
+                                <th class="py-2 px-3 text-center">Qty</th>
+                                <th class="py-2 px-3 text-right">Amount</th>
+                                <th class="py-2 px-3">Reason</th>
+                              </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 text-slate-600 font-medium">
+                              <tr v-for="(ret, rIdx) in sale.returns" :key="rIdx">
+                                <td class="py-2 px-3 text-slate-500">{{ new Date(ret.date).toLocaleDateString() }}</td>
+                                <td class="py-2 px-3 text-center font-mono">-{{ ret.quantity }}</td>
+                                <td class="py-2 px-3 text-right font-mono text-amber-600 font-bold">-{{ formatCurrency(ret.returnAmount) }}</td>
+                                <td class="py-2 px-3">{{ ret.reason }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     </div>
@@ -554,32 +704,31 @@ const totalOutstandingSum = computed(() => {
                 </tr>
               </template>
 
+              <!-- Empty State -->
               <tr v-if="currentIndividualSales.length === 0">
-                <td colSpan="7" class="text-center py-10 bg-white">
-                  <CheckCircle class="h-7 w-7 text-emerald-500 mx-auto mb-2 animate-bounce" />
-                  <p class="font-display font-semibold text-slate-750 text-xs">No pending collections found!</p>
-                  <p class="text-[11px] text-slate-400 font-sans">Everything has been recovered and reconciled.</p>
+                <td colSpan="7" class="text-center py-12 bg-white">
+                  <CheckCircle class="h-10 w-10 text-emerald-400 mx-auto mb-3" />
+                  <p class="font-semibold text-slate-600 text-sm">All caught up!</p>
+                  <p class="text-sm text-slate-400 mt-1">No pending collections found</p>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <!-- individual page indices footer -->
-        <div v-if="individualTotalPages > 1" class="bg-slate-50 border-t border-slate-200 px-4 py-2.5 flex items-center justify-between sm:px-6 font-sans">
-          <p class="text-xs text-slate-500">
-            Showing <span class="font-semibold">{{ individualFirst + 1 }}</span> to{' '}
-            <span class="font-semibold">
-              {{ Math.min(individualFirst + itemsPerPage, filteredPending.length) }}
-            </span>{' '}
-            of <span class="font-semibold">{{ filteredPending.length }}</span> debts
+        <!-- Pagination -->
+        <div v-if="individualTotalPages > 1" class="bg-slate-50 border-t border-slate-200 px-6 py-3 flex items-center justify-between font-sans">
+          <p class="text-sm text-slate-500">
+            Showing <span class="font-semibold">{{ individualFirst + 1 }}</span> –
+            <span class="font-semibold">{{ Math.min(individualFirst + itemsPerPage, filteredPending.length) }}</span> of
+            <span class="font-semibold">{{ filteredPending.length }}</span>
           </p>
 
-          <div class="flex space-x-1">
+          <div class="flex gap-1">
             <button
               @click="individualPage = Math.max(individualPage - 1, 1)"
               :disabled="individualPage === 1"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+              class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition"
             >
               Prev
             </button>
@@ -587,10 +736,10 @@ const totalOutstandingSum = computed(() => {
               v-for="no in individualTotalPages"
               :key="no"
               @click="individualPage = no"
-              :class="['px-2.5 py-1 text-xs border rounded cursor-pointer font-bold',
+              :class="['px-3 py-1.5 text-sm border rounded-lg cursor-pointer font-semibold transition',
                 individualPage === no
-                  ? 'bg-blue-650 border-blue-650 text-white font-black'
-                  : 'bg-white border-slate-300 text-slate-650 hover:bg-slate-150'
+                  ? 'bg-rose-600 border-rose-600 text-white'
+                  : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
               ]"
             >
               {{ no }}
@@ -598,7 +747,7 @@ const totalOutstandingSum = computed(() => {
             <button
               @click="individualPage = Math.min(individualPage + 1, individualTotalPages)"
               :disabled="individualPage === individualTotalPages"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+              class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition"
             >
               Next
             </button>
@@ -607,411 +756,296 @@ const totalOutstandingSum = computed(() => {
       </div>
     </div>
 
-    <!-- VEHICLES SUMMARY TAB -->
-    <div v-if="activeSubTab === 'vehicles'" class="space-y-3 font-sans">
-      <div class="bg-blue-50/50 p-3 rounded border border-blue-150 flex items-center space-x-2.5">
-        <Truck class="h-5 w-5 text-blue-600 animate-pulse shrink-0" />
-        <div class="text-left font-sans">
-          <h4 class="font-display font-bold text-blue-900 text-xs uppercase tracking-wider">🚚 Vehicle Shipping Accounts Follow-up</h4>
-          <p class="text-[10px] text-blue-750">A delivery vehicle carries load for multiple retail stores. This rollup combines all pending store collections grouped by transport plate.</p>
+    <!-- ========== VEHICLES TAB ========== -->
+    <div v-if="activeSubTab === 'vehicles'" class="space-y-4 font-sans">
+      <div class="bg-blue-50 p-4 rounded-xl border border-blue-200 flex items-center gap-3">
+        <Truck class="h-6 w-6 text-blue-600 shrink-0" />
+        <div class="text-left">
+          <h4 class="font-bold text-blue-900 text-sm">Vehicle Collections</h4>
+          <p class="text-xs text-blue-600 mt-0.5">Outstanding payments grouped by delivery vehicle</p>
         </div>
       </div>
 
-      <div class="bg-white rounded border border-slate-200 overflow-hidden shadow-xs">
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs font-sans border-collapse">
-            <thead>
-              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[9px] font-extrabold tracking-wider">
-                <th class="py-3 px-4 w-[6%] text-center">Detail</th>
-                <th class="py-3 px-4 w-[34%]">Vehicle Plate Number</th>
-                <th class="py-3 px-4 w-[16%] text-center">Assigned Clients</th>
-                <th class="py-3 px-4 w-[20%] text-right">Total Cargo Invoiced</th>
-                <th class="py-3 px-4 w-[20%] text-right text-rose-650">Outstanding Due</th>
-                <th class="py-3 px-4 w-[24%] text-center">Recovery Actions</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-150">
-              <template v-for="vNode in currentVehicles" :key="vNode.vehicle">
-                <tr :class="['hover:bg-slate-50 transition border-b border-slate-100', expandedVehicleNumber === vNode.vehicle ? 'bg-slate-50/50' : '']">
-                  <!-- Toggle Expansion -->
-                  <td class="py-3 px-4 text-center">
-                    <button
-                      @click="expandedVehicleNumber = expandedVehicleNumber === vNode.vehicle ? null : vNode.vehicle"
-                      class="p-1 rounded text-slate-500 hover:bg-slate-100 transition cursor-pointer"
-                    >
-                      <ChevronUp v-if="expandedVehicleNumber === vNode.vehicle" class="h-4.5 w-4.5 text-rose-500" />
-                      <ChevronDown v-else class="h-4.5 w-4.5 text-slate-505" />
-                    </button>
-                  </td>
+      <!-- Vehicle Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div 
+          v-for="vNode in currentVehicles" 
+          :key="vNode.vehicle"
+          class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden transition hover:shadow-md"
+        >
+          <div class="p-5">
+            <div class="flex justify-between items-start mb-3">
+              <div class="flex items-center gap-2">
+                <div class="bg-blue-100 p-2 rounded-lg">
+                  <Truck class="h-5 w-5 text-blue-600" />
+                </div>
+                <span class="font-mono font-bold text-slate-800 text-sm tracking-wider uppercase">{{ vNode.vehicle }}</span>
+              </div>
+              <span class="text-xs bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-semibold">
+                {{ vNode.count }} stops
+              </span>
+            </div>
 
-                  <!-- Plate Name -->
-                  <td class="py-3 px-4 text-left">
-                    <span class="inline-flex items-center space-x-1.5 text-blue-800 bg-blue-50 border border-blue-150 px-2.5 py-1 rounded text-[11px] font-mono tracking-wider font-extrabold uppercase animate-fadeIn">
-                      <Truck class="h-3.5 w-3.5 text-blue-600 font-bold" />
-                      <span>{{ vNode.vehicle }}</span>
-                    </span>
-                  </td>
+            <div class="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
+              <div>
+                <p class="text-xs text-slate-400 font-semibold uppercase">Total Billed</p>
+                <p class="text-sm font-bold text-slate-800 font-mono mt-0.5">{{ formatCurrency(vNode.total) }}</p>
+              </div>
+              <div>
+                <p class="text-xs text-rose-500 font-semibold uppercase">Outstanding</p>
+                <p class="text-sm font-bold text-rose-600 font-mono mt-0.5">{{ formatCurrency(vNode.pending) }}</p>
+              </div>
+            </div>
+          </div>
 
-                  <!-- Assigned counts -->
-                  <td class="py-3 px-4 text-center font-extrabold text-slate-700">
-                    {{ vNode.count }} store locations
-                  </td>
+          <div class="border-t border-slate-100 px-5 py-3 bg-slate-50 flex justify-between items-center">
+            <button
+              type="button"
+              @click="expandedVehicleNumber = expandedVehicleNumber === vNode.vehicle ? null : vNode.vehicle"
+              class="text-xs font-semibold text-blue-600 hover:text-blue-800 cursor-pointer flex items-center gap-1"
+            >
+              {{ expandedVehicleNumber === vNode.vehicle ? 'Hide Details' : 'View Details' }}
+              <component :is="expandedVehicleNumber === vNode.vehicle ? ChevronUp : ChevronDown" class="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              @click="() => { searchQuery = vNode.vehicle; activeSubTab = 'individual'; }"
+              class="text-xs font-semibold text-slate-500 hover:text-slate-700 cursor-pointer px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition"
+            >
+              Filter Invoices
+            </button>
+          </div>
 
-                  <td class="py-3 px-4 text-right font-bold font-mono text-slate-750">
-                    {{ formatCurrency(vNode.total) }}
-                  </td>
-
-                  <td class="py-3 px-4 text-right font-black font-mono text-rose-600">
-                    {{ formatCurrency(vNode.pending) }}
-                  </td>
-
-                  <!-- Active search filter jump -->
-                  <td class="py-3 px-4 text-center">
-                    <button
-                      type="button"
-                      @click="() => {
-                        searchQuery = vNode.vehicle;
-                        activeSubTab = 'individual';
-                      }"
-                      class="px-2.5 py-1 text-[9.5px] font-bold text-slate-750 bg-slate-100 hover:bg-slate-205 border border-slate-220 rounded cursor-pointer transition uppercase"
-                    >
-                      Filter Store Bills
-                    </button>
-                  </td>
-                </tr>
-
-                <!-- Expanded row contents detailing vehicle assignments -->
-                <tr v-if="expandedVehicleNumber === vNode.vehicle" class="bg-slate-50/45 text-left">
-                  <td colSpan="6" class="py-3 px-6 border-y border-slate-100 font-sans animate-fadeIn">
-                    <div class="bg-white rounded border border-slate-250 p-3 shadow-xs">
-                      <h4 class="font-display font-black text-slate-805 text-xs mb-2">🚚 Store-wise cargo breakdown under delivery vehicle plate {{ vNode.vehicle }}</h4>
-                      <div class="border border-slate-150 rounded overflow-hidden">
-                        <table class="w-full text-left text-[11px] font-sans">
-                          <thead>
-                            <tr class="bg-slate-50 border-b border-slate-200 text-slate-455 font-bold uppercase text-[9px]">
-                              <th class="py-2 px-3">Client Store</th>
-                              <th class="py-2 px-3">Item Issued</th>
-                              <th class="py-2 px-3 text-right">Invoice Sum</th>
-                              <th class="py-2 px-3 text-right text-rose-650">Credit Balance</th>
-                              <th class="py-2 px-3 text-center">Collection Action</th>
-                            </tr>
-                          </thead>
-                          <tbody class="divide-y divide-slate-100 font-semibold text-slate-750 text-xs text-left">
-                            <tr v-for="assignedRec in pendingCreditSales.filter(s => s.isVehicle && s.vehicleNumber && s.vehicleNumber.trim().toUpperCase() === vNode.vehicle)" :key="assignedRec.id" class="hover:bg-slate-50/50">
-                              <td class="py-2 px-3 text-left font-sans">
-                                <div class="font-black text-slate-800">{{ assignedRec.customerName }}</div>
-                                <div class="text-[9px] text-slate-400 font-normal leading-none mt-0.5">📞 {{ assignedRec.customerPhone || 'N/A' }}</div>
-                              </td>
-                              <td class="py-2 px-3 font-medium text-slate-650">{{ assignedRec.productName }} (x{{ assignedRec.quantity }})</td>
-                              <td class="py-2 px-3 text-right font-mono text-slate-600">{{ formatCurrency(assignedRec.totalAmount) }}</td>
-                              <td class="py-2 px-3 text-right font-black font-mono text-rose-650">{{ formatCurrency(assignedRec.totalAmount - assignedRec.amountPaid) }}</td>
-                              <td class="py-2 px-3 text-center">
-                                <div class="flex gap-1 justify-center">
-                                  <button
-                                    @click="() => {
-                                      selectedSale = assignedRec;
-                                      amount = '';
-                                      receivedBy = assignedRec.dsrName || 'Counter Staff';
-                                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                                    }"
-                                    class="bg-rose-50 hover:bg-rose-100 text-rose-800 text-[9.5px] px-2 py-0.5 rounded cursor-pointer border border-rose-250 font-medium leading-none"
-                                  >
-                                    Collect
-                                  </button>
-                                  <button
-                                    @click="handleCloseWithDue(assignedRec)"
-                                    class="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[9.5px] px-2 py-0.5 rounded cursor-pointer border border-emerald-250 font-medium whitespace-nowrap leading-none"
-                                  >
-                                    Close with Due
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
+          <!-- Expanded Details -->
+          <div v-if="expandedVehicleNumber === vNode.vehicle" class="border-t border-slate-200 p-4 bg-slate-50/50 animate-fadeIn">
+            <div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+              <table class="w-full text-left text-sm font-sans">
+                <thead>
+                  <tr class="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase text-xs">
+                    <th class="py-2 px-3">Customer</th>
+                    <th class="py-2 px-3">Product</th>
+                    <th class="py-2 px-3 text-right">Billed</th>
+                    <th class="py-2 px-3 text-right text-rose-600">Owed</th>
+                    <th class="py-2 px-3 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 text-slate-600">
+                  <tr v-for="assignedRec in pendingCreditSales.filter(s => s.isVehicle && s.vehicleNumber && s.vehicleNumber.trim().toUpperCase() === vNode.vehicle)" :key="assignedRec.id" class="hover:bg-slate-50/50">
+                    <td class="py-2.5 px-3">
+                      <div class="font-semibold text-slate-800">{{ assignedRec.customerName }}</div>
+                      <div class="text-xs text-slate-400 mt-0.5">{{ assignedRec.customerPhone || 'N/A' }}</div>
+                    </td>
+                    <td class="py-2.5 px-3">{{ assignedRec.productName }} (×{{ assignedRec.quantity }})</td>
+                    <td class="py-2.5 px-3 text-right font-mono text-slate-600">{{ formatCurrency(assignedRec.totalAmount) }}</td>
+                    <td class="py-2.5 px-3 text-right font-bold font-mono text-rose-600">{{ formatCurrency(assignedRec.balanceDue || (assignedRec.totalAmount - assignedRec.amountPaid)) }}</td>
+                    <td class="py-2.5 px-3 text-center">
+                      <div class="flex gap-1.5 justify-center">
+                        <button
+                          @click="() => { selectedSale = assignedRec; amount = ''; receivedBy = assignedRec.dsrName || 'Counter Staff'; scrollToTop(); }"
+                          class="bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-rose-200 font-semibold"
+                        >
+                          Collect
+                        </button>
+                        <button
+                          @click="handleCloseWithDue(assignedRec)"
+                          class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-emerald-200 font-semibold"
+                        >
+                          Write Off
+                        </button>
                       </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-
-              <tr v-if="currentVehicles.length === 0">
-                <td colSpan="6" class="text-center py-10 bg-white font-sans">
-                  <CheckCircle class="h-7 w-7 text-emerald-500 mx-auto mb-2 animate-pulse" />
-                  <p class="font-display font-semibold text-slate-750 text-xs">No active vehicle-level outstanding debts!</p>
-                  <p class="text-[11px] text-slate-400 font-sans">All vehicle assignments are fully collected.</p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
-        <!-- vehicle rollups indices pagination layout -->
-        <div v-if="vehiclesTotalPages > 1" class="bg-slate-50 border-t border-slate-200 px-4 py-2.5 flex items-center justify-between sm:px-6 font-sans">
-          <p class="text-xs text-slate-500">
-            Showing <span class="font-semibold">{{ vehiclesFirst + 1 }}</span> to{' '}
-            <span class="font-semibold">
-              {{ Math.min(vehiclesFirst + itemsPerPage, activePendingVehicles.length) }}
-            </span>{' '}
-            of <span class="font-semibold">{{ activePendingVehicles.length }}</span> active vehicles
-          </p>
+        <!-- Empty State -->
+        <div v-if="currentVehicles.length === 0" class="col-span-full text-center py-12 bg-white rounded-xl border border-slate-200">
+          <CheckCircle class="h-10 w-10 text-emerald-400 mx-auto mb-3" />
+          <p class="font-semibold text-slate-600 text-sm">No vehicle outstanding!</p>
+          <p class="text-sm text-slate-400 mt-1">All vehicle deliveries are fully collected</p>
+        </div>
+      </div>
 
-          <div class="flex space-x-1">
-            <button
-              @click="vehiclesPage = Math.max(vehiclesPage - 1, 1)"
-              :disabled="vehiclesPage === 1"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-            >
-              Prev
-            </button>
-            <button
-              v-for="no in vehiclesTotalPages"
-              :key="no"
-              @click="vehiclesPage = no"
-              :class="['px-2.5 py-1 text-xs border rounded cursor-pointer font-bold',
-                vehiclesPage === no
-                  ? 'bg-blue-650 border-blue-650 text-white font-black'
-                  : 'bg-white border-slate-300 text-slate-650 hover:bg-slate-150'
-              ]"
-            >
-              {{ no }}
-            </button>
-            <button
-              @click="vehiclesPage = Math.min(vehiclesPage + 1, vehiclesTotalPages)"
-              :disabled="vehiclesPage === vehiclesTotalPages"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-            >
-              Next
-            </button>
-          </div>
+      <!-- Pagination -->
+      <div v-if="vehiclesTotalPages > 1" class="bg-white border border-slate-200 rounded-xl px-6 py-3 flex items-center justify-between shadow-sm font-sans">
+        <p class="text-sm text-slate-500">
+          Showing <span class="font-semibold">{{ vehiclesFirst + 1 }}</span> –
+          <span class="font-semibold">{{ Math.min(vehiclesFirst + itemsPerPage, activePendingVehicles.length) }}</span> of
+          <span class="font-semibold">{{ activePendingVehicles.length }}</span> vehicles
+        </p>
+        <div class="flex gap-1">
+          <button @click="vehiclesPage = Math.max(vehiclesPage - 1, 1)" :disabled="vehiclesPage === 1" class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition">Prev</button>
+          <button v-for="no in vehiclesTotalPages" :key="no" @click="vehiclesPage = no" :class="['px-3 py-1.5 text-sm border rounded-lg cursor-pointer font-semibold transition', vehiclesPage === no ? 'bg-rose-600 border-rose-600 text-white' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100']">{{ no }}</button>
+          <button @click="vehiclesPage = Math.min(vehiclesPage + 1, vehiclesTotalPages)" :disabled="vehiclesPage === vehiclesTotalPages" class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition">Next</button>
         </div>
       </div>
     </div>
 
-    <!-- REPRESENTATIVES (DSR) TAB -->
-    <div v-if="activeSubTab === 'reps'" class="space-y-3 font-sans">
-      <div class="bg-cyan-50/50 p-3 rounded border border-cyan-150 flex items-center space-x-2.5">
-        <UserCheck class="h-5 w-5 text-cyan-700 shrink-0" />
-        <div class="text-left font-sans">
-          <h4 class="font-display font-bold text-cyan-900 text-xs uppercase tracking-wider">👤 Sales Representative Liabilities follow-up</h4>
-          <p class="text-[10px] text-cyan-750">Dealer sales representatives (DSR) and appointed order collectors are responsible for following up on credit given during store visits.</p>
+    <!-- ========== REPS TAB ========== -->
+    <div v-if="activeSubTab === 'reps'" class="space-y-4 font-sans">
+      <div class="bg-cyan-50 p-4 rounded-xl border border-cyan-200 flex items-center gap-3">
+        <UserCheck class="h-6 w-6 text-cyan-600 shrink-0" />
+        <div class="text-left">
+          <h4 class="font-bold text-cyan-900 text-sm">Rep Collections</h4>
+          <p class="text-xs text-cyan-600 mt-0.5">Outstanding payments grouped by sales representative</p>
         </div>
       </div>
 
-      <div class="bg-white rounded border border-slate-200 overflow-hidden shadow-xs">
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs font-sans border-collapse">
-            <thead>
-              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[9px] font-extrabold tracking-wider animate-fadeIn">
-                <th class="py-3 px-4 w-[6%] text-center">Detail</th>
-                <th class="py-3 px-4 w-[34%]">Sales Representative Name</th>
-                <th class="py-3 px-4 w-[16%] text-center">Assigned Invoices</th>
-                <th class="py-3 px-4 w-[20%] text-right">Invoiced Sales Volume</th>
-                <th class="py-3 px-4 w-[20%] text-right text-rose-655">Liability Owed</th>
-                <th class="py-3 px-4 w-[24%] text-center">Recovery Actions</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-150">
-              <template v-for="repNode in currentReps" :key="repNode.name">
-                <tr :class="['hover:bg-slate-50 transition border-b border-slate-100', expandedRepName === repNode.name ? 'bg-slate-50/50' : '']">
-                  <!-- Toggle expansion -->
-                  <td class="py-3 px-4 text-center">
-                    <button
-                      @click="expandedRepName = expandedRepName === repNode.name ? null : repNode.name"
-                      class="p-1 rounded text-slate-500 hover:bg-slate-100 transition cursor-pointer"
-                    >
-                      <ChevronUp v-if="expandedRepName === repNode.name" class="h-4.5 w-4.5 text-rose-500" />
-                      <ChevronDown v-else class="h-4.5 w-4.5 text-slate-505" />
-                    </button>
-                  </td>
+      <!-- Rep Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div 
+          v-for="repNode in currentReps" 
+          :key="repNode.name"
+          class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden transition hover:shadow-md"
+        >
+          <div class="p-5">
+            <div class="flex justify-between items-start mb-3">
+              <div class="flex items-center gap-2">
+                <div class="bg-cyan-100 p-2 rounded-lg">
+                  <UserCheck class="h-5 w-5 text-cyan-600" />
+                </div>
+                <span class="font-bold text-slate-800 text-sm">{{ repNode.name }}</span>
+              </div>
+              <span class="text-xs bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-semibold">
+                {{ repNode.count }} bills
+              </span>
+            </div>
 
-                  <!-- Rep Identification -->
-                  <td class="py-3 px-4">
-                    <span class="inline-flex items-center space-x-1.5 text-cyan-850 bg-cyan-50 border border-cyan-150 px-2.5 py-1 rounded text-[11px] uppercase tracking-wider font-extrabold animate-fadeIn animate-fadeIn">
-                      <UserCheck class="h-3.5 w-3.5 text-cyan-600 font-bold" />
-                      <span>{{ repNode.name }}</span>
-                    </span>
-                  </td>
+            <div class="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
+              <div>
+                <p class="text-xs text-slate-400 font-semibold uppercase">Total Billed</p>
+                <p class="text-sm font-bold text-slate-800 font-mono mt-0.5">{{ formatCurrency(repNode.total) }}</p>
+              </div>
+              <div>
+                <p class="text-xs text-rose-500 font-semibold uppercase">Outstanding</p>
+                <p class="text-sm font-bold text-rose-600 font-mono mt-0.5">{{ formatCurrency(repNode.pending) }}</p>
+              </div>
+            </div>
+          </div>
 
-                  <td class="py-3 px-4 text-center font-bold text-slate-700">
-                    {{ repNode.count }} bills
-                  </td>
+          <div class="border-t border-slate-100 px-5 py-3 bg-slate-50 flex justify-between items-center">
+            <button
+              @click="expandedRepName = expandedRepName === repNode.name ? null : repNode.name"
+              class="text-xs font-semibold text-cyan-600 hover:text-cyan-800 cursor-pointer flex items-center gap-1"
+            >
+              {{ expandedRepName === repNode.name ? 'Hide Details' : 'View Details' }}
+              <component :is="expandedRepName === repNode.name ? ChevronUp : ChevronDown" class="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              @click="() => { searchQuery = repNode.name === 'Direct Dealer Counter' ? '' : repNode.name; activeSubTab = 'individual'; }"
+              class="text-xs font-semibold text-slate-500 hover:text-slate-700 cursor-pointer px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition"
+            >
+              Filter Invoices
+            </button>
+          </div>
 
-                  <td class="py-3 px-4 text-right font-semibold font-mono text-slate-700">
-                    {{ formatCurrency(repNode.total) }}
-                  </td>
-
-                  <td class="py-3 px-4 text-right font-black font-mono text-rose-600">
-                    {{ formatCurrency(repNode.pending) }}
-                  </td>
-
-                  <td class="py-3 px-4 text-center">
-                    <button
-                      type="button"
-                      @click="() => {
-                        searchQuery = repNode.name === 'Direct Dealer Counter' ? '' : repNode.name;
-                        activeSubTab = 'individual';
-                      }"
-                      class="px-2.5 py-1 text-[10px] font-bold text-slate-755 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded cursor-pointer transition uppercase"
-                    >
-                      Filter Debts
-                    </button>
-                  </td>
-                </tr>
-
-                <!-- Expanded reps details table -->
-                <tr v-if="expandedRepName === repNode.name" class="bg-slate-50/40 text-left">
-                  <td colSpan="6" class="py-3 px-6 border-y border-slate-100 font-sans">
-                    <div class="bg-white rounded border border-slate-250 p-3 shadow-xs">
-                      <h4 class="font-display font-black text-slate-800 text-xs mb-2">👤 Store-wise collections responsibility assigned to representative "{{ repNode.name }}"</h4>
-                      <div class="border border-slate-150 rounded overflow-hidden">
-                        <table class="w-full text-left text-[11px] font-sans">
-                          <thead>
-                            <tr class="bg-slate-50 border-b border-slate-200 text-slate-455 font-bold uppercase text-[9px]">
-                              <th class="py-2 px-3">Client Store</th>
-                              <th class="py-2 px-3">Item Issued</th>
-                              <th class="py-2 px-3 text-right">Invoice Sum</th>
-                              <th class="py-2 px-3 text-right text-rose-650">Credit Balance</th>
-                              <th class="py-2 px-3 text-center">Collection Action</th>
-                            </tr>
-                          </thead>
-                          <tbody class="divide-y divide-slate-100 font-bold text-slate-750 text-xs text-left">
-                            <tr v-for="saleRecord in pendingCreditSales.filter(s => {
-                              const isDirect = !s.isVehicle && (!s.dsrId || s.dsrId === 'counter');
-                              if (repNode.name === 'Direct Dealer Counter') {
-                                return isDirect || s.dsrName === 'Direct Dealer Counter';
-                              }
-                              return s.dsrName && s.dsrName.toLowerCase().trim() === repNode.name.toLowerCase().trim();
-                            })" :key="saleRecord.id" class="hover:bg-slate-50/50">
-                              <td class="py-2 px-3 text-left">
-                                <div class="font-black text-slate-800">{{ saleRecord.customerName }}</div>
-                                <div class="text-[9px] text-slate-400 font-normal leading-none mt-0.5">📞 {{ saleRecord.customerPhone || 'N/A' }}</div>
-                              </td>
-                              <td class="py-2 px-3 font-medium text-slate-650">{{ saleRecord.productName }} (x{{ saleRecord.quantity }})</td>
-                              <td class="py-2 px-3 text-right font-mono text-slate-600">{{ formatCurrency(saleRecord.totalAmount) }}</td>
-                              <td class="py-2 px-3 text-right font-black font-mono text-rose-650">{{ formatCurrency(saleRecord.totalAmount - saleRecord.amountPaid) }}</td>
-                              <td class="py-2 px-3 text-center">
-                                <div class="flex gap-1 justify-center">
-                                  <button
-                                    @click="() => {
-                                      selectedSale = saleRecord;
-                                      amount = '';
-                                      receivedBy = saleRecord.dsrName || 'Counter Staff';
-                                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                                    }"
-                                    class="bg-rose-50 hover:bg-rose-100 text-rose-800 text-[9.5px] px-2 py-0.5 rounded cursor-pointer border border-rose-250 font-medium leading-none"
-                                  >
-                                    Collect
-                                  </button>
-                                  <button
-                                    @click="handleCloseWithDue(saleRecord)"
-                                    class="bg-emerald-50 hover:bg-emerald-100 text-emerald-805 text-[9.5px] px-2 py-0.5 rounded cursor-pointer border border-emerald-250 font-medium whitespace-nowrap leading-none"
-                                  >
-                                    Close with Due
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
+          <!-- Expanded Details -->
+          <div v-if="expandedRepName === repNode.name" class="border-t border-slate-200 p-4 bg-slate-50/50 animate-fadeIn">
+            <div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+              <table class="w-full text-left text-sm font-sans">
+                <thead>
+                  <tr class="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase text-xs">
+                    <th class="py-2 px-3">Customer</th>
+                    <th class="py-2 px-3">Product</th>
+                    <th class="py-2 px-3 text-right">Billed</th>
+                    <th class="py-2 px-3 text-right text-rose-600">Owed</th>
+                    <th class="py-2 px-3 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 text-slate-600">
+                  <tr v-for="saleRecord in pendingCreditSales.filter(s => {
+                    const isDirect = !s.isVehicle && (!s.dsrId || s.dsrId === 'counter');
+                    if (repNode.name === 'Direct Dealer Counter') {
+                      return isDirect || s.dsrName === 'Direct Dealer Counter';
+                    }
+                    return s.dsrName && s.dsrName.toLowerCase().trim() === repNode.name.toLowerCase().trim();
+                  })" :key="saleRecord.id" class="hover:bg-slate-50/50">
+                    <td class="py-2.5 px-3">
+                      <div class="font-semibold text-slate-800">{{ saleRecord.customerName }}</div>
+                      <div class="text-xs text-slate-400 mt-0.5">{{ saleRecord.customerPhone || 'N/A' }}</div>
+                    </td>
+                    <td class="py-2.5 px-3">{{ saleRecord.productName }} (×{{ saleRecord.quantity }})</td>
+                    <td class="py-2.5 px-3 text-right font-mono text-slate-600">{{ formatCurrency(saleRecord.totalAmount) }}</td>
+                    <td class="py-2.5 px-3 text-right font-bold font-mono text-rose-600">{{ formatCurrency(saleRecord.balanceDue || (saleRecord.totalAmount - saleRecord.amountPaid)) }}</td>
+                    <td class="py-2.5 px-3 text-center">
+                      <div class="flex gap-1.5 justify-center">
+                        <button @click="() => { selectedSale = saleRecord; amount = ''; receivedBy = saleRecord.dsrName || 'Counter Staff'; scrollToTop(); }" class="bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-rose-200 font-semibold">Collect</button>
+                        <button @click="handleCloseWithDue(saleRecord)" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-emerald-200 font-semibold">Write Off</button>
                       </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-
-              <tr v-if="currentReps.length === 0">
-                <td colSpan="6" class="text-center py-10 bg-white font-sans">
-                  <CheckCircle class="h-7 w-7 text-emerald-500 mx-auto mb-2 animate-pulse" />
-                  <p class="font-display font-semibold text-slate-755 text-xs">No active collections responsibility under representatives!</p>
-                  <p class="text-[11px] text-slate-400 font-sans">All outstanding representative collections are cleared.</p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
-        <!-- pagination footer for reps -->
-        <div v-if="repsTotalPages > 1" class="bg-slate-50 border-t border-slate-200 px-4 py-2.5 flex items-center justify-between sm:px-6 font-sans">
-          <p class="text-xs text-slate-500">
-            Showing <span class="font-semibold">{{ repsFirst + 1 }}</span> to{' '}
-            <span class="font-semibold">
-              {{ Math.min(repsFirst + itemsPerPage, pendingReps.length) }}
-            </span>{' '}
-            of <span class="font-semibold">{{ pendingReps.length }}</span> representative accounts
-          </p>
+        <!-- Empty State -->
+        <div v-if="currentReps.length === 0" class="col-span-full text-center py-12 bg-white rounded-xl border border-slate-200">
+          <CheckCircle class="h-10 w-10 text-emerald-400 mx-auto mb-3" />
+          <p class="font-semibold text-slate-600 text-sm">All clear!</p>
+          <p class="text-sm text-slate-400 mt-1">No outstanding rep collections</p>
+        </div>
+      </div>
 
-          <div class="flex space-x-1">
-            <button
-              @click="repsPage = Math.max(repsPage - 1, 1)"
-              :disabled="repsPage === 1"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-            >
-              Prev
-            </button>
-            <button
-              v-for="no in repsTotalPages"
-              :key="no"
-              @click="repsPage = no"
-              :class="['px-2.5 py-1 text-xs border rounded cursor-pointer font-bold',
-                repsPage === no
-                  ? 'bg-blue-650 border-blue-650 text-white font-black'
-                  : 'bg-white border-slate-300 text-slate-650 hover:bg-slate-150'
-              ]"
-            >
-              {{ no }}
-            </button>
-            <button
-              @click="repsPage = Math.min(repsPage + 1, repsTotalPages)"
-              :disabled="repsPage === repsTotalPages"
-              class="px-2.5 py-1 text-xs border border-slate-300 rounded bg-white font-medium hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-            >
-              Next
-            </button>
-          </div>
+      <!-- Pagination -->
+      <div v-if="repsTotalPages > 1" class="bg-white border border-slate-200 rounded-xl px-6 py-3 flex items-center justify-between shadow-sm font-sans">
+        <p class="text-sm text-slate-500">
+          Showing <span class="font-semibold">{{ repsFirst + 1 }}</span> –
+          <span class="font-semibold">{{ Math.min(repsFirst + itemsPerPage, repGroups.length) }}</span> of
+          <span class="font-semibold">{{ repGroups.length }}</span> reps
+        </p>
+        <div class="flex gap-1">
+          <button @click="repsPage = Math.max(repsPage - 1, 1)" :disabled="repsPage === 1" class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition">Prev</button>
+          <button v-for="no in repsTotalPages" :key="no" @click="repsPage = no" :class="['px-3 py-1.5 text-sm border rounded-lg cursor-pointer font-semibold transition', repsPage === no ? 'bg-rose-600 border-rose-600 text-white' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100']">{{ no }}</button>
+          <button @click="repsPage = Math.min(repsPage + 1, repsTotalPages)" :disabled="repsPage === repsTotalPages" class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white font-medium hover:bg-slate-100 disabled:opacity-40 cursor-pointer transition">Next</button>
         </div>
       </div>
     </div>
 
-    <!-- WRITEOFF CONFIRMATION POPUP MODAL -->
-    <div v-if="closingInvoiceSale !== null" class="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn h-full w-full">
-      <div class="bg-white rounded-lg max-w-md w-full border border-slate-200 shadow-xl overflow-hidden animate-slideUp">
-        <div class="bg-amber-50 px-4 py-3 border-b border-amber-200 flex items-center space-x-2">
-          <span class="text-amber-700 font-bold text-lg leading-none">⚠️</span>
-          <h3 class="font-display font-black text-amber-900 text-xs md:text-sm uppercase tracking-wider">
-            Confirm Write-Off / Close Invoice
+    <!-- WRITE-OFF CONFIRMATION MODAL -->
+    <div v-if="closingInvoiceSale !== null" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn">
+      <div class="bg-white rounded-xl max-w-md w-full border border-slate-200 shadow-xl overflow-hidden animate-slideUp">
+        <div class="bg-amber-50 px-5 py-4 border-b border-amber-200 flex items-center gap-3">
+          <span class="text-amber-600 text-lg">⚠️</span>
+          <h3 class="font-bold text-amber-900 text-sm uppercase tracking-wider">
+            Confirm Write-Off
           </h3>
         </div>
         
-        <div class="p-4 space-y-3.5 font-sans text-left">
-          <p class="text-xs text-slate-600 leading-relaxed">
-            Are you sure you want to write-off and close the outlet invoice for customer <span class="font-bold text-slate-900">"{{ closingInvoiceSale.customerName }}"</span>? This operation is irreversible and removes the entry from pending collection sheets.
+        <div class="p-5 space-y-4 font-sans text-left">
+          <p class="text-sm text-slate-600 leading-relaxed">
+            Are you sure you want to write off the invoice for <span class="font-bold text-slate-900">"{{ closingInvoiceSale.customerName }}"</span>? This cannot be undone.
           </p>
           
-          <div class="bg-slate-50 p-3 rounded border border-slate-200 space-y-1.5 text-xs font-semibold">
-            <p class="text-slate-500">Invoice ID: <span class="font-mono text-slate-850 font-bold">{{ closingInvoiceSale.id }}</span></p>
-            <p class="text-slate-500">Product Item: <span class="text-slate-850 font-bold">{{ closingInvoiceSale.productName }} (Qty: {{ closingInvoiceSale.quantity }})</span></p>
-            <p class="text-slate-500">Total Invoice Valuation: <span class="text-slate-850 font-bold font-mono">{{ formatCurrency(closingInvoiceSale.totalAmount) }}</span></p>
-            <p class="text-slate-500 flex justify-between pt-1 border-t border-slate-200 font-bold text-rose-650 text-xs">
-              <span>UNCOLLECTED BALANCE LOSS:</span>
-              <span class="font-mono">{{ formatCurrency(closingInvoiceSale.totalAmount - closingInvoiceSale.amountPaid) }}</span>
+          <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2 text-sm font-medium">
+            <p class="text-slate-500">Invoice: <span class="font-mono text-slate-800 font-bold">{{ closingInvoiceSale.id }}</span></p>
+            <p class="text-slate-500">Product: <span class="text-slate-800 font-bold">{{ closingInvoiceSale.productName }} (×{{ closingInvoiceSale.quantity }})</span></p>
+            <p class="text-slate-500">Total: <span class="text-slate-800 font-bold font-mono">{{ formatCurrency(closingInvoiceSale.totalAmount) }}</span></p>
+            <p class="flex justify-between pt-2 border-t border-slate-200 font-bold text-rose-600 text-sm">
+              <span>UNCOLLECTED LOSS:</span>
+              <span class="font-mono">{{ formatCurrency(closingInvoiceSale.balanceDue || (closingInvoiceSale.totalAmount - closingInvoiceSale.amountPaid)) }}</span>
             </p>
           </div>
 
-          <p class="text-[10px] text-amber-800 font-medium">
-            * Note: The remaining uncollected balance will be written off/removed from ledger with no cash collected.
+          <p class="text-xs text-amber-700 font-medium">
+            The remaining balance will be written off with no cash collected.
           </p>
 
-          <p v-if="errorClosing" class="p-2 bg-rose-50 border border-rose-100 rounded text-rose-800 text-[11px] font-bold">
-            ⚠️ {{ errorClosing }}
+          <p v-if="errorClosing" class="p-3 bg-rose-50 border border-rose-100 rounded-lg text-rose-700 text-sm font-semibold">
+            {{ errorClosing }}
           </p>
         </div>
 
-        <div class="bg-slate-50 px-4 py-3 border-t border-slate-100 flex justify-end space-x-2">
+        <div class="bg-slate-50 px-5 py-3 border-t border-slate-100 flex justify-end gap-3">
           <button 
             type="button" 
             @click="closingInvoiceSale = null"
-            class="px-3.5 py-1.5 bg-white border border-slate-250 rounded text-xs font-bold hover:bg-slate-100 text-slate-705 cursor-pointer"
+            class="py-2.5 px-4 bg-white border border-slate-300 rounded-lg text-sm font-semibold hover:bg-slate-100 text-slate-700 cursor-pointer transition"
           >
             Cancel
           </button>
@@ -1019,13 +1053,107 @@ const totalOutstandingSum = computed(() => {
             type="button" 
             @click="handleConfirmClose"
             :disabled="isClosingSubmitting"
-            class="px-4 py-1.5 bg-amber-600 hover:bg-amber-705 text-white rounded text-xs font-display font-black cursor-pointer shadow-xs disabled:opacity-50 flex items-center justify-center"
+            class="py-2.5 px-5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-bold cursor-pointer shadow-sm disabled:opacity-50 transition"
           >
-            <span v-if="isClosingSubmitting">Writing off dues...</span>
-            <span v-else>Yes, Close & Write-Off</span>
+            {{ isClosingSubmitting ? 'Processing...' : 'Yes, Write Off' }}
           </button>
         </div>
       </div>
     </div>
+    </div><!-- /dashboard-middle -->
+
+    <!-- CHARTS SIDEBAR -->
+    <aside class="dashboard-charts">
+      <ChartCard title="Vehicle Collections" subtitle="Outstanding vs Collected by vehicle">
+        <div style="height: 240px">
+          <BaseChart 
+            v-if="vehicleGroups.length > 0"
+            chartType="bar" 
+            :chartData="vehicleOutstandingData" 
+            :chartOptions="vehicleOutstandingOptions" 
+          />
+          <div v-else class="flex flex-col items-center justify-center h-full text-slate-400 space-y-2">
+            <CheckCircle class="h-8 w-8" />
+            <span class="text-sm">No vehicle outstanding</span>
+          </div>
+        </div>
+      </ChartCard>
+      <ChartCard title="Collection Status" subtitle="Invoice payment status breakdown">
+        <div style="height: 240px">
+          <BaseChart 
+            v-if="(sales || []).some(s => s.paymentType === 'Credit')"
+            chartType="doughnut" 
+            :chartData="collectionStatusData" 
+            :chartOptions="collectionStatusOptions" 
+          />
+          <div v-else class="flex flex-col items-center justify-center h-full text-slate-400 space-y-2">
+            <Coins class="h-8 w-8" />
+            <span class="text-sm">No credit sales yet</span>
+          </div>
+        </div>
+      </ChartCard>
+    </aside>
   </div>
 </template>
+
+<style scoped>
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 100%;
+}
+
+@media (min-width: 1280px) {
+  .dashboard-layout {
+    flex-direction: row;
+    gap: 24px;
+  }
+}
+
+.dashboard-middle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+@media (min-width: 1280px) {
+  .dashboard-charts {
+    width: 380px;
+    min-width: 380px;
+    max-height: calc(100vh - var(--dc-header-h, 88px) - var(--dc-footer-h, 36px) - 48px);
+    overflow-y: auto;
+    position: sticky;
+    top: 24px;
+    align-self: flex-start;
+  }
+
+  .dashboard-charts::-webkit-scrollbar {
+    width: 4px;
+  }
+  .dashboard-charts::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .dashboard-charts::-webkit-scrollbar-thumb {
+    background: #e2e8f0;
+    border-radius: 999px;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeIn {
+  animation: fadeIn 0.5s ease-out;
+}
+</style>

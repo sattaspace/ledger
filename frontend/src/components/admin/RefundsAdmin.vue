@@ -14,7 +14,7 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 // API-3 FIX: Use useAuth() instead of separate getCurrentUser() call.
 // Previously this called getCurrentUser() which hit /users/me separately,
 // wasting 1 API call per refunds page. Now we reuse useAuth() shared state.
@@ -162,7 +162,8 @@ async function fetchRefunds() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
 
   // API-3 FIX: Use useAuth() shared state for admin user ID instead of
   // separate getCurrentUser() call. The user data is already fetched by

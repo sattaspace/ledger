@@ -562,7 +562,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
 import type { ApiKeyItem, ApiKeyCreateResponse, ApiKeyRotateResponse, ServiceDomainOption } from "@/lib/admin";
@@ -615,7 +615,8 @@ const statusOptions = [
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await Promise.all([fetchKeys(), fetchDomains()]);
 });
 

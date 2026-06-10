@@ -10,7 +10,7 @@
  */
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { authHelpers } from "@/lib/api";
 import { useSubscription, useProducts } from "@/composables";
 import { showToast } from "@/lib/toast";
@@ -147,7 +147,8 @@ function isTrialCancel(sub: SubscriptionOutputSchema): boolean {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
 
   // Handle Stripe checkout redirect feedback
   const params = new URLSearchParams(window.location.search);

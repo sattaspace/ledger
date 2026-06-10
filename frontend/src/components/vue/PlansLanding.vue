@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Plans landing page — shows all products/domains with their plans
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { useSubscription, useProducts } from "@/composables";
 import {
   formatPrice,
@@ -57,7 +57,8 @@ function getProductDetail(slug: string): ProductDetailSchema | undefined {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
 
   try {
     // Currency is already set by useAuth or Navbar — no separate API call needed.

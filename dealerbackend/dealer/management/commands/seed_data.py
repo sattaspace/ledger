@@ -23,7 +23,7 @@ from django.utils.timezone import make_aware, get_current_timezone
 TZ = get_current_timezone()
 
 from supplier.models import Supplier
-from inventory.models import Product, RestockRecord
+from inventory.models import Product, RestockRecord, Brand, Category
 from dsr.models import DSR
 from dealer.models import DealerConfig
 from sales.models import SaleRecord, CreditPayment
@@ -32,6 +32,20 @@ from sales.models import SaleRecord, CreditPayment
 # ═══════════════════════════════════════════════════════
 #  SEED DATA — exact replica of frontend mock layer
 # ═══════════════════════════════════════════════════════
+
+BRANDS = [
+    {"id": "brand-1", "name": "Michelin"},
+    {"id": "brand-2", "name": "Castrol"},
+    {"id": "brand-3", "name": "Bosch"},
+    {"id": "brand-4", "name": "Exide"},
+]
+
+CATEGORIES = [
+    {"id": "cat-1", "name": "Tyres"},
+    {"id": "cat-2", "name": "Fluids"},
+    {"id": "cat-3", "name": "Parts"},
+    {"id": "cat-4", "name": "Batteries"},
+]
 
 SUPPLIERS = [
     {"id": "sup-1", "name": "Michelin Distributors", "phone": "9899001122", "category": "Tyres"},
@@ -47,7 +61,7 @@ PRODUCTS = [
         "sku": "MCH-PRM4-225/65R17",
         "brand": "Michelin",
         "category": "Tyres",
-        "stock": 18,
+        "stock": 0,  # Stock is computed dynamically: 0 + restocked - sold
         "min_stock_alert": 5,
         "unit_price": Decimal("120"),
         "selling_price": Decimal("185"),
@@ -59,7 +73,7 @@ PRODUCTS = [
         "sku": "CST-EDGE-5W40-4L",
         "brand": "Castrol",
         "category": "Fluids",
-        "stock": 8,
+        "stock": 0,  # Stock is computed dynamically: 0 + restocked - sold
         "min_stock_alert": 3,
         "unit_price": Decimal("25"),
         "selling_price": Decimal("45"),
@@ -71,7 +85,7 @@ PRODUCTS = [
         "sku": "BSC-S4-0242229505",
         "brand": "Bosch",
         "category": "Parts",
-        "stock": 35,
+        "stock": 0,  # Stock is computed dynamically: 0 + restocked - sold
         "min_stock_alert": 10,
         "unit_price": Decimal("8"),
         "selling_price": Decimal("15"),
@@ -83,7 +97,7 @@ PRODUCTS = [
         "sku": "EXD-MTX-55B24R",
         "brand": "Exide",
         "category": "Batteries",
-        "stock": 3,
+        "stock": 0,  # Stock is computed dynamically: 0 + restocked - sold
         "min_stock_alert": 2,
         "unit_price": Decimal("55"),
         "selling_price": Decimal("95"),
@@ -95,7 +109,7 @@ PRODUCTS = [
         "sku": "BSC-BLP-0986TB3491",
         "brand": "Bosch",
         "category": "Parts",
-        "stock": 12,
+        "stock": 0,  # Stock is computed dynamically: 0 + restocked - sold
         "min_stock_alert": 5,
         "unit_price": Decimal("12"),
         "selling_price": Decimal("22"),
@@ -124,6 +138,39 @@ RESTOCKS = [
         "cost_price": Decimal("25"),
         "total_cost": Decimal("250"),
         "date": make_aware(datetime(2026, 5, 12, 14, 30, 0), TZ),
+        "received_by": "Rajesh Kumar (DSR)",
+    },
+    {
+        "id": "restock-3",
+        "product_id": "prod-3",
+        "product_name": "Bosch Super 4 Spark Plug",
+        "quantity": 35,
+        "supplier_name": "Bosch Parts Direct",
+        "cost_price": Decimal("8"),
+        "total_cost": Decimal("280"),
+        "date": make_aware(datetime(2026, 5, 8, 9, 0, 0), TZ),
+        "received_by": "Sanjay Sharma (Manager)",
+    },
+    {
+        "id": "restock-4",
+        "product_id": "prod-4",
+        "product_name": "Exide Matrix 12V Car Battery",
+        "quantity": 3,
+        "supplier_name": "Exide Industries",
+        "cost_price": Decimal("55"),
+        "total_cost": Decimal("165"),
+        "date": make_aware(datetime(2026, 5, 9, 11, 0, 0), TZ),
+        "received_by": "Sanjay Sharma (Manager)",
+    },
+    {
+        "id": "restock-5",
+        "product_id": "prod-5",
+        "product_name": "Bosch Blue Line Brake Pads Front",
+        "quantity": 16,
+        "supplier_name": "Bosch Parts Direct",
+        "cost_price": Decimal("12"),
+        "total_cost": Decimal("192"),
+        "date": make_aware(datetime(2026, 5, 11, 13, 0, 0), TZ),
         "received_by": "Rajesh Kumar (DSR)",
     },
 ]
@@ -168,6 +215,13 @@ DEALERS = [
         "username": "sanjay",
         "full_name": "Sanjay Sharma",
         "role": "Senior Dealer Admin & manager",
+        "business_name": "Sri Balaji Enterprises",
+        "address": "Plot No. 45, Sector 12, Industrial Area, Ahmedabad, Gujarat 380015",
+        "phone_number": "9876543210",
+        "email": "info@sribalajienterprises.com",
+        "gst_number": "24AABCS1429B1Z5",
+        "google_map_url": "https://maps.google.com/?q=23.0225,72.5714",
+        "communication_number": "9876543210",
         "default_currency": "INR",
         "default_locale": "en-IN",
     },
@@ -293,6 +347,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.HTTP_NOT_FOUND("Seeding DEALERCORE v3.0...\n"))
 
         with transaction.atomic():
+            self._seed_brands(verbose)
+            self._seed_categories(verbose)
             self._seed_suppliers(verbose)
             self._seed_products(verbose)
             self._seed_restocks(verbose)
@@ -302,7 +358,8 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("\nDone. Database seeded successfully."))
         self.stdout.write(self.style.SUCCESS(
-            "  4 suppliers, 5 products, 2 restocks, 4 DSRs, 4 dealers, 3 sales"
+            "  4 brands, 4 categories, 4 suppliers, 5 products, 5 restocks, "
+            "4 DSRs, 4 dealers, 3 sales"
         ))
 
     # ─── Flush ──────────────────────────────────────────
@@ -313,11 +370,43 @@ class Command(BaseCommand):
         SaleRecord.objects.all().delete()
         RestockRecord.objects.all().delete()
         Product.objects.all().delete()
+        Category.objects.all().delete()
+        Brand.objects.all().delete()
         DSR.objects.all().delete()
         DealerConfig.objects.all().delete()
         Supplier.objects.all().delete()
 
     # ─── Seeders (order matters for FK constraints) ────
+
+    def _seed_brands(self, verbose):
+        count = 0
+        for b in BRANDS:
+            obj, created = Brand.objects.get_or_create(
+                id=b["id"],
+                defaults=b,
+            )
+            if created:
+                count += 1
+                if verbose:
+                    self.stdout.write(f"  + Brand: {obj.name}")
+        self.stdout.write(
+            self.style.SUCCESS(f"  Brands:    {count} created")
+        )
+
+    def _seed_categories(self, verbose):
+        count = 0
+        for c in CATEGORIES:
+            obj, created = Category.objects.get_or_create(
+                id=c["id"],
+                defaults=c,
+            )
+            if created:
+                count += 1
+                if verbose:
+                    self.stdout.write(f"  + Category: {obj.name}")
+        self.stdout.write(
+            self.style.SUCCESS(f"  Categories: {count} created")
+        )
 
     def _seed_suppliers(self, verbose):
         count = 0
@@ -361,10 +450,14 @@ class Command(BaseCommand):
                 },
             )
             if created:
+                # Increase product stock to keep stock consistent: stock += restock_quantity
+                product.stock = product.stock + r["quantity"]
+                product.save(update_fields=["stock", "updated_at"])
                 count += 1
                 if verbose:
                     self.stdout.write(
-                        f"  + Restock: {obj.product_name} x{obj.quantity}"
+                        f"  + Restock: {obj.product_name} x{obj.quantity} "
+                        f"(stock now: {product.stock})"
                     )
         self.stdout.write(
             self.style.SUCCESS(f"  Restocks:  {count} created")
@@ -441,6 +534,15 @@ class Command(BaseCommand):
                 },
             )
             if created:
+                # Decrease product stock to keep stock consistent: stock -= sale_quantity
+                # Safety check: skip stock decrement if it would go negative
+                # (shouldn't happen with correct seed data, but prevents IntegrityError)
+                if product.stock >= s["quantity"]:
+                    product.stock = product.stock - s["quantity"]
+                else:
+                    product.stock = 0
+                product.save(update_fields=["stock", "updated_at"])
+
                 # Seed embedded payments
                 for p in s["payments"]:
                     CreditPayment.objects.create(
@@ -454,7 +556,8 @@ class Command(BaseCommand):
                 if verbose:
                     self.stdout.write(
                         f"  + Sale: {obj.customer_name} — {obj.product_name} "
-                        f"x{obj.quantity} ({obj.payment_type})"
+                        f"x{obj.quantity} ({obj.payment_type}) "
+                        f"(stock now: {product.stock})"
                     )
         self.stdout.write(
             self.style.SUCCESS(f"  Sales:     {count} created")

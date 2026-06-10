@@ -12,10 +12,10 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from supplier.models import Supplier
-from inventory.models import Product, RestockRecord
+from inventory.models import Product, RestockRecord, Brand, Category
 from dsr.models import DSR
 from dealer.models import DealerConfig
-from sales.models import SaleRecord, CreditPayment
+from sales.models import SaleRecord, CreditPayment, SaleReturn
 
 
 class Command(BaseCommand):
@@ -41,18 +41,24 @@ class Command(BaseCommand):
         with transaction.atomic():
             counts = {
                 "Credit Payments": CreditPayment.objects.count(),
+                "Sale Returns": SaleReturn.objects.count(),
                 "Sales": SaleRecord.objects.count(),
                 "Restocks": RestockRecord.objects.count(),
                 "Products": Product.objects.count(),
+                "Categories": Category.objects.count(),
+                "Brands": Brand.objects.count(),
                 "DSRs": DSR.objects.count(),
                 "Dealers": DealerConfig.objects.count(),
                 "Suppliers": Supplier.objects.count(),
             }
 
             CreditPayment.objects.all().delete()
+            SaleReturn.objects.all().delete()
             SaleRecord.objects.all().delete()
             RestockRecord.objects.all().delete()
             Product.objects.all().delete()
+            Category.objects.all().delete()
+            Brand.objects.all().delete()
             DSR.objects.all().delete()
             DealerConfig.objects.all().delete()
             Supplier.objects.all().delete()

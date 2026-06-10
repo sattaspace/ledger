@@ -1,12 +1,16 @@
 /**
- * Reports Service — Summary Stats & AI Reconciliation
+ * Reports Service — Summary Stats, Due Reports & AI Reconciliation
  *
  * Endpoints mapped:
  * GET  /api/reports/summary              → getSummary()
- * POST /api/reports/ai-reconciliation   → getAiReconciliation()
+ * GET  /api/reports/customer-due         → getCustomerDue()
+ * GET  /api/reports/vehicle-due          → getVehicleDue()
+ * GET  /api/reports/dsr-due              → getDsrDue()
+ * POST /api/reports/ai-reconciliation    → getAiReconciliation()
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
+import type { DueReport } from "../../types";
 
 // ─── Response Types ────────────────────────────────────────────────────────────
 
@@ -15,7 +19,10 @@ export interface SummaryData {
   cogs: number;
   grossProfit: number;
   creditPending: number;
+  creditPendingCount: number;
   creditCollected: number;
+  writtenOffAmount: number; // Revenue lost to bad debt (written-off sales)
+  writtenOffOutstanding: number; // Uncollected portion of written-off
   lowStockCount: number;
   lowStockItems: Array<{
     id: string;
@@ -42,6 +49,17 @@ export interface SummaryData {
   }>;
   totalSalesCount: number;
   totalProductsCount: number;
+  dealer?: {
+    businessName: string;
+    address: string;
+    phoneNumber: string;
+    email: string;
+    gstNumber: string;
+    googleMapUrl: string;
+    communicationNumber: string;
+    defaultCurrency: string;
+    defaultLocale: string;
+  } | null;
 }
 
 export interface AiReconciliationResponse {
@@ -52,8 +70,39 @@ export interface AiReconciliationResponse {
 
 export class ReportsService {
   /** GET /api/reports/summary — Fetch computed summary statistics */
-  async getSummary(): Promise<ApiResponse<SummaryData>> {
-    return apiClient.get<SummaryData>("/api/reports/summary");
+  async getSummary(dealerUsername?: string): Promise<ApiResponse<SummaryData>> {
+    const endpoint = dealerUsername
+      ? `/api/reports/summary?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/api/reports/summary";
+    return apiClient.get<SummaryData>(endpoint);
+  }
+
+  /** GET /api/reports/customer-due — Customer-wise due report (for print) */
+  async getCustomerDue(
+    dealerUsername?: string,
+  ): Promise<ApiResponse<DueReport>> {
+    const endpoint = dealerUsername
+      ? `/api/reports/customer-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/api/reports/customer-due";
+    return apiClient.get<DueReport>(endpoint);
+  }
+
+  /** GET /api/reports/vehicle-due — Vehicle-wise due report (for print) */
+  async getVehicleDue(
+    dealerUsername?: string,
+  ): Promise<ApiResponse<DueReport>> {
+    const endpoint = dealerUsername
+      ? `/api/reports/vehicle-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/api/reports/vehicle-due";
+    return apiClient.get<DueReport>(endpoint);
+  }
+
+  /** GET /api/reports/dsr-due — DSR/Collector-wise due report (for print) */
+  async getDsrDue(dealerUsername?: string): Promise<ApiResponse<DueReport>> {
+    const endpoint = dealerUsername
+      ? `/api/reports/dsr-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/api/reports/dsr-due";
+    return apiClient.get<DueReport>(endpoint);
   }
 
   /** POST /api/reports/ai-reconciliation — Trigger AI reconciliation analysis */

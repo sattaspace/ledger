@@ -1,35 +1,44 @@
 """
 DEALERCORE v3.0 — Main API Configuration
 -------------------------------------------
-Central NinjaAPI instance that registers all app routers.
+Central NinjaExtraAPI instance that registers all class-based controllers.
+
+Uses django-ninja-extra for:
+  - Class-based API controllers (@api_controller)
+  - ModelSchema auto-generation from Django models
 
 Mount this in dealercore/urls.py via Django's standard URL routing.
 """
 
-from ninja import NinjaAPI
+from ninja_extra import NinjaExtraAPI
 
-api = NinjaAPI(
+api = NinjaExtraAPI(
     title="DEALERCORE v3.0 API",
     version="3.0.0",
     description=(
-        "Async Django Ninja backend for DEALERCORE — "
+        "Async Django Ninja Extra backend for DEALERCORE — "
         "a dealer management system with inventory, sales, DSR, "
-        "supplier, dealer configuration, and reports modules."
+        "supplier, dealer configuration, and reports modules. "
+        "Uses class-based controllers and ModelSchema."
     ),
 )
 
-# ─── Register App Routers ─────────────────────────────
+# ─── Register Class-Based Controllers ───────────────
+# ninja-extra auto-discovers controllers decorated with @api_controller.
+# Alternatively, import and register explicitly:
 
-from inventory.api import router as inventory_router
-from sales.api import router as sales_router
-from dsr.api import router as dsr_router
-from supplier.api import router as supplier_router
-from dealer.api import router as dealer_router
-from reports.api import router as reports_router
+from inventory.api import InventoryController
+from sales.api import SalesController
+from dsr.api import DSRController
+from supplier.api import SupplierController
+from dealer.api import DealerController
+from reports.api import ReportsController
 
-api.add_router("/inventory", inventory_router)
-api.add_router("/sales", sales_router)
-api.add_router("/dsrs", dsr_router)
-api.add_router("/suppliers", supplier_router)
-api.add_router("/dealers", dealer_router)
-api.add_router("/reports", reports_router)
+api.register_controllers(
+    InventoryController,
+    SalesController,
+    DSRController,
+    SupplierController,
+    DealerController,
+    ReportsController,
+)

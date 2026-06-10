@@ -15,7 +15,7 @@
  */
 
 import { ref, computed, onMounted, watch } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { useSubscription } from "@/composables";
 import { showToast } from "@/lib/toast";
 import {
@@ -83,7 +83,8 @@ const failedCount = computed(() =>
 // ── Lifecycle ──
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
 
   try {
     await fetchSubscriptions();

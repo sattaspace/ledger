@@ -1,14 +1,50 @@
 """
 DEALERCORE v3.0 — Inventory App Models
 -----------------------------------------
-Products and Restock records.
+Brands, Categories, Products and Restock records.
 
 Relationships:
+  Brand (standalone registry)
+  Category (standalone registry)
   Product ←── RestockRecord (FK: product)
   Product ←── SaleRecord   (FK: product, defined in sales app)
 """
 
 from django.db import models
+
+
+class Brand(models.Model):
+    """Registry of product brands. Used for autocomplete suggestions
+    in the product form. Product.brand remains a CharField (denormalized)
+    for backward compatibility, but this table tracks known brands."""
+    id = models.CharField(max_length=100, primary_key=True)
+    name = models.CharField(max_length=255, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Brand"
+        verbose_name_plural = "Brands"
+
+    def __str__(self):
+        return self.name
+
+
+class Category(models.Model):
+    """Registry of product categories. Used for dropdown selection
+    in the product form. Product.category remains a CharField (denormalized)
+    for backward compatibility, but this table tracks known categories."""
+    id = models.CharField(max_length=100, primary_key=True)
+    name = models.CharField(max_length=255, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Category"
+        verbose_name_plural = "Categories"
+
+    def __str__(self):
+        return self.name
 
 
 class Product(models.Model):
@@ -31,6 +67,14 @@ class Product(models.Model):
         ordering = ["name"]
         verbose_name = "Product"
         verbose_name_plural = "Products"
+        indexes = [
+            # For low stock queries
+            models.Index(fields=["stock", "min_stock_alert"]),
+            # For filtering by brand/category
+            models.Index(fields=["brand", "category"]),
+            # For SKU lookups (unique but indexed for faster joins)
+            models.Index(fields=["sku"]),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.sku})"
@@ -60,6 +104,12 @@ class RestockRecord(models.Model):
         ordering = ["-date"]
         verbose_name = "Restock Record"
         verbose_name_plural = "Restock Records"
+        indexes = [
+            # For product restock history
+            models.Index(fields=["product", "-date"]),
+            # For supplier performance
+            models.Index(fields=["supplier_name", "-date"]),
+        ]
 
     def __str__(self):
         return f"Restock {self.product_name} × {self.quantity}"

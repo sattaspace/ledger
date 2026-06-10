@@ -355,6 +355,7 @@ export interface PlanChangeItem {
 
 export interface InvoiceItem {
   id: number;
+  invoice_type: "stripe" | "credit";
   stripe_invoice_id: string;
   subscription_id: number;
   number: string;
@@ -371,6 +372,34 @@ export interface InvoiceItem {
   stripe_fee_cents: number;
   attempt_count: number;
   created_at: string | null;
+}
+
+export interface CreditPoolItem {
+  id: number;
+  user_id: number;
+  product_id: number;
+  product_name: string;
+  plan_id: number;
+  plan_name: string;
+  amount_cents: number;
+  currency: string;
+  credit_periods: number;
+  periods_consumed: number;
+  periods_remaining: number;
+  source: string;
+  payment_reference: string;
+  status: string;
+  activated_at: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  expires_at: string | null;
+  expiry_type: "hard" | "soft";
+  commitment_end: string | null;
+  is_effectively_active: boolean;
+  created_by_id: number | null;
+  created_by_email: string | null;
+  created_at: string | null;
+  detail_url: string;
 }
 
 // ─── User Types ─────────────────────────────────────────────────────────────
@@ -909,6 +938,16 @@ export const adminApi = {
   ): Promise<InvoiceItem[]> {
     const data = await apiClient.get<PaginatedResponse<InvoiceItem>>(
       `/admin/subscriptions/${subscriptionId}/invoices`,
+      { params: { page: 1, page_size: 100 } },
+    );
+    return data.results ?? [];
+  },
+
+  async getSubscriptionCreditPools(
+    subscriptionId: number,
+  ): Promise<CreditPoolItem[]> {
+    const data = await apiClient.get<PaginatedResponse<CreditPoolItem>>(
+      `/admin/subscriptions/${subscriptionId}/credit-pools`,
       { params: { page: 1, page_size: 100 } },
     );
     return data.results ?? [];

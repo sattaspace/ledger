@@ -9,7 +9,7 @@ import {
   confirmEmailChangeOTP,
   deleteAccount,
   logout,
-  requireAuth,
+  requireAuthAsync,
   confirmIdentity,
   getErrorMessage,
 } from "@/lib/auth";
@@ -19,8 +19,9 @@ import { showToast } from "@/lib/toast";
 import { useCooldownTimer, useOtpInput } from "@/composables";
 
 // ==================== Auth Guard ====================
-onMounted(() => {
-  requireAuth();
+onMounted(async () => {
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  await requireAuthAsync();
 });
 
 // ==================== Change Password ====================

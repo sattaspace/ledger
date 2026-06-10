@@ -35,7 +35,7 @@
 
 import { ref, computed, watch, onUnmounted } from "vue";
 import { billingApi, setUserCurrency } from "@/lib/billing";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { authHelpers, onAuthEvent, getSessionInfo } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import type { UserProfile } from "@/lib/auth";
@@ -386,7 +386,8 @@ export function useAuth() {
     // FIRST-CLICK FIX: Update the hasToken flag based on current state
     sharedHasToken.value = authHelpers.isAuthenticated();
 
-    if (!requireAuth()) return false;
+    // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+    if (!(await requireAuthAsync())) return false;
     await fetchUser();
     return !!sharedUser.value;
   }

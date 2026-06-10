@@ -21,6 +21,7 @@ import {
   formatDate,
 } from "@/lib/billing";
 import { creditsApi } from "@/lib/credits";
+import type { ExpiringCreditPool } from "@/lib/credits";
 import { showToast } from "@/lib/toast";
 import type { SubscriptionOutputSchema, TransactionItemSchema } from "@/lib/billing";
 
@@ -28,6 +29,71 @@ const { user, loading, initAuth } = useAuth();
 const { subscriptions: subs, fetchSubscriptions, refetchSubscriptions } = useSubscription();
 const transactions = ref<TransactionItemSchema[]>([]);
 const portalLoading = ref(false);
+
+// ── Credit Expiry Warning (Enhancement 3) ──
+const expiringCredits = ref<ExpiringCreditPool[]>([]);
+const expiryBannerDismissed = ref(false);
+const expiryBannerLoading = ref(false);
+
+const showExpiryBanner = computed(() =>
+  expiringCredits.value.length > 0 && !expiryBannerDismissed.value
+);
+
+const mostUrgentExpiry = computed(() => {
+  if (expiringCredits.value.length === 0) return null;
+  return expiringCredits.value.reduce((prev, curr) =>
+    prev.days_until_expiry <= curr.days_until_expiry ? prev : curr
+  );
+});
+
+async function fetchExpiringCredits() {
+  if (!hasPaidSub.value) return;
+  expiryBannerLoading.value = true;
+  try {
+    expiringCredits.value = await creditsApi.getExpiringCredits();
+  } catch {
+    // Non-critical — don't show error
+  } finally {
+    expiryBannerLoading.value = false;
+  }
+}
+
+function getExpiryBannerStyle(urgency: string): { bg: string; border: string; text: string; icon: string } {
+  switch (urgency) {
+    case "urgent":
+    case "grace_period":
+      return {
+        bg: "bg-red-50 dark:bg-red-950",
+        border: "border-red-200 dark:border-red-800",
+        text: "text-red-800 dark:text-red-200",
+        icon: "text-red-600 dark:text-red-400",
+      };
+    case "warning":
+      return {
+        bg: "bg-orange-50 dark:bg-orange-950",
+        border: "border-orange-200 dark:border-orange-800",
+        text: "text-orange-800 dark:text-orange-200",
+        icon: "text-orange-600 dark:text-orange-400",
+      };
+    case "reminder":
+    default:
+      return {
+        bg: "bg-amber-50 dark:bg-amber-950",
+        border: "border-amber-200 dark:border-amber-800",
+        text: "text-amber-800 dark:text-amber-200",
+        icon: "text-amber-600 dark:text-amber-400",
+      };
+  }
+}
+
+function formatExpiryDate(dateStr: string | null): string {
+  if (!dateStr) return "—";
+  return new Date(dateStr).toLocaleDateString(navigator.language, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
 
 // ── Computed ──
 
@@ -127,6 +193,9 @@ onMounted(async () => {
   } catch {
     // Billing may not be configured yet
   }
+
+  // Fetch expiring credits for expiry banner
+  fetchExpiringCredits();
 });
 
 // ── Helpers ──
@@ -276,6 +345,72 @@ async function downloadCreditInvoicePdf(tx: TransactionItemSchema) {
           >
             Verify now
           </a>
+        </div>
+      </div>
+
+      <!-- ── Credit Expiry Warning Banner (Enhancement 3) ── -->
+      <div
+        v-if="showExpiryBanner && mostUrgentExpiry"
+        :class="[
+          getExpiryBannerStyle(mostUrgentExpiry.urgency).bg,
+          getExpiryBannerStyle(mostUrgentExpiry.urgency).border,
+          getExpiryBannerStyle(mostUrgentExpiry.urgency).text,
+        ]"
+        class="mb-6 rounded-lg border px-4 py-3"
+      >
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-start gap-3">
+            <svg
+              :class="getExpiryBannerStyle(mostUrgentExpiry.urgency).icon"
+              class="mt-0.5 h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <div>
+              <p class="text-sm font-medium">
+                <span v-if="mostUrgentExpiry.in_grace_period">URGENT: Your {{ mostUrgentExpiry.product_name }} credit is in grace period!</span>
+                <span v-else-if="mostUrgentExpiry.urgency === 'urgent'">Your {{ mostUrgentExpiry.product_name }} credit expires in {{ mostUrgentExpiry.days_until_expiry }} day(s)!</span>
+                <span v-else>Your {{ mostUrgentExpiry.product_name }} credit expires in {{ mostUrgentExpiry.days_until_expiry }} day(s) on {{ formatExpiryDate(mostUrgentExpiry.commitment_end || mostUrgentExpiry.expires_at || mostUrgentExpiry.current_period_end) }}</span>
+              </p>
+              <!-- ENHANCEMENT-5: Show hard deadline notice when expires_at is set -->
+              <p v-if="mostUrgentExpiry.expires_at" class="text-xs mt-0.5 opacity-80 font-medium">
+                Hard deadline: {{ formatExpiryDate(mostUrgentExpiry.expires_at) }} — access ends regardless of remaining periods.
+              </p>
+              <p class="text-xs mt-0.5 opacity-80">
+                Purchase new credits or subscribe via Stripe to maintain access.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <a
+              href="/dashboard/billing/credits/request"
+              :class="[
+                mostUrgentExpiry.urgency === 'urgent' || mostUrgentExpiry.in_grace_period
+                  ? 'bg-red-600 hover:bg-red-700'
+                  : mostUrgentExpiry.urgency === 'warning'
+                  ? 'bg-orange-600 hover:bg-orange-700'
+                  : 'bg-amber-600 hover:bg-amber-700',
+                'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors',
+              ]"
+            >
+              Purchase Credits
+            </a>
+            <a
+              href="/dashboard/billing"
+              class="inline-flex items-center gap-1.5 rounded-lg bg-white/60 dark:bg-white/10 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/80 dark:hover:bg-white/20"
+            >
+              Subscribe with Stripe
+            </a>
+            <button
+              @click="expiryBannerDismissed = true"
+              class="ml-1 inline-flex items-center justify-center h-6 w-6 rounded-md opacity-60 hover:opacity-100 transition-opacity"
+              title="Dismiss"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 

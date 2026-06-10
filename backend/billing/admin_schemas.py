@@ -469,6 +469,36 @@ class AdminCreditPurchaseSchema(Schema):
         "",
         description="Admin internal notes (not shown to user)",
     )
+    expires_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Hard expiry deadline (ISO 8601). When set, the pool expires on this "
+            "date regardless of remaining periods. Use for promotional credits, "
+            "accounting year-end deadlines, or admin overrides. Leave empty (null) "
+            "for soft expiry — pool expires naturally when all periods are consumed."
+        ),
+    )
+    credit_periods: Optional[int] = Field(
+        None,
+        ge=1,
+        le=36,
+        description=(
+            "Number of billing periods to credit. When provided, overrides the "
+            "default derivation from amount_cents // plan.price_cents. Can be "
+            "set below the normal 3-period minimum for monthly plans when "
+            "override_min_commitment is True (e.g., for promotional credits "
+            "or beta users)."
+        ),
+    )
+    override_min_commitment: bool = Field(
+        False,
+        description=(
+            "When True, allows credit_periods below the normal minimum (3 for "
+            "monthly plans). Only permitted for admin-created credits — used "
+            "for promotional credits, beta users, or enterprise exceptions. "
+            "This action is audit-logged."
+        ),
+    )
 
 
 class AdminCreditRefundSchema(Schema):
@@ -1080,10 +1110,19 @@ class AdminInvoiceLineItemSchema(Schema):
 
 
 class AdminInvoiceListItemSchema(Schema):
-    """Invoice in admin list view."""
+    """Invoice in admin list view.
+
+    Supports both Stripe invoices (invoice_type='stripe') and
+    CreditInvoice records (invoice_type='credit') for offline
+    payments like bank transfers and cash.
+    """
 
     id: int
-    stripe_invoice_id: str
+    invoice_type: str = Field(
+        "stripe",
+        description="Source of the invoice: 'stripe' or 'credit'",
+    )
+    stripe_invoice_id: str = ""
     subscription_id: int
     number: str = ""
     status: str

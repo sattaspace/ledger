@@ -32,7 +32,27 @@ export interface CreditPool {
   current_period_start: string | null;
   current_period_end: string | null;
   expires_at: string | null;
+  commitment_end: string | null; // ENHANCEMENT-4: Natural commitment end date
+  expiry_type: "soft" | "hard"; // ENHANCEMENT-5: "soft" = commitment end, "hard" = admin deadline
   created_at: string | null;
+}
+
+export interface ExpiringCreditPool {
+  id: number;
+  product_name: string;
+  plan_name: string;
+  plan_slug: string;
+  expires_at: string | null;
+  current_period_end: string | null;
+  commitment_end: string | null;
+  effective_end: string | null;
+  expiry_type: "soft" | "hard"; // ENHANCEMENT-5: "soft" = commitment end, "hard" = admin deadline
+  periods_remaining: number;
+  credit_periods: number;
+  days_until_expiry: number;
+  urgency: "reminder" | "warning" | "urgent" | "grace_period" | "expired";
+  in_grace_period: boolean;
+  display_amount: string;
 }
 
 export interface CreditInvoice {
@@ -97,6 +117,7 @@ export interface AdminCreditPurchasePayload {
   payment_reference?: string;
   tax_cents?: number;
   notes?: string;
+  expires_at?: string | null; // ENHANCEMENT-5: Hard expiry deadline for promotional credits
 }
 
 export interface AdminCreditRefundPayload {
@@ -112,6 +133,7 @@ export interface AdminCreditAdjustPayload {
 export interface CreditRequestInputSchema {
   product_slug: string;
   plan_slug: string;
+  credit_periods: number;
   amount_cents: number;
   currency?: string;
   bank_name: string;
@@ -128,8 +150,10 @@ export interface CreditRequest {
   product_name: string;
   plan_name: string;
   plan_slug: string;
+  billing_cycle: string;
   amount_cents: number;
   currency: string;
+  credit_periods: number;
   bank_name: string;
   account_holder_name: string;
   account_number: string;
@@ -152,6 +176,9 @@ export interface Plan {
   slug: string;
   name: string;
   display_price: string;
+  billing_cycle: string;
+  price_cents: number;
+  currency: string;
 }
 
 // ─── User-Facing API Functions ───────────────────────────────────────────────
@@ -171,6 +198,10 @@ export const creditsApi = {
 
   async getMyCreditInvoices(): Promise<CreditInvoice[]> {
     return apiClient.get<CreditInvoice[]>("/billing/credits/invoices");
+  },
+
+  async getExpiringCredits(): Promise<ExpiringCreditPool[]> {
+    return apiClient.get<ExpiringCreditPool[]>("/billing/credits/expiring");
   },
 
   // ── Admin API Functions ────────────────────────────────────────────────────

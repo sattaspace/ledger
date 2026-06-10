@@ -13,7 +13,7 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import {
   adminApi,
@@ -136,7 +136,8 @@ async function fetchAuditLog() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchAuditLog();
 });
 

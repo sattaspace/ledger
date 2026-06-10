@@ -28,9 +28,13 @@ export type {
 } from "./sales.service";
 
 export { dsrService, DsrService } from "./dsr.service";
-export type { CreateDsrPayload } from "./dsr.service";
+export type { CreateDsrPayload, UpdateDsrPayload } from "./dsr.service";
 
 export { supplierService, SupplierService } from "./supplier.service";
+export type {
+  CreateSupplierPayload,
+  UpdateSupplierPayload,
+} from "./supplier.service";
 
 export { dealerService, DealerService } from "./dealer.service";
 export type { UpdateDealerPayload } from "./dealer.service";

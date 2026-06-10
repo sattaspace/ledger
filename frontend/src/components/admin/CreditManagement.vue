@@ -12,7 +12,7 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { creditsApi } from "@/lib/credits";
 import type { CreditPool, CreditTransaction, PaginatedResponse } from "@/lib/credits";
@@ -75,6 +75,7 @@ const createForm = ref({
   payment_reference: "",
   tax_cents: 0,
   notes: "",
+  expires_at: "" as string,  // ENHANCEMENT-5: Hard expiry for promotional credits (ISO 8601 or empty)
 });
 const createLoading = ref(false);
 
@@ -162,7 +163,8 @@ async function fetchCredits() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchCredits();
 });
 
@@ -267,6 +269,7 @@ function openCreateModal() {
     payment_reference: "",
     tax_cents: 0,
     notes: "",
+    expires_at: "",
   };
   showCreateModal.value = true;
 }
@@ -274,7 +277,12 @@ function openCreateModal() {
 async function confirmCreate() {
   createLoading.value = true;
   try {
-    await creditsApi.adminPurchaseCredit(createForm.value);
+    // ENHANCEMENT-5: Build payload, converting empty expires_at to null
+    const payload = { ...createForm.value };
+    if (!payload.expires_at) {
+      payload.expires_at = null as any;
+    }
+    await creditsApi.adminPurchaseCredit(payload);
     showToast("Credit purchase recorded successfully", "success");
     showCreateModal.value = false;
     await fetchCredits();
@@ -580,14 +588,40 @@ function getTransactionActionLabel(action: string): string {
     <AdminConfirmDialog
       v-model:open="showRefundModal"
       title="Refund Credit Pool"
-      :message="'Refund credit pool #' + (refundTarget?.id || '') + '?'"
-      detail="This will mark the pool as refunded and the user will lose remaining periods."
+      message="This will mark the pool as refunded and the user will lose all remaining periods."
       confirm-label="Refund"
       :destructive="true"
       :loading="actionLoading?.startsWith('refund-')"
       @confirm="confirmRefund"
     >
-      <div class="mt-3">
+      <!-- Pool context summary -->
+      <div v-if="refundTarget" class="mt-3 mb-3 rounded-lg bg-muted/50 border border-border p-3 space-y-1.5">
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Credit Pool</span>
+          <span class="font-mono font-medium">#{{ refundTarget.id }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Plan</span>
+          <span class="font-medium">{{ refundTarget.plan_name }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Product</span>
+          <span class="font-medium">{{ refundTarget.product_name }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Amount</span>
+          <span class="font-medium">{{ refundTarget.display_amount }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Periods</span>
+          <span class="font-medium">{{ refundTarget.periods_remaining }} remaining / {{ refundTarget.credit_periods }} total</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Status</span>
+          <span class="font-medium">{{ refundTarget.status }}</span>
+        </div>
+      </div>
+      <div>
         <label class="block text-xs font-medium text-muted-foreground mb-1">Reason *</label>
         <input
           v-model="refundReason"
@@ -605,13 +639,63 @@ function getTransactionActionLabel(action: string): string {
     <AdminConfirmDialog
       v-model:open="showAdjustModal"
       title="Adjust Credit Balance"
-      :message="'Adjust periods for credit pool #' + (adjustTarget?.id || '') + '?'"
-      detail="Add or remove billing periods from this credit pool."
+      message="Add or remove billing periods from this credit pool."
       confirm-label="Adjust"
       :loading="actionLoading?.startsWith('adjust-')"
       @confirm="confirmAdjust"
     >
-      <div class="space-y-3 mt-3">
+      <!-- Pool context summary -->
+      <div v-if="adjustTarget" class="mt-3 mb-3 rounded-lg bg-muted/50 border border-border p-3 space-y-1.5">
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Credit Pool</span>
+          <span class="font-mono font-medium">#{{ adjustTarget.id }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Plan</span>
+          <span class="font-medium">{{ adjustTarget.plan_name }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Product</span>
+          <span class="font-medium">{{ adjustTarget.product_name }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Amount</span>
+          <span class="font-medium">{{ adjustTarget.display_amount }}</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Current Periods</span>
+          <span class="font-medium">{{ adjustTarget.credit_periods }} total ({{ adjustTarget.periods_consumed }} consumed, {{ adjustTarget.periods_remaining }} remaining)</span>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Status</span>
+          <span class="font-medium">{{ adjustTarget.status }}</span>
+        </div>
+        <div v-if="adjustTarget.commitment_end" class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Commitment End</span>
+          <span class="font-medium">{{ new Date(adjustTarget.commitment_end).toLocaleDateString() }}</span>
+        </div>
+        <div v-if="adjustTarget.expires_at" class="flex justify-between text-xs">
+          <span class="text-muted-foreground">Hard Expiry</span>
+          <span class="font-medium">{{ new Date(adjustTarget.expires_at).toLocaleDateString() }}</span>
+        </div>
+      </div>
+
+      <!-- Preview of result -->
+      <div v-if="adjustTarget && adjustPeriods !== 0" class="mb-3 rounded-lg border border-dashed border-border p-2.5 text-xs">
+        <div class="flex justify-between">
+          <span class="text-muted-foreground">Resulting Periods</span>
+          <span class="font-semibold" :class="adjustTarget.credit_periods + adjustPeriods < adjustTarget.periods_consumed ? 'text-red-600' : 'text-foreground'">
+            {{ Math.max(0, adjustTarget.credit_periods + adjustPeriods) }} total
+            ({{ adjustTarget.periods_consumed }} consumed,
+            {{ Math.max(0, adjustTarget.periods_remaining + adjustPeriods) }} remaining)
+          </span>
+        </div>
+        <div v-if="adjustTarget.credit_periods + adjustPeriods < adjustTarget.periods_consumed" class="mt-1 text-red-600 dark:text-red-400">
+          Warning: Total periods will be less than consumed periods.
+        </div>
+      </div>
+
+      <div class="space-y-3">
         <div>
           <label class="block text-xs font-medium text-muted-foreground mb-1">Periods Delta *</label>
           <input
@@ -752,6 +836,24 @@ function getTransactionActionLabel(action: string): string {
               class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none"
               placeholder="Internal notes..."
             />
+          </div>
+
+          <!-- ENHANCEMENT-5: Hard expiry deadline for promotional credits -->
+          <div>
+            <label class="block text-sm font-medium mb-1">
+              Hard Expiry Deadline
+              <span class="text-xs text-muted-foreground font-normal">(optional)</span>
+            </label>
+            <input
+              v-model="createForm.expires_at"
+              type="datetime-local"
+              class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+            <p class="text-xs text-muted-foreground mt-1">
+              When set, the pool will expire on this date regardless of remaining periods.
+              Use for promotional credits or accounting deadlines. Leave empty for soft expiry
+              (pool expires naturally when all periods are consumed).
+            </p>
           </div>
 
           <div class="flex justify-end gap-3 pt-2">

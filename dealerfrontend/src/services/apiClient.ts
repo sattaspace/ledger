@@ -10,7 +10,85 @@
  * - Automatic JSON parsing
  * - Typed error handling with ApiError class
  * - Timeout support
+ * - Automatic snake_case → camelCase key conversion for all API responses
  */
+
+// ─── snake_case → camelCase Transformer ─────────────────────────────────────
+
+/**
+ * Convert a snake_case string to camelCase.
+ * e.g. "full_name" → "fullName", "min_stock_alert" → "minStockAlert"
+ */
+function snakeToCamel(str: string): string {
+  return str.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+/**
+ * Recursively transform all snake_case keys in an object (or array of objects)
+ * to camelCase. This ensures backend Python/Django snake_case JSON responses
+ * are automatically normalized to the camelCase format the frontend expects.
+ *
+ * Handles: plain objects, arrays, nested structures, and primitive passthrough.
+ */
+function transformKeysToCamelCase<T = any>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map((item) => transformKeysToCamelCase(item)) as T;
+  }
+
+  if (typeof data === "object" && data.constructor === Object) {
+    const result: Record<string, any> = {};
+    for (const key of Object.keys(data as Record<string, any>)) {
+      const camelKey = snakeToCamel(key);
+      result[camelKey] = transformKeysToCamelCase(
+        (data as Record<string, any>)[key],
+      );
+    }
+    return result as T;
+  }
+
+  // Primitives (string, number, boolean) and Date objects pass through unchanged
+  return data;
+}
+
+/**
+ * Convert a camelCase string to snake_case.
+ * e.g. "fullName" → "full_name", "minStockAlert" → "min_stock_alert"
+ */
+function camelToSnake(str: string): string {
+  return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+/**
+ * Recursively transform all camelCase keys in an object (or array of objects)
+ * to snake_case. This ensures frontend JavaScript/TypeScript camelCase payloads
+ * are automatically converted to the snake_case format the Django backend expects.
+ */
+function transformKeysToSnakeCase<T = any>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map((item) => transformKeysToSnakeCase(item)) as T;
+  }
+
+  if (typeof data === "object" && data.constructor === Object) {
+    const result: Record<string, any> = {};
+    for (const key of Object.keys(data as Record<string, any>)) {
+      const snakeKey = camelToSnake(key);
+      result[snakeKey] = transformKeysToSnakeCase(
+        (data as Record<string, any>)[key],
+      );
+    }
+    return result as T;
+  }
+
+  return data;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -21,7 +99,11 @@ export class ApiError extends Error {
 
   constructor(status: number, statusText: string, data?: any) {
     const message =
-      data?.error || data?.message || statusText || "API Request Failed";
+      data?.error ||
+      data?.message ||
+      data?.detail ||
+      statusText ||
+      "API Request Failed";
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -140,8 +222,12 @@ class ApiClient {
     };
 
     // Add body for POST/PUT/PATCH
+    // Transform camelCase keys to snake_case so Django backend can parse them
     if (body !== undefined && method !== "GET") {
-      config.body = typeof body === "string" ? body : JSON.stringify(body);
+      const snakeBody =
+        typeof body === "string" ? body : transformKeysToSnakeCase(body);
+      config.body =
+        typeof snakeBody === "string" ? snakeBody : JSON.stringify(snakeBody);
     }
 
     // Run request interceptors
@@ -198,10 +284,14 @@ class ApiClient {
         throw apiError;
       }
 
+      // Transform all snake_case keys to camelCase so the frontend
+      // can consume data using JavaScript/TypeScript naming conventions
+      const transformedData = transformKeysToCamelCase<T>(data);
+
       return {
         ok: true,
         status: response.status,
-        data: data as T,
+        data: transformedData,
       };
     } catch (err: any) {
       if (err.name === "AbortError") {
@@ -296,7 +386,7 @@ function resolveConfig(): ApiClientConfig {
       ? (import.meta as any).env
       : {};
 
-  const baseURL = env.VITE_API_BASE_URL || "http://localhost:8000/api";
+  const baseURL = env.VITE_API_BASE_URL || "http://localhost:8000";
 
   return {
     baseURL,

@@ -223,21 +223,36 @@ class BillingService:
         user, product_slug: str, select_for_update: bool = False
     ) -> Optional[Subscription]:
         """Async version of get_subscription_for_product().
-        
+
         Args:
             user: The user to get subscription for
             product_slug: The product slug
-            select_for_update: If True, lock the row for update (CRIT-03 FIX)
+            select_for_update: DEPRECATED — do not use. select_for_update()
+                requires transaction.atomic() which cannot be used in async
+                context. If you need row locking, use the sync
+                get_subscription_for_product() inside a sync_to_async wrapper
+                with a proper transaction.atomic() block.
+
+        .. deprecated::
+            The ``select_for_update`` parameter is deprecated and will be
+            removed in a future version. It does not work correctly in async
+            context because Django's transaction.atomic() is synchronous-only.
         """
+        if select_for_update:
+            logger.warning(
+                "aget_subscription_for_product(select_for_update=True) is "
+                "deprecated — select_for_update() requires a transaction "
+                "that cannot exist in async context. Use the sync "
+                "get_subscription_for_product() inside a sync_to_async "
+                "wrapper with transaction.atomic() instead."
+            )
+
         product = await BillingService.aget_product_by_slug(product_slug)
         if not product:
             return None
 
         try:
             qs = Subscription.objects.select_related("plan", "product")
-            # CRIT-03 FIX: Support select_for_update for race condition prevention
-            if select_for_update:
-                qs = qs.select_for_update()
             sub = await qs.aget(user=user, product=product)
             return sub
         except Subscription.DoesNotExist:
@@ -766,15 +781,23 @@ class BillingService:
             }
 
         # 2. Check credit pool
+        # BUG-FIX: Include pools in their 24-hour grace period (expires_at recently
+        # passed but within CREDIT_EXPIRY_GRACE_HOURS). The is_effectively_active
+        # property on CreditPool already handles this, but the ORM filter here
+        # excluded such pools before we even checked. We now fetch pools that are
+        # either: (a) no hard deadline, (b) not yet expired, or (c) within grace period.
+        from .tasks import CREDIT_EXPIRY_GRACE_HOURS
+        grace_cutoff = now - timezone.timedelta(hours=CREDIT_EXPIRY_GRACE_HOURS)
+
         credit_pool = CreditPool.objects.select_related("plan").filter(
             user=user,
             product=product,
             status=CreditPool.CreditPoolStatus.ACTIVE,
         ).filter(
-            Q(expires_at__isnull=True) | Q(expires_at__gt=now)
+            Q(expires_at__isnull=True) | Q(expires_at__gt=grace_cutoff)
         ).order_by("-created_at").first()
 
-        if credit_pool and credit_pool.periods_remaining > 0:
+        if credit_pool and credit_pool.is_effectively_active:
             prefetch_related_objects(
                 [credit_pool.plan],
                 Prefetch("access_entries", queryset=AccessEntry.objects.all()),
@@ -789,9 +812,56 @@ class BillingService:
                 "plan": credit_pool.plan,
                 "access_map": access_map,
                 "current_period_end": credit_pool.current_period_end,
-                "expires_at": credit_pool.current_period_end,
+                # ENHANCEMENT-5: Return hard expiry (expires_at) and soft expiry
+                # (commitment_end) separately. expires_at is an admin override
+                # for promotional deadlines; commitment_end is the natural end
+                # based on activated_at + credit_periods. When expires_at is None,
+                # only soft expiry applies.
+                "expires_at": credit_pool.expires_at,
+                "commitment_end": credit_pool.commitment_end,
                 "is_credit_based": True,
             }
+
+        # 3. OPEN-Q4: Data retention after credit expiry
+        # When no active credit pool exists but one recently expired (within
+        # CREDIT_DATA_RETENTION_DAYS), grant free-tier access with the free
+        # plan's access matrix. Integer values in the access matrix limit the
+        # number of data entries (rows) the user can maintain. This ensures
+        # data is not lost but is soft-locked to the free tier's limits.
+        from .tasks import CREDIT_DATA_RETENTION_DAYS
+        retention_cutoff = now - timezone.timedelta(days=CREDIT_DATA_RETENTION_DAYS)
+        recently_expired_pool = CreditPool.objects.filter(
+            user=user,
+            product=product,
+            status__in=[
+                CreditPool.CreditPoolStatus.EXPIRED,
+                CreditPool.CreditPoolStatus.EXHAUSTED,
+            ],
+            updated_at__gte=retention_cutoff,
+        ).order_by("-updated_at").first()
+
+        if recently_expired_pool:
+            # User data is within retention window — grant free-plan access
+            free_plan = product.get_free_plan()
+            if free_plan:
+                prefetch_related_objects(
+                    [free_plan],
+                    Prefetch("access_entries", queryset=AccessEntry.objects.all()),
+                )
+                free_access_map = {
+                    e.key: e.typed_value
+                    for e in free_plan.access_entries.all()
+                }
+                return {
+                    "is_active": True,
+                    "source": "credit_retention",
+                    "plan": free_plan,
+                    "access_map": free_access_map,
+                    "current_period_end": None,
+                    "expires_at": None,
+                    "is_credit_based": False,
+                    "is_data_retention": True,  # Signal to frontend that data may be soft-locked
+                }
 
         return {
             "is_active": False,
@@ -827,7 +897,8 @@ class BillingService:
     @transaction.atomic
     def create_credit_pool(user, plan, amount_cents, source="manual",
                            payment_reference="", created_by=None,
-                           currency="USD", tax_cents=0, notes=""):
+                           currency="USD", tax_cents=0, notes="",
+                           credit_periods=None, expires_at=None):
         """
         Create a credit pool and its associated invoice.
 
@@ -839,6 +910,22 @@ class BillingService:
         
         CRIT-10 FIX: Added verification that all objects were created successfully
         to prevent partial state where pool exists without invoice.
+        
+        ENHANCEMENT-1: Added credit_periods parameter. When provided (e.g. from
+        a credit request with explicit commitment), it is used directly instead
+        of deriving periods from amount_cents // plan.price_cents.
+
+        ENHANCEMENT-5: Added expires_at parameter for admin hard-expiry override.
+        When set, the pool will expire on this date regardless of remaining
+        periods (e.g., promotional credits with a calendar deadline). When None
+        (default), only soft expiry via period consumption applies.
+
+        OPEN-Q7: Mid-cycle credit purchase handling.
+        When the user has an ACTIVE credit pool for the same product+plan,
+        the new periods are APPENDED to the existing pool (extending
+        credit_periods and current_period_end). When no active pool exists
+        (expired/exhausted), a new pool is created starting from the payment
+        date. This ensures continuity of access and avoids duplicate pools.
         """
         from django.core.exceptions import ValidationError
 
@@ -846,8 +933,100 @@ class BillingService:
             raise ValueError("Cannot buy credits for a free plan.")
 
         now = timezone.now()
-        credit_periods = max(1, amount_cents // plan.price_cents) if plan.price_cents > 0 else 1
+        # ENHANCEMENT-1: Use explicit credit_periods when provided (from credit request),
+        # otherwise derive from amount (for admin manual creation backward compat)
+        if credit_periods is not None:
+            pass  # Use the explicitly provided value
+        else:
+            credit_periods = max(1, amount_cents // plan.price_cents) if plan.price_cents > 0 else 1
 
+        # ── OPEN-Q7: Mid-cycle credit purchase handling ──────────────────────
+        # If the user has an ACTIVE credit pool for the same product+plan,
+        # APPEND the new periods to the existing pool instead of creating a
+        # separate one. This extends current_period_end and credit_periods,
+        # giving the user seamless continuity. When no active pool exists
+        # (expired, exhausted, etc.), a new pool starts from the payment date.
+        existing_pool = CreditPool.objects.filter(
+            user=user,
+            product=plan.product,
+            plan=plan,
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+        ).select_for_update().first()
+
+        if existing_pool:
+            # Append periods to the existing pool
+            old_credit_periods = existing_pool.credit_periods
+            old_period_end = existing_pool.current_period_end
+            new_credit_periods = old_credit_periods + credit_periods
+
+            # Extend current_period_end by the new periods
+            # If the current period hasn't ended yet, extend from current_period_end.
+            # If somehow past (edge case), extend from now.
+            extension_start = existing_pool.current_period_end or now
+            from dateutil.relativedelta import relativedelta as _rd
+            if plan.billing_cycle == "yearly":
+                extension_delta = _rd(years=credit_periods)
+            elif plan.billing_cycle == "lifetime":
+                extension_delta = _rd(years=2 * credit_periods)
+            else:
+                extension_delta = _rd(months=credit_periods)
+            new_period_end = extension_start + extension_delta
+
+            existing_pool.credit_periods = new_credit_periods
+            existing_pool.amount_cents += amount_cents
+            existing_pool.current_period_end = new_period_end
+            # If an expires_at was provided and the existing pool doesn't have one,
+            # set it. If the existing pool already has expires_at, keep the later one.
+            if expires_at:
+                if not existing_pool.expires_at or expires_at > existing_pool.expires_at:
+                    existing_pool.expires_at = expires_at
+            existing_pool.save(update_fields=[
+                "credit_periods", "amount_cents", "current_period_end",
+                "expires_at", "updated_at",
+            ])
+
+            # Create invoice for the appended purchase
+            invoice_number = "SB-CRED-%010d" % existing_pool.id
+            invoice = CreditInvoice.objects.create(
+                credit_pool=existing_pool,
+                user=user,
+                product=plan.product,
+                plan=plan,
+                invoice_number=f"{invoice_number}-{existing_pool.credit_periods}",
+                status=CreditInvoice.CreditInvoiceStatus.PAID,
+                amount_cents=amount_cents,
+                currency=currency,
+                tax_cents=tax_cents,
+                total_cents=amount_cents + tax_cents,
+                period_start=now,
+                period_end=new_period_end,
+                payment_reference=payment_reference,
+                notes=notes or f"Appended {credit_periods} period(s) to existing pool #{existing_pool.id}",
+                issued_at=now,
+            )
+
+            # Create transaction record
+            CreditTransaction.objects.create(
+                credit_pool=existing_pool,
+                invoice=invoice,
+                action=CreditTransaction.TransactionType.PURCHASE,
+                periods_delta=credit_periods,
+                amount_cents_delta=amount_cents,
+                periods_balance=existing_pool.periods_remaining,
+                reason=f"Appended {credit_periods} period(s) to existing commitment (was {old_credit_periods}, now {new_credit_periods})",
+                created_by=created_by,
+            )
+
+            logger.info(
+                "CREDIT_POOL_APPENDED: user=%s, plan=%s, pool_id=%s, "
+                "+%d periods (was %d, now %d), amount=+%sc, source=%s",
+                user.email, plan.slug, existing_pool.id,
+                credit_periods, old_credit_periods, new_credit_periods,
+                amount_cents, source,
+            )
+            return existing_pool, invoice
+
+        # ── No existing active pool: create a new one ──────────────────────
         period_start = now
         period_end = BillingService._compute_period_end(
             now, plan.billing_cycle, credit_periods
@@ -855,6 +1034,11 @@ class BillingService:
 
         # Create pool first to get a stable DB ID, then use it for invoice numbering.
         # This guarantees collision-free invoice numbers for tax compliance.
+        #
+        # ENHANCEMENT-5: expires_at is passed as a parameter for admin overrides
+        # (promotional deadlines, accounting year-end, etc.). Default is None,
+        # meaning only soft expiry via period consumption applies. The pool's
+        # natural end is tracked via the `commitment_end` computed property.
         pool = CreditPool.objects.create(
             user=user,
             product=plan.product,
@@ -869,7 +1053,7 @@ class BillingService:
             activated_at=now,
             current_period_start=period_start,
             current_period_end=period_end,
-            expires_at=period_end,
+            expires_at=expires_at,  # ENHANCEMENT-5: Admin hard-expiry override (None = soft expiry only)
         )
 
         # CRIT-10 FIX: Verify pool was created successfully
@@ -968,6 +1152,114 @@ class BillingService:
 
         return cancelled_count
 
+    @staticmethod
+    @transaction.atomic
+    def change_credit_plan(pool, new_plan):
+        """
+        Change the plan of an active credit pool within the same product.
+
+        OPEN-Q3: Credits are transferable between plans. When upgrading,
+        the remaining periods are recalculated based on the new plan's price.
+        The user's existing payment is treated as credit toward the new plan.
+
+        Logic:
+        - Compute remaining value = periods_remaining * old_plan.price_cents
+        - Compute new periods = remaining_value // new_plan.price_cents
+        - If new_plan.price_cents == 0 (free), mark remaining as 1 period
+        - Update pool with new plan, credit_periods, and current_period_end
+
+        Raises:
+            ValueError: if new_plan belongs to a different product, or pool
+                is not active, or new plan is free (cannot buy credits for free).
+        """
+        now = timezone.now()
+        from dateutil.relativedelta import relativedelta
+
+        if new_plan.product_id != pool.product_id:
+            raise ValueError(
+                f"Cannot change to plan '{new_plan.slug}' — it belongs to a "
+                f"different product. Current product: {pool.product.slug}, "
+                f"new plan's product: {new_plan.product.slug}."
+            )
+
+        if pool.status != CreditPool.CreditPoolStatus.ACTIVE:
+            raise ValueError(
+                f"Cannot change plan for a pool with status '{pool.status}'. "
+                f"Only active pools can be changed."
+            )
+
+        if new_plan.price_cents <= 0:
+            raise ValueError(
+                "Cannot change to a free plan within a credit commitment. "
+                "Cancel the credit pool and subscribe to the free plan instead."
+            )
+
+        old_plan = pool.plan
+        periods_remaining = pool.periods_remaining
+
+        # Compute the remaining monetary value based on the old plan's price
+        remaining_value_cents = periods_remaining * old_plan.price_cents
+
+        # Compute how many periods the remaining value buys on the new plan
+        new_periods = max(1, remaining_value_cents // new_plan.price_cents)
+        # Check for leftover cents that don't fit a full period
+        leftover_cents = remaining_value_cents % new_plan.price_cents
+
+        # Recalculate total credit_periods for the pool
+        new_total_periods = pool.periods_consumed + new_periods
+
+        # Recalculate current_period_end based on new plan's billing cycle
+        # Start from the current period start and add new_periods
+        period_start = pool.current_period_start or now
+        if new_plan.billing_cycle == "yearly":
+            total_delta = relativedelta(years=new_total_periods)
+        elif new_plan.billing_cycle == "lifetime":
+            total_delta = relativedelta(years=new_total_periods * 2)
+        else:
+            total_delta = relativedelta(months=new_total_periods)
+
+        new_period_end = (pool.activated_at or period_start) + total_delta
+
+        old_plan_slug = pool.plan.slug
+        pool.plan = new_plan
+        pool.credit_periods = new_total_periods
+        pool.current_period_end = new_period_end
+        pool.save(update_fields=[
+            "plan", "credit_periods", "current_period_end", "updated_at",
+        ])
+
+        # Create transaction record for the plan change
+        CreditTransaction.objects.create(
+            credit_pool=pool,
+            action=CreditTransaction.TransactionType.ADJUST,
+            periods_delta=new_periods - periods_remaining,  # May be negative for upgrades
+            amount_cents_delta=0,  # No additional payment — credit transfer
+            periods_balance=pool.periods_remaining,
+            reason=(
+                f"Plan changed from '{old_plan_slug}' to '{new_plan.slug}': "
+                f"{periods_remaining} remaining period(s) at {old_plan.price_cents}c/period "
+                f"= {remaining_value_cents}c → {new_periods} period(s) at "
+                f"{new_plan.price_cents}c/period"
+                + (f" ({leftover_cents}c unused)" if leftover_cents > 0 else "")
+            ),
+        )
+
+        logger.info(
+            "CREDIT_PLAN_CHANGE: user=%s, pool_id=%s, old_plan=%s, new_plan=%s, "
+            "old_remaining=%d, new_remaining=%d, value=%dc, leftover=%dc",
+            pool.user.email, pool.id, old_plan_slug, new_plan.slug,
+            periods_remaining, new_periods, remaining_value_cents, leftover_cents,
+        )
+
+        return {
+            "old_plan": old_plan_slug,
+            "new_plan": new_plan.slug,
+            "old_periods_remaining": periods_remaining,
+            "new_periods_remaining": new_periods,
+            "remaining_value_cents": remaining_value_cents,
+            "leftover_cents": leftover_cents,
+        }
+
     # =========================================================================
     # Async wrappers for credit methods
     # =========================================================================
@@ -979,3 +1271,7 @@ class BillingService:
     @staticmethod
     async def acancel_credit_pools_for_subscription(user, product):
         return await sync_to_async(BillingService.cancel_credit_pools_for_subscription)(user, product)
+
+    @staticmethod
+    async def achange_credit_plan(pool, new_plan):
+        return await sync_to_async(BillingService.change_credit_plan)(pool, new_plan)

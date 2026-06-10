@@ -1,9 +1,10 @@
-# DEALERCORE v3.0 — Django Ninja Backend Structure
+# DEALERCORE v3.0 — Django Ninja Extra Backend Structure
 
 ## Overview
 
 This backend is designed to serve the DEALERCORE v3.0 frontend (Astro + Vue 3).
-It uses **async Django Ninja** with Pydantic schemas and follows a modular app structure.
+It uses **django-ninja-extra** with class-based controllers, **ModelSchema** auto-generation,
+and Pydantic schemas. Fully async with Django ORM.
 
 ---
 
@@ -15,38 +16,38 @@ backend/
 ├── dealercore/                        # Project package
 │   ├── __init__.py
 │   ├── settings_reference.py          # Settings reference (merge into your settings.py)
-│   ├── urls.py                        # Root URL config — mounts NinjaAPI at /api/
-│   └── api.py                         # Central NinjaAPI instance + router registration
+│   ├── urls.py                        # Root URL config — mounts NinjaExtraAPI at /api/
+│   └── api.py                         # NinjaExtraAPI + register_controllers()
 │
 ├── inventory/                         # Products & Restocking
 │   ├── __init__.py
 │   ├── models.py                      # Product, RestockRecord
-│   ├── schemas.py                     # ProductOut, AddProductIn, EditProductIn, RestockIn/Out
-│   └── api.py                         # 4 endpoints: list, add, restock, edit
+│   ├── schemas.py                     # ProductOut (ModelSchema), AddProductIn, EditProductIn, RestockIn/Out
+│   └── api.py                         # InventoryController: 4 endpoints
 │
 ├── sales/                             # Sales & Payments
 │   ├── __init__.py
 │   ├── models.py                      # SaleRecord, CreditPayment
-│   ├── schemas.py                     # SaleRecordOut, CreateSaleIn, BulkSaleIn, CollectPaymentIn
-│   └── api.py                         # 5 endpoints: list, create, bulk, collect, close-with-due
+│   ├── schemas.py                     # CreditPaymentOut (ModelSchema), SaleRecordOut, CreateSaleIn, BulkSaleIn
+│   └── api.py                         # SalesController: 5 endpoints
 │
 ├── dsr/                               # Daily Sales Representatives
 │   ├── __init__.py
 │   ├── models.py                      # DSR (self-referential FK)
-│   ├── schemas.py                     # DSROut, CreateDSRIn
-│   └── api.py                         # 2 endpoints: list, create
+│   ├── schemas.py                     # DSRModelOut (ModelSchema), DSROut, CreateDSRIn
+│   └── api.py                         # DSRController: 2 endpoints
 │
 ├── supplier/                          # Supplier Reference Table
 │   ├── __init__.py
 │   ├── models.py                      # Supplier
-│   ├── schemas.py                     # SupplierOut
-│   └── api.py                         # 1 endpoint: list
+│   ├── schemas.py                     # SupplierOut (ModelSchema)
+│   └── api.py                         # SupplierController: 1 endpoint
 │
 ├── dealer/                            # Dealer Configuration
 │   ├── __init__.py
 │   ├── models.py                      # DealerConfig (username as natural PK)
-│   ├── schemas.py                     # DealerConfigOut, UpdateDealerIn
-│   └── api.py                         # 2 endpoints: list, update
+│   ├── schemas.py                     # DealerConfigOut (ModelSchema), UpdateDealerIn
+│   └── api.py                         # DealerController: 2 endpoints
 │
 └── reports/                           # Computed Reports (no DB models)
     ├── __init__.py
@@ -124,10 +125,10 @@ django-admin startproject dealercore .
 # Then move the app folders inside
 
 # 2. Install dependencies
-pip install django ninja pydantic
+pip install django ninja-extra pydantic
 
 # 3. Add apps to INSTALLED_APPS (see settings_reference.py)
-#    Also add "ninja" to INSTALLED_APPS
+#    Add "ninja_extra" to INSTALLED_APPS (auto-includes ninja)
 
 # 4. Run migrations
 python manage.py makemigrations inventory sales dsr supplier dealer
@@ -217,6 +218,10 @@ Supplier ───── referenced by name in RestockRecord (no FK)
 
 7. **DealerConfig.username as PK** — Username is the natural primary key, not an auto-increment integer.
 
+8. **Class-based controllers** — All API views use `@api_controller` + `@route` decorators from `django-ninja-extra`. Organizes related endpoints into cohesive classes with shared helper methods.
+
+9. **ModelSchema auto-generation** — Output schemas for `Product`, `RestockRecord`, `CreditPayment`, `DSR`, `Supplier`, `DealerConfig` are auto-generated from Django models via `ninja_extra.ModelSchema`. Only custom input schemas and computed-output schemas are defined manually.
+
 ---
 
 ## Frontend Integration
@@ -224,7 +229,6 @@ Supplier ───── referenced by name in RestockRecord (no FK)
 The frontend `apiClient.ts` sends requests to `VITE_API_BASE_URL`. Set:
 
 ```env
-VITE_API_MODE=live
 VITE_API_BASE_URL=http://localhost:8000/api
 ```
 

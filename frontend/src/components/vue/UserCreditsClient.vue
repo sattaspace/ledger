@@ -13,10 +13,10 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { creditsApi } from "@/lib/credits";
-import type { CreditPool, CreditInvoice, CreditTransaction } from "@/lib/credits";
+import type { CreditPool, CreditInvoice, CreditTransaction, ExpiringCreditPool } from "@/lib/credits";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,14 @@ const loadError = ref<string | null>(null);
 const credits = ref<CreditPool[]>([]);
 const invoices = ref<CreditInvoice[]>([]);
 const activeTab = ref<"pools" | "invoices">("pools");
+
+// ── Credit Expiry Warning (Enhancement 3) ──
+const expiringCredits = ref<ExpiringCreditPool[]>([]);
+const expiryBannerDismissed = ref(false);
+
+const showExpiryBanner = computed(() =>
+  expiringCredits.value.length > 0 && !expiryBannerDismissed.value
+);
 
 // Detail modal state
 const showDetailModal = ref(false);
@@ -48,7 +56,8 @@ const totalValue = computed(() =>
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchData();
 });
 
@@ -62,6 +71,13 @@ async function fetchData() {
     ]);
     credits.value = creditsData;
     invoices.value = invoicesData;
+
+    // Fetch expiring credits for warning banner
+    try {
+      expiringCredits.value = await creditsApi.getExpiringCredits();
+    } catch {
+      // Non-critical
+    }
   } catch (err) {
     loadError.value = getErrorMessage(err);
     showToast("Failed to load credits", "error");
@@ -103,6 +119,15 @@ function formatDate(dateStr: string | null): string {
     month: "short",
     day: "numeric",
   });
+}
+
+// ENHANCEMENT-2/4: Use server-provided commitment_end instead of client-side calculation.
+// The commitment_end property is computed from activated_at + credit_periods * billing_cycle
+// on the backend model, ensuring consistency with the period consumption logic.
+// This replaces the previous getCommitmentEnd() which used setMonth() locally.
+function getCommitmentEnd(credit: CreditPool): string | null {
+  // Prefer the server-computed commitment_end; fall back to expires_at for legacy pools
+  return credit.commitment_end || credit.expires_at;
 }
 
 function getStatusStyle(status: string): { bg: string; text: string; dot: string } {
@@ -191,6 +216,33 @@ function getInvoiceStatusStyle(status: string): { bg: string; text: string; dot:
   }
 }
 
+function getExpiryUrgencyStyle(urgency: string): { bg: string; border: string; text: string; badge: string } {
+  switch (urgency) {
+    case "urgent":
+    case "grace_period":
+      return {
+        bg: "bg-red-50 dark:bg-red-950",
+        border: "border-red-200 dark:border-red-800",
+        text: "text-red-800 dark:text-red-200",
+        badge: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
+      };
+    case "warning":
+      return {
+        bg: "bg-orange-50 dark:bg-orange-950",
+        border: "border-orange-200 dark:border-orange-800",
+        text: "text-orange-800 dark:text-orange-200",
+        badge: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-400",
+      };
+    default:
+      return {
+        bg: "bg-amber-50 dark:bg-amber-950",
+        border: "border-amber-200 dark:border-amber-800",
+        text: "text-amber-800 dark:text-amber-200",
+        badge: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
+      };
+  }
+}
+
 function getTransactionActionLabel(action: string): string {
   const labels: Record<string, string> = {
     purchase: "Purchase",
@@ -240,6 +292,67 @@ async function downloadInvoicePdf(invoiceNumber: string) {
           </svg>
           Request Credits
         </a>
+      </div>
+    </div>
+
+    <!-- ── Credit Expiry Warning Banner (Enhancement 3) ── -->
+    <div v-if="showExpiryBanner" class="space-y-3 mb-6">
+      <div
+        v-for="exp in expiringCredits"
+        :key="exp.id"
+        :class="[
+          getExpiryUrgencyStyle(exp.urgency).bg,
+          getExpiryUrgencyStyle(exp.urgency).border,
+          getExpiryUrgencyStyle(exp.urgency).text,
+        ]"
+        class="rounded-lg border px-4 py-3"
+      >
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-start gap-3">
+            <svg class="mt-0.5 h-5 w-5 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <div>
+              <div class="flex items-center gap-2">
+                <p class="text-sm font-medium">
+                  {{ exp.product_name }} — {{ exp.plan_name }}
+                </p>
+                <span :class="getExpiryUrgencyStyle(exp.urgency).badge" class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+                  <span v-if="exp.in_grace_period">Grace Period</span>
+                  <span v-else-if="exp.urgency === 'urgent'">{{ exp.days_until_expiry }}d left</span>
+                  <span v-else-if="exp.urgency === 'warning'">{{ exp.days_until_expiry }}d left</span>
+                  <span v-else>{{ exp.days_until_expiry }}d left</span>
+                </span>
+              </div>
+              <p class="text-xs mt-0.5 opacity-80">
+                <span v-if="exp.in_grace_period">Your credit is in the 24-hour grace period. Access will be revoked after grace period ends.</span>
+                <span v-else>Expires on {{ formatDate(exp.commitment_end || exp.expires_at || exp.current_period_end) }}. {{ exp.periods_remaining }} period(s) remaining.</span>
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <a
+              href="/dashboard/billing/credits/request"
+              class="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 px-3 py-1.5 text-xs font-medium text-white transition-colors"
+            >
+              Renew Credits
+            </a>
+            <a
+              href="/dashboard/billing"
+              class="inline-flex items-center gap-1.5 rounded-lg bg-white/60 dark:bg-white/10 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/80 dark:hover:bg-white/20"
+            >
+              Use Stripe
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end">
+        <button
+          @click="expiryBannerDismissed = true"
+          class="text-xs text-[var(--color-muted-foreground)] hover:text-foreground transition-colors"
+        >
+          Dismiss warnings
+        </button>
       </div>
     </div>
 
@@ -402,12 +515,31 @@ async function downloadInvoicePdf(invoiceNumber: string) {
                     {{ credit.status.charAt(0).toUpperCase() + credit.status.slice(1) }}
                   </span>
 
-                  <!-- Periods -->
+                  <!-- ENHANCEMENT-2/5: Commitment Period with date range -->
+                  <span class="flex items-center gap-1">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    {{ credit.credit_periods }}-period commitment
+                    <template v-if="credit.current_period_start">
+                      ({{ formatDate(credit.current_period_start) }} – {{ formatDate(getCommitmentEnd(credit)) }})
+                    </template>
+                  </span>
+
+                  <!-- ENHANCEMENT-5: Hard expiry indicator when expires_at is set -->
+                  <span v-if="credit.expires_at" class="flex items-center gap-1 text-red-600 dark:text-red-400">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Hard deadline: {{ formatDate(credit.expires_at) }}
+                  </span>
+
+                  <!-- Periods Progress -->
                   <span class="flex items-center gap-1">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    {{ credit.periods_remaining }} / {{ credit.credit_periods }} periods remaining
+                    {{ credit.periods_remaining }} / {{ credit.credit_periods }} remaining
                   </span>
 
                   <!-- Source -->
@@ -417,13 +549,18 @@ async function downloadInvoicePdf(invoiceNumber: string) {
                     </svg>
                     {{ getSourceLabel(credit.source) }}
                   </span>
+                </div>
 
-                  <!-- Expiry -->
-                  <span v-if="credit.expires_at" class="flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                    Expires {{ formatDate(credit.expires_at) }}
+                <!-- ENHANCEMENT-2/5: Non-renewal notice for active pools -->
+                <div v-if="credit.status === 'active' && credit.is_effectively_active" class="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded-md px-3 py-2 border border-amber-200 dark:border-amber-800">
+                  <svg class="h-3.5 w-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span v-if="credit.expires_at">
+                    This credit has a hard deadline of {{ formatDate(credit.expires_at) }} and will expire on that date regardless of remaining periods. Credits do not auto-renew.
+                  </span>
+                  <span v-else>
+                    This credit does not auto-renew. Purchase new credits before expiry to maintain uninterrupted access.
                   </span>
                 </div>
               </div>
@@ -590,6 +727,47 @@ async function downloadInvoicePdf(invoiceNumber: string) {
               <div>
                 <p class="text-xs text-muted-foreground">Source</p>
                 <p class="text-sm capitalize">{{ getSourceLabel(selectedCredit.source) }}</p>
+              </div>
+            </div>
+
+            <!-- ENHANCEMENT-2/5: Commitment Details Section in Detail Modal -->
+            <div class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4">
+              <h4 class="text-xs font-semibold text-amber-900 dark:text-amber-200 uppercase tracking-wide mb-3">Commitment Details</h4>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span class="text-amber-700 dark:text-amber-400 text-xs">Commitment Duration</span>
+                  <p class="font-medium text-amber-900 dark:text-amber-200">{{ selectedCredit.credit_periods }} period(s)</p>
+                </div>
+                <div>
+                  <span class="text-amber-700 dark:text-amber-400 text-xs">Auto-Renewal</span>
+                  <p class="font-medium text-amber-900 dark:text-amber-200">No</p>
+                </div>
+                <div>
+                  <span class="text-amber-700 dark:text-amber-400 text-xs">Start Date</span>
+                  <p class="font-medium text-amber-900 dark:text-amber-200">{{ formatDate(selectedCredit.current_period_start) }}</p>
+                </div>
+                <div>
+                  <!-- ENHANCEMENT-5: Show commitment end with appropriate label -->
+                  <span class="text-amber-700 dark:text-amber-400 text-xs">Commitment End</span>
+                  <p class="font-medium text-amber-900 dark:text-amber-200">{{ formatDate(getCommitmentEnd(selectedCredit)) }}</p>
+                </div>
+                <!-- ENHANCEMENT-5: Show hard expiry when set, distinguishing from commitment end -->
+                <div v-if="selectedCredit.expires_at" class="col-span-2">
+                  <span class="text-red-600 dark:text-red-400 text-xs font-medium">Hard Expiry Deadline</span>
+                  <p class="font-medium text-red-700 dark:text-red-300">{{ formatDate(selectedCredit.expires_at) }}</p>
+                  <p class="text-xs text-red-600/70 dark:text-red-400/70 mt-0.5">Access ends on this date regardless of remaining periods.</p>
+                </div>
+              </div>
+              <div class="mt-3 flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
+                <svg class="h-3.5 w-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span v-if="selectedCredit.expires_at">
+                  Non-refundable prepaid commitment with a hard expiry deadline. Access will end on {{ formatDate(selectedCredit.expires_at) }} even if periods remain unused. Credits do not auto-renew.
+                </span>
+                <span v-else>
+                  Non-refundable prepaid commitment. Access will be revoked when all periods are consumed. Credits do not auto-renew.
+                </span>
               </div>
             </div>
 

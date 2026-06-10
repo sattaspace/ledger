@@ -13,7 +13,7 @@
  */
 
 import { ref, computed, onMounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { creditsApi } from "@/lib/credits";
 import type { CreditRequest, PaginationMeta } from "@/lib/credits";
@@ -117,7 +117,8 @@ async function fetchRequests() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchRequests();
 });
 
@@ -216,6 +217,15 @@ function formatPrice(cents: number, currency: string): string {
     style: "currency",
     currency: currency,
   }).format(cents / 100);
+}
+
+function getPeriodLabel(billingCycle: string): string {
+  return billingCycle === "yearly" ? "year" : "month";
+}
+
+function getPeriodLabelPlural(billingCycle: string, periods: number): string {
+  const label = getPeriodLabel(billingCycle);
+  return periods === 1 ? label : `${label}s`;
 }
 
 function getStatusColor(status: string): string {
@@ -477,6 +487,12 @@ function getStatusColor(status: string): string {
               <p class="text-sm">{{ selectedRequest.plan_name }}</p>
             </div>
             <div>
+              <p class="text-xs text-muted-foreground">Commitment</p>
+              <p class="text-sm font-semibold">
+                {{ selectedRequest.credit_periods || '\u2014' }} {{ getPeriodLabelPlural(selectedRequest.billing_cycle || 'monthly', selectedRequest.credit_periods || 1) }}
+              </p>
+            </div>
+            <div>
               <p class="text-xs text-muted-foreground">Amount</p>
               <p class="text-sm font-semibold">{{ formatPrice(selectedRequest.amount_cents, selectedRequest.currency) }}</p>
             </div>
@@ -552,11 +568,38 @@ function getStatusColor(status: string): string {
       v-model:open="showApproveModal"
       title="Approve Credit Request"
       :message="'Approve credit request #' + (approveTarget?.id || '') + '?'"
-      :detail="'This will create a credit pool for ' + (approveTarget?.user_email || '') + ' worth ' + (approveTarget ? formatPrice(approveTarget.amount_cents, approveTarget.currency) : '') + '.'"
+      :detail="''"
       confirm-label="Approve"
       :loading="actionLoading?.startsWith('approve-')"
       @confirm="confirmApprove"
-    />
+    >
+      <div v-if="approveTarget" class="mt-2 rounded-lg bg-brand-50 dark:bg-brand-950/30 border border-brand-200 dark:border-brand-800 p-4 space-y-2">
+        <p class="text-sm font-medium text-brand-800 dark:text-brand-300 mb-2">Commitment Summary</p>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+          <div class="flex justify-between">
+            <span class="text-muted-foreground">Duration:</span>
+            <span class="font-medium">{{ approveTarget.credit_periods || '\u2014' }} {{ getPeriodLabelPlural(approveTarget.billing_cycle || 'monthly', approveTarget.credit_periods || 1) }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-muted-foreground">Per Period:</span>
+            <span class="font-medium">{{ formatPrice(Math.round(approveTarget.amount_cents / Math.max(1, approveTarget.credit_periods || 1)), approveTarget.currency) }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-muted-foreground">Total:</span>
+            <span class="font-semibold">{{ formatPrice(approveTarget.amount_cents, approveTarget.currency) }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-muted-foreground">User:</span>
+            <span class="font-medium truncate ml-2">{{ approveTarget.user_email }}</span>
+          </div>
+        </div>
+        <div class="mt-2 pt-2 border-t border-brand-200 dark:border-brand-800">
+          <p class="text-xs text-brand-700 dark:text-brand-400">
+            Non-refundable prepaid commitment. Credits will not auto-renew.
+          </p>
+        </div>
+      </div>
+    </AdminConfirmDialog>
 
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!--  Reject Confirmation Dialog                                              -->

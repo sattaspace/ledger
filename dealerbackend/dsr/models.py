@@ -45,6 +45,12 @@ class DSR(models.Model):
         ordering = ["name"]
         verbose_name = "DSR"
         verbose_name_plural = "DSRs"
+        indexes = [
+            # For hierarchy lookups
+            models.Index(fields=["parent_dsr", "role"]),
+            # For role-based filtering
+            models.Index(fields=["role"]),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.role})"

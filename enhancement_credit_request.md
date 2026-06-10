@@ -1,8 +1,11 @@
 # Credit Request System Enhancement Plan
 
-> **Status:** Draft  
+> **Status:** In Progress  
 > **Created:** 2026-06-03  
+> **Updated:** 2026-06-04  
 > **Scope:** Billing / Credit Request & Pool Lifecycle  
+>  
+> **Progress:** Enhancement 1 ✅ | Enhancement 2 ✅ | Enhancement 3 ⬜ | Enhancement 4 ⬜ | Enhancement 5 ⬜  
 
 ---
 
@@ -137,7 +140,9 @@ This prevents users from submitting mismatched amounts and periods.
 
 ---
 
-## Enhancement 2: Compliance & Validity Period Messaging
+## Enhancement 2: Compliance & Validity Period Messaging ✅ COMPLETED
+
+> **Implemented:** 2026-06-04 — All sub-items (2A–2E) completed.
 
 ### Problem
 

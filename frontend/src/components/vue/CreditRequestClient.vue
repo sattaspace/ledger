@@ -4,15 +4,22 @@
  *
  * Features:
  *   - Product and plan selection with dynamic price display
+ *   - Commitment period selector (min 3 months for monthly plans)
+ *   - Auto-calculated total amount based on periods × plan price
  *   - Multiple bank account selection from BankSettings
  *   - Transaction reference and proof of payment upload
+ *   - Pre-submission acknowledgment checkbox (non-refundable commitment)
  *   - Form validation and submission with loading states
  *
  * Used on: /dashboard/billing/credits/request
+ *
+ * ENHANCEMENT-1: Added credit_periods selector with minimum commitment
+ * enforcement and auto-calculated amount. Users must acknowledge the
+ * non-refundable prepaid commitment before submitting.
  */
 
 import { ref, computed, onMounted, watch } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { creditsApi } from "@/lib/credits";
 import type { Product, Plan, CreditRequestInputSchema } from "@/lib/credits";
@@ -42,6 +49,7 @@ const selectedBankId = ref<number | null>(null);
 const form = ref<{
   product_slug: string;
   plan_slug: string;
+  credit_periods: number;
   amount_cents: number;
   currency: string;
   bank_name: string;
@@ -53,6 +61,7 @@ const form = ref<{
 }>({
   product_slug: "",
   plan_slug: "",
+  credit_periods: 3,
   amount_cents: 0,
   currency: "USD",
   bank_name: "",
@@ -66,6 +75,7 @@ const form = ref<{
 const formErrors = ref<Record<string, string>>({});
 const submitted = ref(false);
 const requestId = ref<number | null>(null);
+const acknowledged = ref(false);
 
 // ─── Computed ────────────────────────────────────────────────────────────────
 
@@ -81,17 +91,43 @@ const selectedBank = computed(() =>
   bankAccounts.value.find((b) => b.id === selectedBankId.value)
 );
 
+/** Minimum commitment periods based on plan billing cycle */
+const minPeriods = computed(() => {
+  if (!selectedPlan.value) return 3;
+  return selectedPlan.value.billing_cycle === "yearly" ? 1 : 3;
+});
+
+/** Period label based on billing cycle */
+const periodLabel = computed(() => {
+  if (!selectedPlan.value) return "month";
+  return selectedPlan.value.billing_cycle === "yearly" ? "year" : "month";
+});
+
+/** Period label (pluralized) */
+const periodLabelPlural = computed(() => {
+  return form.value.credit_periods === 1 ? periodLabel.value : `${periodLabel.value}s`;
+});
+
+/** Per-period price in cents from the selected plan */
+const perPeriodPrice = computed(() => {
+  if (!selectedPlan.value) return 0;
+  return selectedPlan.value.price_cents;
+});
+
+/** Can the user submit the form? */
 const canSubmit = computed(() => {
   return (
     bankAccounts.value.length > 0 &&
     selectedBankId.value !== null &&
     form.value.product_slug &&
     form.value.plan_slug &&
+    form.value.credit_periods >= minPeriods.value &&
     form.value.amount_cents > 0 &&
     form.value.bank_name.trim() &&
     form.value.account_holder_name.trim() &&
     form.value.account_number.trim() &&
     form.value.transaction_reference.trim() &&
+    acknowledged.value &&
     !submitting.value
   );
 });
@@ -99,7 +135,8 @@ const canSubmit = computed(() => {
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchInitialData();
 });
 
@@ -153,6 +190,16 @@ function onBankChange() {
   }
 }
 
+/** Recalculate total amount when periods or plan changes */
+function recalculateAmount() {
+  if (selectedPlan.value && form.value.credit_periods > 0) {
+    form.value.amount_cents = form.value.credit_periods * selectedPlan.value.price_cents;
+    form.value.currency = selectedPlan.value.currency || "USD";
+  } else {
+    form.value.amount_cents = 0;
+  }
+}
+
 // ─── Watchers ────────────────────────────────────────────────────────────────
 
 watch(
@@ -180,13 +227,20 @@ watch(
   (planSlug) => {
     const plan = plans.value.find((p) => p.slug === planSlug);
     if (plan) {
-      // Parse display_price to get cents (e.g., "$9.00" -> 900)
-      const match = plan.display_price.match(/\$?([\d,]+\.?\d*)/);
-      if (match) {
-        const dollars = parseFloat(match[1].replace(/,/g, ""));
-        form.value.amount_cents = Math.round(dollars * 100);
+      // Adjust credit_periods to minimum if needed
+      const newMin = plan.billing_cycle === "yearly" ? 1 : 3;
+      if (form.value.credit_periods < newMin) {
+        form.value.credit_periods = newMin;
       }
+      recalculateAmount();
     }
+  }
+);
+
+watch(
+  () => form.value.credit_periods,
+  () => {
+    recalculateAmount();
   }
 );
 
@@ -200,6 +254,9 @@ function validateForm(): boolean {
   }
   if (!form.value.plan_slug) {
     formErrors.value.plan_slug = "Please select a plan";
+  }
+  if (form.value.credit_periods < minPeriods.value) {
+    formErrors.value.credit_periods = `Minimum commitment is ${minPeriods.value} ${periodLabelPlural.value}`;
   }
   if (form.value.amount_cents <= 0) {
     formErrors.value.amount_cents = "Amount must be greater than zero";
@@ -216,6 +273,9 @@ function validateForm(): boolean {
   if (!form.value.transaction_reference.trim()) {
     formErrors.value.transaction_reference = "Transaction reference is required";
   }
+  if (!acknowledged.value) {
+    formErrors.value.acknowledged = "You must acknowledge the commitment terms";
+  }
 
   return Object.keys(formErrors.value).length === 0;
 }
@@ -231,6 +291,7 @@ async function handleSubmit() {
     const payload: CreditRequestInputSchema = {
       product_slug: form.value.product_slug,
       plan_slug: form.value.plan_slug,
+      credit_periods: form.value.credit_periods,
       amount_cents: form.value.amount_cents,
       currency: form.value.currency,
       bank_name: form.value.bank_name,
@@ -257,6 +318,7 @@ function resetForm() {
   form.value = {
     product_slug: "",
     plan_slug: "",
+    credit_periods: 3,
     amount_cents: 0,
     currency: "USD",
     bank_name: bank?.bank_name || "",
@@ -269,6 +331,7 @@ function resetForm() {
   formErrors.value = {};
   submitted.value = false;
   requestId.value = null;
+  acknowledged.value = false;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -390,16 +453,66 @@ function formatPrice(cents: number, currency: string): string {
               >
                 <option value="">Select a plan...</option>
                 <option v-for="plan in plans" :key="plan.slug" :value="plan.slug">
-                  {{ plan.name }} — {{ plan.display_price }}
+                  {{ plan.name }} — {{ plan.display_price }}/{{ plan.billing_cycle === 'yearly' ? 'yr' : 'mo' }}
                 </option>
               </select>
               <p v-if="formErrors.plan_slug" class="mt-1 text-xs text-red-500">{{ formErrors.plan_slug }}</p>
             </div>
 
-            <!-- Amount Display -->
-            <div v-if="form.amount_cents > 0" class="rounded-lg bg-[var(--color-muted)] p-4">
-              <p class="text-sm text-[var(--color-muted-foreground)]">Amount to Pay</p>
-              <p class="text-2xl font-bold mt-1">{{ formatPrice(form.amount_cents, form.currency) }}</p>
+            <!-- Commitment Period Selector -->
+            <div v-if="selectedPlan">
+              <label class="block text-sm font-medium mb-1.5">
+                Commitment Period <span class="text-red-500">*</span>
+              </label>
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  class="inline-flex items-center justify-center h-10 w-10 rounded-md border border-border bg-background text-foreground hover:bg-accent transition-colors"
+                  :disabled="form.credit_periods <= minPeriods"
+                  @click="form.credit_periods = Math.max(minPeriods, form.credit_periods - 1)"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
+                  </svg>
+                </button>
+                <div class="flex-1 text-center">
+                  <span class="text-2xl font-bold">{{ form.credit_periods }}</span>
+                  <span class="text-sm text-[var(--color-muted-foreground)] ml-1">{{ periodLabelPlural }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="inline-flex items-center justify-center h-10 w-10 rounded-md border border-border bg-background text-foreground hover:bg-accent transition-colors"
+                  :disabled="form.credit_periods >= 36"
+                  @click="form.credit_periods = Math.min(36, form.credit_periods + 1)"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                </button>
+              </div>
+              <p class="mt-1.5 text-xs text-[var(--color-muted-foreground)]">
+                Minimum {{ minPeriods }} {{ periodLabel }} commitment for {{ selectedPlan.billing_cycle === 'yearly' ? 'yearly' : 'monthly' }} plans.
+                Credits are non-refundable and do not auto-renew.
+              </p>
+              <p v-if="formErrors.credit_periods" class="mt-1 text-xs text-red-500">{{ formErrors.credit_periods }}</p>
+            </div>
+
+            <!-- Commitment Summary / Amount Display -->
+            <div v-if="form.amount_cents > 0 && selectedPlan" class="rounded-lg bg-brand-50 dark:bg-brand-950/30 border border-brand-200 dark:border-brand-800 p-4">
+              <p class="text-sm font-medium text-brand-800 dark:text-brand-300 mb-2">Commitment Summary</p>
+              <div class="space-y-1.5 text-sm">
+                <div class="flex justify-between">
+                  <span class="text-brand-700 dark:text-brand-400">{{ form.credit_periods }} {{ periodLabelPlural }} x {{ formatPrice(perPeriodPrice, form.currency) }}/{{ periodLabel }}</span>
+                  <span class="font-semibold text-foreground">{{ formatPrice(form.amount_cents, form.currency) }}</span>
+                </div>
+              </div>
+              <div class="mt-3 pt-3 border-t border-brand-200 dark:border-brand-800 flex justify-between items-center">
+                <span class="text-sm font-medium text-brand-800 dark:text-brand-300">Total to Pay</span>
+                <span class="text-2xl font-bold text-foreground">{{ formatPrice(form.amount_cents, form.currency) }}</span>
+              </div>
+              <p class="mt-2 text-xs text-brand-600 dark:text-brand-400">
+                Non-refundable prepaid commitment. Credits do not auto-renew.
+              </p>
             </div>
 
             <!-- Divider -->
@@ -492,6 +605,29 @@ function formatPrice(cents: number, currency: string): string {
                 class="w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 resize-none"
                 placeholder="Any additional information about your payment..."
               />
+            </div>
+
+            <!-- Acknowledgment Checkbox -->
+            <div v-if="form.amount_cents > 0" class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input
+                  v-model="acknowledged"
+                  type="checkbox"
+                  class="mt-0.5 h-4 w-4 rounded border-border text-brand-600 focus:ring-brand-600"
+                />
+                <span class="text-sm text-amber-900 dark:text-amber-200">
+                  I understand that this is a <strong>non-refundable prepaid commitment</strong> for
+                  <strong>{{ form.credit_periods }} {{ periodLabelPlural }}</strong> totaling
+                  <strong>{{ formatPrice(form.amount_cents, form.currency) }}</strong>. I acknowledge that:
+                </span>
+              </label>
+              <ul class="mt-2 ml-7 text-xs text-amber-800 dark:text-amber-300 space-y-1 list-disc">
+                <li>Credits are consumed at the start of each billing period</li>
+                <li>Unused periods are not refundable</li>
+                <li>Access will be revoked when the commitment ends unless renewed</li>
+                <li>This is not an auto-renewing subscription</li>
+              </ul>
+              <p v-if="formErrors.acknowledged" class="mt-2 text-xs text-red-500 ml-7">{{ formErrors.acknowledged }}</p>
             </div>
 
             <!-- Submit Button -->
@@ -597,6 +733,17 @@ function formatPrice(cents: number, currency: string): string {
                   2
                 </span>
                 <div>
+                  <p class="font-medium">Choose Commitment Period</p>
+                  <p class="text-sm text-[var(--color-muted-foreground)]">
+                    Select how many months you want to commit. Minimum 3 months for monthly plans.
+                  </p>
+                </div>
+              </li>
+              <li class="flex gap-3">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-950 text-brand-600 dark:text-brand-400 text-sm font-semibold">
+                  3
+                </span>
+                <div>
                   <p class="font-medium">Transfer Funds</p>
                   <p class="text-sm text-[var(--color-muted-foreground)]">
                     Send the exact amount to the bank account shown.
@@ -605,7 +752,7 @@ function formatPrice(cents: number, currency: string): string {
               </li>
               <li class="flex gap-3">
                 <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-950 text-brand-600 dark:text-brand-400 text-sm font-semibold">
-                  3
+                  4
                 </span>
                 <div>
                   <p class="font-medium">Submit Request</p>
@@ -616,12 +763,12 @@ function formatPrice(cents: number, currency: string): string {
               </li>
               <li class="flex gap-3">
                 <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-950 text-brand-600 dark:text-brand-400 text-sm font-semibold">
-                  4
+                  5
                 </span>
                 <div>
                   <p class="font-medium">Get Credits</p>
                   <p class="text-sm text-[var(--color-muted-foreground)]">
-                    After approval, credits are issued for the same value.
+                    After approval, credits are issued for the committed duration.
                   </p>
                 </div>
               </li>

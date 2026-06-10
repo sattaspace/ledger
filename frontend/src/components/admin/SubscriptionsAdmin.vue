@@ -15,7 +15,7 @@
  */
 
 import { ref, computed, onMounted, watch } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { authHelpers } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
@@ -174,7 +174,8 @@ async function fetchPlans(productId: number) {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await Promise.all([fetchSubscriptions(), fetchProducts()]);
 });
 

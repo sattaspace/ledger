@@ -111,6 +111,307 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Sync Helpers for transaction.atomic() + select_for_update()
+# =============================================================================
+# Django's transaction.atomic() does NOT support `async with`. It is a
+# synchronous context manager only. Using `async with transaction.atomic()`
+# raises AttributeError: __aenter__. These helpers extract the transactional
+# logic into synchronous functions wrapped with sync_to_async, so that
+# `with transaction.atomic()` and `select_for_update().get()` work correctly.
+# =============================================================================
+
+
+@sync_to_async
+def _adjust_credit_pool_sync(
+    credit_id: int,
+    periods_delta: int,
+    reason: str,
+    amount_cents_delta: Optional[int],
+    admin_user_id: int,
+    admin_user_email: str,
+) -> dict:
+    """Sync helper: adjust credit pool within a proper transaction."""
+    from django.db import transaction
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+
+    with transaction.atomic():
+        try:
+            pool = CreditPool.objects.select_related(
+                "user", "plan"
+            ).select_for_update().get(pk=credit_id)
+        except CreditPool.DoesNotExist:
+            raise NotFoundException("Credit pool not found.")
+
+        if pool.status != CreditPool.CreditPoolStatus.ACTIVE:
+            raise BadRequestException(
+                "Cannot adjust a credit pool with status '%s'." % pool.status
+            )
+
+        new_credit_periods = pool.credit_periods + periods_delta
+        if new_credit_periods < 0:
+            raise BadRequestException(
+                "Adjustment would result in negative credit periods."
+            )
+
+        old_periods = pool.credit_periods
+        pool.credit_periods = new_credit_periods
+        pool.periods_consumed = min(pool.periods_consumed, new_credit_periods)
+
+        if pool.periods_remaining <= 0 and pool.status == CreditPool.CreditPoolStatus.ACTIVE:
+            pool.status = CreditPool.CreditPoolStatus.EXHAUSTED
+
+        pool.save(
+            update_fields=["credit_periods", "periods_consumed", "status", "updated_at"]
+        )
+
+        amount_delta = (
+            amount_cents_delta
+            if amount_cents_delta is not None
+            else (
+                periods_delta * pool.plan.price_cents
+                if pool.plan.price_cents > 0
+                else 0
+            )
+        )
+
+        admin_user = User.objects.get(pk=admin_user_id)
+        CreditTransaction.objects.create(
+            credit_pool=pool,
+            action=CreditTransaction.TransactionType.ADJUST,
+            periods_delta=periods_delta,
+            amount_cents_delta=amount_delta,
+            periods_balance=pool.periods_remaining,
+            reason=reason,
+            created_by=admin_user,
+        )
+
+    logger.info(
+        "ADMIN_CREDIT_ADJUST: credit_id=%s, delta=%s, old=%s, new=%s, by=%s",
+        pool.id,
+        periods_delta,
+        old_periods,
+        new_credit_periods,
+        admin_user_email,
+    )
+
+    return {
+        "id": pool.id,
+        "credit_periods": pool.credit_periods,
+        "periods_remaining": pool.periods_remaining,
+        "status": pool.status,
+        "message": "Credit pool adjusted by %+d periods." % periods_delta,
+    }
+
+
+@sync_to_async
+def _refund_credit_pool_sync(
+    credit_id: int,
+    reason: str,
+    admin_user_id: int,
+    admin_user_email: str,
+) -> dict:
+    """Sync helper: refund credit pool within a proper transaction."""
+    from django.db import transaction
+    from django.utils import timezone as dj_timezone
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+
+    with transaction.atomic():
+        try:
+            pool = CreditPool.objects.select_related(
+                "user", "plan"
+            ).select_for_update().get(pk=credit_id)
+        except CreditPool.DoesNotExist:
+            raise NotFoundException("Credit pool not found.")
+
+        if pool.status in (
+            CreditPool.CreditPoolStatus.REFUNDED,
+            CreditPool.CreditPoolStatus.CANCELLED,
+        ):
+            raise BadRequestException(
+                "Cannot refund a credit pool with status '%s'." % pool.status
+            )
+
+        now = dj_timezone.now()
+        remaining = pool.periods_remaining
+        refund_amount = (
+            remaining * pool.plan.price_cents if pool.plan.price_cents > 0 else 0
+        )
+
+        pool.status = CreditPool.CreditPoolStatus.REFUNDED
+        pool.expires_at = now
+        pool.current_period_end = now
+        pool.save(
+            update_fields=["status", "expires_at", "current_period_end", "updated_at"]
+        )
+
+        admin_user = User.objects.get(pk=admin_user_id)
+        CreditTransaction.objects.create(
+            credit_pool=pool,
+            action=CreditTransaction.TransactionType.REFUND,
+            periods_delta=-remaining,
+            amount_cents_delta=-refund_amount,
+            periods_balance=0,
+            reason=reason,
+            created_by=admin_user,
+        )
+
+    logger.info(
+        "ADMIN_CREDIT_REFUND: credit_id=%s, user=%s, refund_amount=%sc, reason='%s', by=%s",
+        pool.id,
+        pool.user.email,
+        refund_amount,
+        reason[:100],
+        admin_user_email,
+    )
+
+    return {
+        "id": pool.id,
+        "status": pool.status,
+        "periods_remaining": 0,
+        "message": "Credit pool refunded. %s period(s) voided." % remaining,
+    }
+
+
+@sync_to_async
+def _approve_credit_request_sync(
+    request_id: int,
+    admin_user_id: int,
+):
+    """Sync helper: approve credit request within a proper transaction.
+
+    Returns (cr, pool, invoice) tuple for use after the transaction commits.
+    """
+    from django.db import transaction
+    from django.utils import timezone as dj_tz
+    from django.contrib.auth import get_user_model
+    from .models import CreditPurchaseRequest
+    from .services import BillingService
+
+    User = get_user_model()
+    admin_user = User.objects.get(pk=admin_user_id)
+
+    with transaction.atomic():
+        try:
+            cr = CreditPurchaseRequest.objects.select_related(
+                "user", "product", "plan"
+            ).select_for_update().get(pk=request_id)
+        except CreditPurchaseRequest.DoesNotExist:
+            raise NotFoundException("Credit request not found.")
+
+        if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
+            raise BadRequestException(
+                "Cannot approve request with status '%s'." % cr.status
+            )
+
+        # Call create_credit_pool directly (sync) — its @transaction.atomic
+        # becomes a nested SAVEPOINT within this outer transaction.
+        pool, invoice = BillingService.create_credit_pool(
+            user=cr.user, plan=cr.plan, amount_cents=cr.amount_cents,
+            source="bank_transfer", payment_reference=cr.transaction_reference,
+            created_by=admin_user, currency=cr.currency, tax_cents=0,
+            notes="Approved from credit request #%s. Bank: %s" % (cr.id, cr.bank_name),
+            credit_periods=cr.credit_periods,
+        )
+
+        cr.status = CreditPurchaseRequest.RequestStatus.APPROVED
+        cr.reviewed_by = admin_user
+        cr.reviewed_at = dj_tz.now()
+        cr.created_credit_pool = pool
+        cr.save(update_fields=[
+            "status", "reviewed_by", "reviewed_at",
+            "created_credit_pool", "updated_at",
+        ])
+
+    return cr, pool, invoice
+
+
+@sync_to_async
+def _change_credit_pool_plan_sync(
+    credit_id: int,
+    new_plan_slug: str,
+):
+    """Sync helper: change credit pool plan within a proper transaction.
+
+    Returns (result_dict, pool_id) tuple.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        try:
+            pool = CreditPool.objects.select_related(
+                "user", "product", "plan"
+            ).select_for_update().get(pk=credit_id)
+        except CreditPool.DoesNotExist:
+            raise NotFoundException("Credit pool not found.")
+
+        # Find the new plan — must be in the same product
+        try:
+            new_plan = Plan.objects.get(
+                product=pool.product, slug=new_plan_slug, is_active=True
+            )
+        except Plan.DoesNotExist:
+            raise NotFoundException(
+                "Plan '%s' not found in product '%s'."
+                % (new_plan_slug, pool.product.slug)
+            )
+
+        try:
+            result = BillingService.change_credit_plan(pool, new_plan)
+        except ValueError as e:
+            raise BadRequestException(str(e))
+
+    return result, pool.id
+
+
+@sync_to_async
+def _reject_credit_request_sync(
+    request_id: int,
+    admin_user_id: int,
+    reason: str = "",
+):
+    """Sync helper: reject credit request within a proper transaction.
+
+    Prevents TOCTOU race condition where two admins could approve and
+    reject the same request simultaneously. Returns the updated cr object.
+    """
+    from django.db import transaction
+    from django.utils import timezone as dj_tz
+    from django.contrib.auth import get_user_model
+    from .models import CreditPurchaseRequest
+
+    User = get_user_model()
+
+    with transaction.atomic():
+        try:
+            cr = CreditPurchaseRequest.objects.select_related(
+                "user", "product", "plan"
+            ).select_for_update().get(pk=request_id)
+        except CreditPurchaseRequest.DoesNotExist:
+            raise NotFoundException("Credit request not found.")
+
+        if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
+            raise BadRequestException(
+                "Cannot reject request with status '%s'." % cr.status
+            )
+
+        admin_user = User.objects.get(pk=admin_user_id)
+        cr.status = CreditPurchaseRequest.RequestStatus.REJECTED
+        cr.reviewed_by = admin_user
+        cr.reviewed_at = dj_tz.now()
+        cr.review_note = reason
+        cr.save(update_fields=[
+            "status", "reviewed_by", "reviewed_at",
+            "review_note", "updated_at",
+        ])
+
+    return cr
+
+
+# =============================================================================
 # Admin Controller — Products & Domains
 # =============================================================================
 
@@ -2433,6 +2734,8 @@ class AdminCreditController:
                 "current_period_start": pool.current_period_start.isoformat() if pool.current_period_start else None,
                 "current_period_end": pool.current_period_end.isoformat() if pool.current_period_end else None,
                 "expires_at": pool.expires_at.isoformat() if pool.expires_at else None,
+                "commitment_end": pool.commitment_end.isoformat() if pool.commitment_end else None,
+                "expiry_type": pool.expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
                 "created_at": pool.created_at.isoformat() if pool.created_at else None,
             })
 
@@ -2485,6 +2788,8 @@ class AdminCreditController:
             "current_period_start": pool.current_period_start,
             "current_period_end": pool.current_period_end,
             "expires_at": pool.expires_at,
+            "commitment_end": pool.commitment_end,
+            "expiry_type": pool.expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
             "created_at": pool.created_at,
             "transactions": [
                 {
@@ -2535,6 +2840,27 @@ class AdminCreditController:
                 % (payload.plan_slug, product.slug)
             )
 
+        # BUG-FIX / ARCHITECTURE: Validate credit_periods when explicitly provided.
+        # When override_min_commitment is True, admins can set periods below the
+        # normal 3-month minimum for monthly plans (for promo credits, beta users, etc).
+        # When credit_periods is not provided, it's derived from amount_cents // plan.price_cents.
+        credit_periods = payload.credit_periods  # May be None (derive from amount)
+        if credit_periods is not None:
+            min_periods = 3 if plan.billing_cycle == "monthly" else 1
+            if credit_periods < min_periods and not payload.override_min_commitment:
+                raise BadRequestException(
+                    f"Minimum commitment is {min_periods} period(s) for {plan.billing_cycle} plans. "
+                    f"Set override_min_commitment=True to bypass this requirement."
+                )
+            if credit_periods < min_periods and payload.override_min_commitment:
+                # Audit-log the override for compliance tracking
+                logger.warning(
+                    "ADMIN_COMMITMENT_OVERRIDE: admin=%s created credit for user=%s with "
+                    "%d periods (below minimum %d for %s). Override authorized.",
+                    request.user.email, user.email, credit_periods, min_periods,
+                    plan.billing_cycle,
+                )
+
         try:
             pool, invoice = await sync_to_async(BillingService.create_credit_pool)(
                 user=user,
@@ -2546,6 +2872,8 @@ class AdminCreditController:
                 currency=payload.currency,
                 tax_cents=payload.tax_cents,
                 notes=payload.notes,
+                credit_periods=credit_periods,  # BUG-FIX: Pass through explicit periods
+                expires_at=payload.expires_at,  # ENHANCEMENT-5: Admin hard-expiry override
             )
         except ValueError as e:
             raise BadRequestException(str(e))
@@ -2564,6 +2892,9 @@ class AdminCreditController:
                 "status": pool.status,
                 "is_effectively_active": pool.is_effectively_active,
                 "current_period_end": pool.current_period_end,
+                "expires_at": pool.expires_at,  # ENHANCEMENT-5: Hard expiry (null = soft expiry only)
+                "commitment_end": pool.commitment_end,  # ENHANCEMENT-5: Natural commitment end date
+                "expiry_type": pool.expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
             },
             "invoice": {
                 "id": invoice.id,
@@ -2593,64 +2924,15 @@ class AdminCreditController:
         payload: AdminCreditRefundSchema,
     ):
         # HIGH-13: Use select_for_update within transaction to prevent race conditions
-        # when concurrent refund and adjustment operations are made
-        from django.db import transaction
-        from django.utils import timezone as dj_timezone
-        
-        async with transaction.atomic():
-            try:
-                pool = await CreditPool.objects.select_related(
-                    "user", "plan"
-                ).select_for_update().aget(pk=credit_id)
-            except CreditPool.DoesNotExist:
-                raise NotFoundException("Credit pool not found.")
-
-            if pool.status in (
-                CreditPool.CreditPoolStatus.REFUNDED,
-                CreditPool.CreditPoolStatus.CANCELLED,
-            ):
-                raise BadRequestException(
-                    "Cannot refund a credit pool with status '%s'." % pool.status
-                )
-
-            now = dj_timezone.now()
-            remaining = pool.periods_remaining
-            refund_amount = (
-                remaining * pool.plan.price_cents if pool.plan.price_cents > 0 else 0
-            )
-
-            pool.status = CreditPool.CreditPoolStatus.REFUNDED
-            pool.expires_at = now
-            pool.current_period_end = now
-            await pool.asave(
-                update_fields=["status", "expires_at", "current_period_end", "updated_at"]
-            )
-
-            await CreditTransaction.objects.acreate(
-                credit_pool=pool,
-                action=CreditTransaction.TransactionType.REFUND,
-                periods_delta=-remaining,
-                amount_cents_delta=-refund_amount,
-                periods_balance=0,
-                reason=payload.reason,
-                created_by=request.user,
-            )
-
-        logger.info(
-            "ADMIN_CREDIT_REFUND: credit_id=%s, user=%s, refund_amount=%sc, reason='%s', by=%s",
-            pool.id,
-            pool.user.email,
-            refund_amount,
-            payload.reason[:100],
-            request.user.email,
+        # when concurrent refund and adjustment operations are made.
+        # BUG-FIX: Django's transaction.atomic() does NOT support `async with` —
+        # extracted to sync helper wrapped with sync_to_async.
+        return await _refund_credit_pool_sync(
+            credit_id=credit_id,
+            reason=payload.reason,
+            admin_user_id=request.user.id,
+            admin_user_email=request.user.email,
         )
-
-        return {
-            "id": pool.id,
-            "status": pool.status,
-            "periods_remaining": 0,
-            "message": "Credit pool refunded. %s period(s) voided." % remaining,
-        }
 
     @http_post(
         "/credits/{credit_id}/adjust",
@@ -2667,75 +2949,73 @@ class AdminCreditController:
         payload: AdminCreditAdjustSchema,
     ):
         # CRIT-05 FIX: Use select_for_update within transaction to prevent race conditions
-        # when multiple concurrent adjustments are made to the same credit pool
-        from django.db import transaction
-        
-        async with transaction.atomic():
-            try:
-                pool = await CreditPool.objects.select_related(
-                    "user", "plan"
-                ).select_for_update().aget(pk=credit_id)
-            except CreditPool.DoesNotExist:
-                raise NotFoundException("Credit pool not found.")
+        # when multiple concurrent adjustments are made to the same credit pool.
+        # BUG-FIX: Django's transaction.atomic() does NOT support `async with` — it
+        # only supports synchronous context managers. Extract the transactional logic
+        # into a sync helper wrapped with sync_to_async so that `with transaction.atomic()`
+        # and `select_for_update().get()` work correctly.
+        return await _adjust_credit_pool_sync(
+            credit_id=credit_id,
+            periods_delta=payload.periods_delta,
+            reason=payload.reason,
+            amount_cents_delta=payload.amount_cents_delta,
+            admin_user_id=request.user.id,
+            admin_user_email=request.user.email,
+        )
 
-            if pool.status != CreditPool.CreditPoolStatus.ACTIVE:
-                raise BadRequestException(
-                    "Cannot adjust a credit pool with status '%s'." % pool.status
-                )
+    @http_post(
+        "/credits/{credit_id}/change-plan",
+        response={200: dict, 400: dict, 404: dict},
+        summary="Change credit pool plan",
+        description=(
+            "Change the plan of an active credit pool. The remaining value is "
+            "transferred to the new plan, and periods are recalculated based on "
+            "the new plan's price. The new plan must belong to the same product."
+        ),
+    )
+    @admin_write_rate_limit
+    @log_admin_access
+    async def change_credit_pool_plan(
+        self,
+        request: HttpRequest,
+        credit_id: int,
+        payload: dict,
+    ):
+        """Change the plan of an active credit pool.
 
-            new_credit_periods = pool.credit_periods + payload.periods_delta
-            if new_credit_periods < 0:
-                raise BadRequestException(
-                    "Adjustment would result in negative credit periods."
-                )
+        OPEN-Q3: Credits are transferable between plans within the same product.
+        The remaining monetary value is preserved and recalculated as periods
+        on the new plan. For upgrades (new plan costs more), periods decrease.
+        For downgrades (new plan costs less), periods increase.
 
-            old_periods = pool.credit_periods
-            pool.credit_periods = new_credit_periods
-            pool.periods_consumed = min(pool.periods_consumed, new_credit_periods)
+        BUG-FIX: Uses sync helper with select_for_update() + transaction.atomic()
+        to prevent race conditions on concurrent plan changes.
+        """
+        new_plan_slug = payload.get("new_plan_slug") if isinstance(payload, dict) else None
+        if not new_plan_slug:
+            raise BadRequestException("new_plan_slug is required.")
 
-            if pool.periods_remaining <= 0 and pool.status == CreditPool.CreditPoolStatus.ACTIVE:
-                pool.status = CreditPool.CreditPoolStatus.EXHAUSTED
+        result, pool_id = await _change_credit_pool_plan_sync(
+            credit_id=credit_id,
+            new_plan_slug=new_plan_slug,
+        )
 
-            await pool.asave(
-                update_fields=["credit_periods", "periods_consumed", "status", "updated_at"]
-            )
-
-            amount_delta = (
-                payload.amount_cents_delta
-                if payload.amount_cents_delta is not None
-                else (
-                    payload.periods_delta * pool.plan.price_cents
-                    if pool.plan.price_cents > 0
-                    else 0
-                )
-            )
-
-            await CreditTransaction.objects.acreate(
-                credit_pool=pool,
-                action=CreditTransaction.TransactionType.ADJUST,
-                periods_delta=payload.periods_delta,
-                amount_cents_delta=amount_delta,
-                periods_balance=pool.periods_remaining,
-                reason=payload.reason,
-                created_by=request.user,
-            )
-
-            logger.info(
-                "ADMIN_CREDIT_ADJUST: credit_id=%s, delta=%s, old=%s, new=%s, by=%s",
-                pool.id,
-                payload.periods_delta,
-                old_periods,
-                new_credit_periods,
-                request.user.email,
-            )
-
-            return {
-                "id": pool.id,
-                "credit_periods": pool.credit_periods,
-                "periods_remaining": pool.periods_remaining,
-                "status": pool.status,
-                "message": "Credit pool adjusted by %+d periods." % payload.periods_delta,
-            }
+        return {
+            "id": pool_id,
+            "old_plan": result["old_plan"],
+            "new_plan": result["new_plan"],
+            "old_periods_remaining": result["old_periods_remaining"],
+            "new_periods_remaining": result["new_periods_remaining"],
+            "remaining_value_cents": result["remaining_value_cents"],
+            "leftover_cents": result["leftover_cents"],
+            "message": (
+                "Plan changed from %s to %s. "
+                "%d remaining period(s) converted to "
+                "%d period(s) on the new plan."
+                % (result["old_plan"], result["new_plan"],
+                   result["old_periods_remaining"], result["new_periods_remaining"])
+            ),
+        }
 
 
 # =============================================================================
@@ -2778,7 +3058,9 @@ class AdminCreditRequestController:
         return {"meta": meta, "results": [{
             "id": r.id, "user_email": r.user.email,
             "product_name": r.product.name, "plan_name": r.plan.name,
+            "plan_slug": r.plan.slug, "billing_cycle": r.plan.billing_cycle,
             "amount_cents": r.amount_cents, "currency": r.currency,
+            "credit_periods": r.credit_periods,
             "bank_name": r.bank_name, "account_holder_name": r.account_holder_name,
             "account_number": r.account_number,
             "transaction_reference": r.transaction_reference,
@@ -2798,33 +3080,22 @@ class AdminCreditRequestController:
         from .services import BillingService
         from .tasks import send_credit_request_approved_email
         from django.utils import timezone as dj_tz
-        from django.db import transaction
 
         # CRIT-03/FIX: Use select_for_update to prevent race condition where
-        # two admins could approve the same request simultaneously
-        async with transaction.atomic():
-            try:
-                cr = await CreditPurchaseRequest.objects.select_related(
-                    "user", "product", "plan"
-                ).select_for_update().aget(pk=request_id)
-            except CreditPurchaseRequest.DoesNotExist:
-                raise NotFoundException("Credit request not found.")
+        # two admins could approve the same request simultaneously.
+        # BUG-FIX: Django's transaction.atomic() does NOT support `async with` —
+        # extracted to sync helper. The helper runs create_credit_pool() directly
+        # (not via sync_to_async), so the @transaction.atomic on create_credit_pool
+        # becomes a nested SAVEPOINT within the outer transaction — correct behavior.
+        cr, pool, invoice = await _approve_credit_request_sync(
+            request_id=request_id,
+            admin_user_id=request.user.id,
+        )
 
-            if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
-                raise BadRequestException(f"Cannot approve request with status '{cr.status}'.")
-
-            pool, invoice = await sync_to_async(BillingService.create_credit_pool)(
-                user=cr.user, plan=cr.plan, amount_cents=cr.amount_cents,
-                source="bank_transfer", payment_reference=cr.transaction_reference,
-                created_by=request.user, currency=cr.currency, tax_cents=0,
-                notes=f"Approved from credit request #{cr.id}. Bank: {cr.bank_name}",
-            )
-
-            cr.status = CreditPurchaseRequest.RequestStatus.APPROVED
-            cr.reviewed_by = request.user
-            cr.reviewed_at = dj_tz.now()
-            cr.created_credit_pool = pool
-            await cr.asave(update_fields=["status", "reviewed_by", "reviewed_at", "created_credit_pool", "updated_at"])
+        # ENHANCEMENT-2/4: Compute commitment dates for the approval email
+        # Use the model's commitment_end property instead of duplicating logic
+        _commitment_start = pool.activated_at or pool.current_period_start
+        _commitment_end = pool.commitment_end  # ENHANCEMENT-4: Use model property
 
         # Send approval email notification via Celery (outside transaction)
         send_credit_request_approved_email.delay(
@@ -2837,6 +3108,9 @@ class AdminCreditRequestController:
             credit_pool_id=pool.id,
             invoice_number=invoice.invoice_number,
             periods=pool.credit_periods,
+            billing_cycle=cr.plan.billing_cycle,
+            commitment_start=_commitment_start.isoformat() if _commitment_start else "",
+            commitment_end=_commitment_end.isoformat() if _commitment_end else "",
         )
 
         return {"id": cr.id, "status": cr.status, "credit_pool_id": pool.id,
@@ -2855,29 +3129,21 @@ class AdminCreditRequestController:
         request_id: int,
         payload: dict = None,
     ):
-        from .models import CreditPurchaseRequest
         from .tasks import send_credit_request_rejected_email
-        from django.utils import timezone as dj_tz
 
-        try:
-            cr = await CreditPurchaseRequest.objects.select_related("user", "product", "plan").aget(pk=request_id)
-        except CreditPurchaseRequest.DoesNotExist:
-            raise NotFoundException("Credit request not found.")
-
-        if cr.status != CreditPurchaseRequest.RequestStatus.PENDING:
-            raise BadRequestException(f"Cannot reject request with status '{cr.status}'.")
-
+        # BUG-FIX: Use select_for_update within transaction to prevent TOCTOU
+        # race condition where two admins could approve and reject simultaneously.
         reason = ""
         if payload and isinstance(payload, dict):
             reason = payload.get("reason", "")
 
-        cr.status = CreditPurchaseRequest.RequestStatus.REJECTED
-        cr.reviewed_by = request.user
-        cr.reviewed_at = dj_tz.now()
-        cr.review_note = reason
-        await cr.asave(update_fields=["status", "reviewed_by", "reviewed_at", "review_note", "updated_at"])
+        cr = await _reject_credit_request_sync(
+            request_id=request_id,
+            admin_user_id=request.user.id,
+            reason=reason,
+        )
 
-        # Send rejection email notification via Celery
+        # Send rejection email notification via Celery (outside transaction)
         send_credit_request_rejected_email.delay(
             user_email=cr.user.email,
             user_name=cr.user.first_name or cr.user.email.split('@')[0],

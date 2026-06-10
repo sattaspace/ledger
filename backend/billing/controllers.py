@@ -63,7 +63,7 @@ import stripe
 from ninja import Query
 from ninja_extra import api_controller, http_get, http_post
 from django.http import HttpRequest
-from django.db import transaction
+from django.db import transaction, models as db_models
 from asgiref.sync import sync_to_async
 
 from common.exceptions import (
@@ -191,6 +191,65 @@ def require_verified_email(request: HttpRequest) -> None:
         raise AccountNotActiveException(
             "Please verify your email address to perform billing actions."
         )
+
+
+# =============================================================================
+# Sync Helpers for transaction.atomic() + select_for_update()
+# =============================================================================
+# Django's transaction.atomic() does NOT support `async with`. It is a
+# synchronous context manager only. Using `async with transaction.atomic()`
+# raises AttributeError: __aenter__. These helpers extract the transactional
+# logic into synchronous functions wrapped with sync_to_async, so that
+# `with transaction.atomic()` and `select_for_update().get()` work correctly.
+# =============================================================================
+
+
+@sync_to_async
+def _reactivate_subscription_sync(user_id: int, product_slug: str) -> None:
+    """Sync helper: reactivate subscription within a proper transaction.
+
+    Performs the Stripe call inside the transaction so the row lock
+    (select_for_update) is held, preventing concurrent reactivation.
+    """
+    from django.db import transaction
+    from django.utils import timezone as tz
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user = User.objects.get(pk=user_id)
+
+    with transaction.atomic():
+        product = BillingService.get_product_by_slug(product_slug)
+        if not product:
+            raise NotFoundException("Product not found.")
+
+        try:
+            subscription = Subscription.objects.select_related(
+                "plan", "product"
+            ).select_for_update().get(user=user, product=product)
+        except Subscription.DoesNotExist:
+            raise NotFoundException("No subscription found for this product.")
+
+        if subscription.status != "canceled":
+            raise BadRequestException("Only canceled subscriptions can be reactivated.")
+
+        # CTR-13 Fix: Check if the billing period has already expired.
+        if subscription.current_period_end:
+            if subscription.current_period_end < tz.now():
+                raise BadRequestException(
+                    "This subscription's billing period has expired. "
+                    "Please subscribe to a new plan."
+                )
+
+        # Step 1: Stripe first (inside transaction to hold the row lock)
+        if subscription.stripe_subscription_id:
+            try:
+                reactivate_subscription_on_stripe(subscription, subscription.plan)
+            except stripe.error.StripeError as e:
+                raise handle_stripe_error(e, context="reactivate_subscription")
+
+        # Step 2: DB update (only after Stripe confirms)
+        BillingService.reactivate_subscription(subscription)
 
 
 # =============================================================================
@@ -907,44 +966,18 @@ class BillingProtectedController:
         
         CRIT-03 FIX: Added select_for_update() to prevent race conditions when
         multiple concurrent reactivation requests are made for the same subscription.
+        BUG-FIX: Django's transaction.atomic() does NOT support `async with` —
+        extracted to sync helper wrapped with sync_to_async.
         """
         require_verified_email(request)
         check_rate_limit_or_raise(request, "reactivate_sub")
 
-        # CRIT-03 FIX: Use select_for_update within transaction to prevent race conditions
-        from django.db import transaction
-        async with transaction.atomic():
-            subscription = await BillingService.aget_subscription_for_product(
-                request.user, product_slug, select_for_update=True
-            )
-            if not subscription:
-                raise NotFoundException("No subscription found for this product.")
-
-            if subscription.status != "canceled":
-                raise BadRequestException("Only canceled subscriptions can be reactivated.")
-
-            # CTR-13 Fix: Check if the billing period has already expired.
-            # After period_end, the Stripe subscription cannot be meaningfully
-            # reactivated — the customer would need to go through checkout again.
-            if subscription.current_period_end:
-                from django.utils import timezone as tz
-                if subscription.current_period_end < tz.now():
-                    raise BadRequestException(
-                        "This subscription's billing period has expired. "
-                        "Please subscribe to a new plan."
-                    )
-
-            # ── Step 1: Stripe first ──────────────────────────────────────
-            if subscription.stripe_subscription_id:
-                try:
-                    await sync_to_async(reactivate_subscription_on_stripe)(
-                        subscription, subscription.plan
-                    )
-                except stripe.error.StripeError as e:
-                    raise handle_stripe_error(e, context="reactivate_subscription")
-
-            # ── Step 2: DB update (only after Stripe confirms) ────────────
-            await BillingService.areactivate_subscription(subscription)
+        # CRIT-03 FIX: Use select_for_update within transaction to prevent race conditions.
+        # BUG-FIX: transaction.atomic() is sync-only; extract to sync helper.
+        await _reactivate_subscription_sync(
+            user_id=request.user.id,
+            product_slug=product_slug,
+        )
 
         return MessageResponse(message="Subscription reactivated successfully.")
 
@@ -1693,6 +1726,8 @@ class BillingProtectedController:
                 "current_period_start": p.current_period_start,
                 "current_period_end": p.current_period_end,
                 "expires_at": p.expires_at,
+                "commitment_end": p.commitment_end,
+                "expiry_type": p.expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
                 "created_at": p.created_at,
             }
             for p in pools
@@ -1813,6 +1848,21 @@ class BillingProtectedController:
         if not plan:
             raise NotFoundException("Plan '%s' not found." % payload.plan_slug)
 
+        # ENHANCEMENT-1: Validate minimum commitment period
+        min_periods = 3 if plan.billing_cycle == "monthly" else 1
+        if payload.credit_periods < min_periods:
+            raise BadRequestException(
+                f"Minimum commitment is {min_periods} period(s) for {plan.billing_cycle} plans."
+            )
+
+        # ENHANCEMENT-1: Validate amount matches periods * plan price
+        expected_amount = payload.credit_periods * plan.price_cents
+        if payload.amount_cents != expected_amount:
+            raise BadRequestException(
+                f"Amount must equal {payload.credit_periods} x plan price = "
+                f"{expected_amount} cents (received {payload.amount_cents} cents)."
+            )
+
         # HIGH-12: Validate bank details against active BankSettings
         from .models import BankSettings
         active_bank = await BankSettings.objects.filter(
@@ -1832,6 +1882,7 @@ class BillingProtectedController:
             plan=plan,
             amount_cents=payload.amount_cents,
             currency=payload.currency or "USD",
+            credit_periods=payload.credit_periods,
             bank_name=payload.bank_name,
             account_holder_name=payload.account_holder_name,
             account_number=payload.account_number,
@@ -1845,6 +1896,121 @@ class BillingProtectedController:
             "id": credit_request.id,
             "status": credit_request.status,
             "message": "Credit purchase request submitted. An admin will review your transaction.",
+        }
+
+    # ENHANCEMENT-3: Credit expiry warnings endpoint for frontend banners
+    # Must come BEFORE /credits/{credit_id} to avoid "expiring" being captured as credit_id
+    @http_get(
+        "/credits/expiring",
+        response={200: dict},
+        summary="Get credit pools expiring soon",
+        description=(
+            "Returns the authenticated user's active credit pools that are "
+            "expiring within 14 days. Used by the frontend to display warning "
+            "banners. Includes days_until_expiry for each pool."
+        ),
+    )
+    async def get_expiring_credit_pools(
+        self,
+        request: HttpRequest,
+    ):
+        """Get credit pools that are expiring within 14 days.
+
+        ENHANCEMENT-3: Returns pools approaching their expiry or period end,
+        allowing the frontend to show timely warning banners. Each pool
+        includes a computed days_until_expiry field.
+        """
+        from django.utils import timezone as tz
+
+        require_verified_email(request)
+
+        now = tz.now()
+        warning_window = tz.timedelta(days=14)
+
+        # Find active pools for this user where either expires_at or
+        # current_period_end falls within the next 14 days
+        pools = [
+            pool
+            async for pool in CreditPool.objects.select_related(
+                "product", "plan"
+            )
+            # BUG-FIX: periods_remaining is a Python @property, not a DB field.
+            # Django ORM cannot filter on @property — use F-expression instead.
+            .filter(
+                user=request.user,
+                status=CreditPool.CreditPoolStatus.ACTIVE,
+                periods_consumed__lt=db_models.F("credit_periods"),
+            )
+            .order_by("expires_at", "current_period_end")
+            .all()
+        ]
+
+        expiring = []
+        for pool in pools:
+            # ENHANCEMENT-4/5: Use expires_at (hard deadline) when set, otherwise
+            # fall back to commitment_end (natural end based on periods consumed).
+            # When both are None, fall back to current_period_end.
+            effective_end = pool.expires_at or pool.commitment_end or pool.current_period_end
+            if not effective_end:
+                continue
+
+            # ENHANCEMENT-5: Classify the expiry type for frontend display
+            # "soft" = natural end when all periods are consumed (commitment_end)
+            # "hard" = admin-imposed calendar deadline (expires_at) that overrides remaining periods
+            expiry_type = "hard" if pool.expires_at else "soft"
+
+            delta = effective_end - now
+            days_until_expiry = delta.days
+
+            # Only include pools expiring within 14 days (or already past expiry = grace period)
+            if days_until_expiry > 14:
+                continue
+
+            # Determine urgency level for frontend banner styling
+            in_grace_period = False
+            if days_until_expiry <= 0:
+                # Pool is past expires_at — check if within grace period
+                # ENHANCEMENT-5: Grace period only applies to hard expiry (expires_at)
+                if pool.expires_at:
+                    from .tasks import CREDIT_EXPIRY_GRACE_HOURS
+                    grace_end = pool.expires_at + tz.timedelta(hours=CREDIT_EXPIRY_GRACE_HOURS)
+                    if now < grace_end:
+                        in_grace_period = True
+                        urgency = "grace_period"
+                    else:
+                        urgency = "expired"
+                else:
+                    # Soft expiry past commitment_end — shouldn't normally happen
+                    # since the consume task marks pools as EXHAUSTED, but handle gracefully
+                    urgency = "urgent"
+            elif days_until_expiry <= 1:
+                urgency = "urgent"
+            elif days_until_expiry <= 7:
+                urgency = "warning"
+            else:
+                urgency = "reminder"
+
+            expiring.append({
+                "id": pool.id,
+                "product_name": pool.product.name,
+                "plan_name": pool.plan.name,
+                "plan_slug": pool.plan.slug,
+                "display_amount": pool.display_amount,
+                "periods_remaining": pool.periods_remaining,
+                "credit_periods": pool.credit_periods,
+                "current_period_end": pool.current_period_end,
+                "expires_at": pool.expires_at,
+                "commitment_end": pool.commitment_end,
+                "effective_end": effective_end,
+                "expiry_type": expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
+                "days_until_expiry": days_until_expiry,
+                "urgency": urgency,
+                "in_grace_period": in_grace_period,
+            })
+
+        return {
+            "pools": expiring,
+            "count": len(expiring),
         }
 
     @http_get(
@@ -1890,6 +2056,8 @@ class BillingProtectedController:
             "current_period_start": pool.current_period_start,
             "current_period_end": pool.current_period_end,
             "expires_at": pool.expires_at,
+            "commitment_end": pool.commitment_end,
+            "expiry_type": pool.expiry_type,  # ENHANCEMENT-5: "soft" or "hard"
             "created_at": pool.created_at,
             "transactions": [
                 {

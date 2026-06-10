@@ -16,7 +16,7 @@
  */
 
 import { ref, computed, onMounted, watch, onUnmounted } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { authHelpers } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { adminApi, formatDateTime } from "@/lib/admin";
@@ -133,7 +133,8 @@ async function fetchAudit(page = 1) {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchUser();
 });
 
@@ -610,16 +611,28 @@ function handleAuditPageChange(page: number) {
           <!-- Actions cell -->
           <template #cell-actions="{ row }">
             <div class="flex items-center justify-end gap-1" @click.stop>
-              <a
-                :href="`/admin/subscriptions/${(row as unknown as UserSubscriptionItem).id}`"
+              <!--
+                AUTH-13 FIX: Use <button> + authHelpers.navigateTo() instead of <a href>.
+                Previously, an <a href="/admin/subscriptions/:id"> inside a @click.stop
+                div blocked Astro's ClientRouter from intercepting the click (stopPropagation
+                prevented the event from reaching the document-level listener). This caused a
+                FULL PAGE RELOAD, which triggers the middleware's validateRefreshCookie()
+                (rotating the refresh token server-side), and the client-side initAccessToken()
+                then finds the old cookie invalid → session-expired → redirect to login.
+                Using programmatic navigation via authHelpers.navigateTo() (Astro's navigate())
+                triggers a View Transition instead, bypassing the middleware entirely.
+              -->
+              <button
+                type="button"
                 class="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-950"
+                @click="authHelpers.navigateTo(`/admin/subscriptions/${(row as unknown as UserSubscriptionItem).id}`)"
               >
                 <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                 </svg>
                 View
-              </a>
+              </button>
             </div>
           </template>
         </AdminDataTable>

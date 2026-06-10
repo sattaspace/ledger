@@ -81,6 +81,28 @@ DUNNING_STEPS = [
 # Minimum interval (in hours) between dunning emails to prevent spam
 DUNNING_EMAIL_MIN_INTERVAL_HOURS = 24
 
+# =============================================================================
+# Credit Expiry Notification Configuration (Enhancement 3)
+# =============================================================================
+
+# Days before expiry to send warning emails. Each threshold maps to a
+# CreditNotificationLog.NotificationType to prevent duplicate sends.
+CREDIT_EXPIRY_WARNING_DAYS = [14, 7, 1]
+
+# Grace period before hard-expiring a pool after expires_at passes.
+# During the grace period, the pool remains ACTIVE but an urgent banner
+# is shown. After the grace period, the pool is marked EXPIRED.
+CREDIT_EXPIRY_GRACE_HOURS = 24
+
+# Data retention period after credit expiry. User data is preserved for
+# this many days after a credit pool expires/exhausts. During this period,
+# the user can renew their credit to regain full access. After this period,
+# the access matrix of the free plan applies — integer values in the
+# access matrix limit the number of data entries the user can maintain.
+# For example, if the free plan has max_entries=5, only 5 rows of user
+# data remain accessible; excess data is soft-locked (not deleted).
+CREDIT_DATA_RETENTION_DAYS = 30
+
 
 def _send_dunning_email(sub, step_config):
     """Send a dunning email to the subscriber.
@@ -602,12 +624,18 @@ def send_credit_request_approved_email(
     credit_pool_id: int,
     invoice_number: str,
     periods: int,
+    billing_cycle: str = "monthly",
+    commitment_start: str = "",  # ISO date string
+    commitment_end: str = "",    # ISO date string
 ):
     """Send email notification when a credit request is approved.
 
     Called after admin approves a CreditPurchaseRequest. Sends a professional
-    HTML confirmation email to the user with their credit pool details and
-    invoice number.
+    HTML confirmation email to the user with their credit pool details,
+    commitment terms, and invoice number.
+
+    ENHANCEMENT-2: Added billing_cycle, commitment_start, commitment_end
+    parameters for compliance & validity period messaging.
 
     Args:
         user_email: Recipient email address.
@@ -619,6 +647,9 @@ def send_credit_request_approved_email(
         credit_pool_id: ID of the created CreditPool.
         invoice_number: Invoice number for reference.
         periods: Number of billing periods credited.
+        billing_cycle: "monthly" or "yearly".
+        commitment_start: ISO date string for commitment start date.
+        commitment_end: ISO date string for commitment end date.
     """
     from django.core.mail import send_mail
     from django.conf import settings
@@ -632,6 +663,58 @@ def send_credit_request_approved_email(
         app_domain = getattr(settings, 'STRIPE_APP_DOMAIN', '')
 
         display_name = user_name or user_email.split('@')[0]
+
+        # ENHANCEMENT-2: Format commitment dates
+        cycle_label = "month" if billing_cycle == "monthly" else "year"
+        periods_label = f"{periods} {cycle_label}(s)" if periods != 1 else f"1 {cycle_label}"
+
+        # Parse and format ISO date strings
+        start_display = "—"
+        end_display = "—"
+        if commitment_start:
+            try:
+                from datetime import datetime
+                start_display = datetime.fromisoformat(commitment_start).strftime("%B %d, %Y")
+            except (ValueError, TypeError):
+                start_display = commitment_start
+        if commitment_end:
+            try:
+                from datetime import datetime
+                end_display = datetime.fromisoformat(commitment_end).strftime("%B %d, %Y")
+            except (ValueError, TypeError):
+                end_display = commitment_end
+
+        # ENHANCEMENT-2: Build commitment details section for HTML email
+        commitment_section = f"""
+<!-- Commitment Details -->
+<tr><td style="padding:24px 40px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FEF3C7;border-radius:8px;border:1px solid #FDE68A;">
+<tr><td style="padding:16px 20px;">
+<p style="margin:0 0 8px;color:#92400E;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;">Commitment Details</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr>
+<td style="padding:4px 0;color:#78350F;font-size:12px;width:140px;"><b>Commitment:</b></td>
+<td style="padding:4px 0;color:#78350F;font-size:12px;">{periods_label}</td>
+</tr>
+<tr>
+<td style="padding:4px 0;color:#78350F;font-size:12px;"><b>Start Date:</b></td>
+<td style="padding:4px 0;color:#78350F;font-size:12px;">{start_display}</td>
+</tr>
+<tr>
+<td style="padding:4px 0;color:#78350F;font-size:12px;"><b>End Date:</b></td>
+<td style="padding:4px 0;color:#78350F;font-size:12px;">{end_display}</td>
+</tr>
+<tr>
+<td style="padding:4px 0;color:#78350F;font-size:12px;"><b>Auto-Renewal:</b></td>
+<td style="padding:4px 0;color:#78350F;font-size:12px;">No — credits do not auto-renew</td>
+</tr>
+</table>
+<p style="margin:10px 0 0;color:#92400E;font-size:11px;line-height:1.5;">
+<strong>Important:</strong> This is a non-refundable prepaid commitment for {periods} billing period(s). Credits are consumed at the start of each billing period and grant access to all features of your plan. Access will be revoked when all periods are consumed or the commitment expires. Unused periods are not refundable.
+</p>
+</td></tr></table>
+</td></tr>
+"""
 
         # Professional HTML email body
         html_body = f"""<!DOCTYPE html>
@@ -686,7 +769,7 @@ Hi {display_name}, great news! Your credit purchase request has been approved an
 </td>
 <td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
 <span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Periods</span><br>
-<span style="color:#111827;font-size:14px;font-weight:600;">{periods}</span>
+<span style="color:#111827;font-size:14px;font-weight:600;">{periods_label}</span>
 </td>
 </tr>
 <tr>
@@ -702,6 +785,8 @@ Hi {display_name}, great news! Your credit purchase request has been approved an
 </table>
 </td></tr></table>
 </td></tr>
+
+{commitment_section}
 
 <!-- Action Buttons -->
 <tr><td style="padding:28px 40px 0;">
@@ -719,7 +804,7 @@ Hi {display_name}, great news! Your credit purchase request has been approved an
 <!-- Info -->
 <tr><td style="padding:24px 40px 0;">
 <p style="margin:0;color:#6B7280;font-size:13px;line-height:1.6;">
-Your credits are now active and will be applied to your subscription automatically each billing cycle. You can download your invoice PDF from the Transactions page at any time.
+Credits are consumed at the start of each billing period and grant access to all features of your plan. You can download your invoice PDF from the Transactions page at any time. Credits do not auto-renew — please purchase new credits before your commitment ends to maintain uninterrupted access.
 </p>
 </td></tr>
 
@@ -739,16 +824,26 @@ This email was sent by SattaBase. If you have any questions, please contact our 
 </html>"""
 
         # Plain text fallback for email clients that don't support HTML
+        # ENHANCEMENT-2: Added commitment details and non-refundable notice
         body = (
             f"Hi {display_name},\n\n"
             f"Great news! Your credit purchase request has been approved.\n\n"
-            f"Product: {product_name}\n"
-            f"Plan: {plan_name}\n"
-            f"Amount: {amount_display}\n"
-            f"Billing Periods: {periods}\n"
-            f"Invoice: {invoice_number}\n\n"
-            f"Your credits are now active and will be applied to your subscription "
-            f"automatically each billing cycle.\n\n"
+            f"COMMITMENT DETAILS:\n"
+            f"  Product:          {product_name}\n"
+            f"  Plan:             {plan_name}\n"
+            f"  Billing Cycle:    {billing_cycle.capitalize()}\n"
+            f"  Commitment:       {periods_label}\n"
+            f"  Start Date:       {start_display}\n"
+            f"  End Date:         {end_display}\n"
+            f"  Total Amount:     {amount_display}\n"
+            f"  Invoice:          {invoice_number}\n\n"
+            f"IMPORTANT:\n"
+            f"  - This is a non-refundable prepaid commitment for {periods} billing period(s).\n"
+            f"  - Credits are consumed at the start of each billing period.\n"
+            f"  - Unused periods are not refundable.\n"
+            f"  - Access will be revoked when the commitment ends unless renewed.\n"
+            f"  - Credits do not auto-renew. Purchase new credits before expiry\n"
+            f"    to maintain uninterrupted access.\n\n"
             f"View your credits: {app_domain}/dashboard/billing/credits\n"
             f"Download invoice: {app_domain}/dashboard/billing/transactions\n\n"
             f"Thank you for your payment!\n\n"
@@ -1012,23 +1107,37 @@ def consume_credit_periods(self):
         now = timezone.now()
         stats = {"consumed": 0, "exhausted": 0, "errors": 0}
 
-        # CRIT-04 FIX: Find active pools with select_for_update to prevent race conditions
-        # when multiple workers or task overlap attempt to process the same pool
-        active_pools = list(CreditPool.objects.filter(
-            status=CreditPool.CreditPoolStatus.ACTIVE,
-            current_period_end__lte=now,
-        ).select_related("user", "product", "plan").select_for_update())
+        # BUG-FIX: select_for_update() must be within transaction.atomic().
+        # Previously, the query was outside the per-pool transaction, causing
+        # TransactionManagementError on PostgreSQL. Now the entire batch is
+        # wrapped in a single transaction with select_for_update to lock rows
+        # and prevent race conditions when multiple workers overlap.
+        with transaction.atomic():
+            active_pools = list(CreditPool.objects.filter(
+                status=CreditPool.CreditPoolStatus.ACTIVE,
+                current_period_end__lte=now,
+            ).select_related("user", "product", "plan").select_for_update())
 
-        for pool in active_pools:
-            try:
-                with transaction.atomic():
+            # BUG-FIX: Import relativedelta once at the top of the loop scope,
+            # avoiding duplicate imports in both the "first period" and "next period" branches.
+            from dateutil.relativedelta import relativedelta
+
+            for pool in active_pools:
+                try:
                     # Check if this is the first period (not yet activated)
                     if not pool.current_period_start:
                         # Activate the pool - first period starts now
+                        # ENHANCEMENT-4: relativedelta is imported at the top of the
+                        # transaction scope to avoid duplicate imports.
+                        if pool.plan.billing_cycle == "yearly":
+                            next_end = now + relativedelta(years=1)
+                        elif pool.plan.billing_cycle == "lifetime":
+                            next_end = now + relativedelta(years=2)
+                        else:
+                            next_end = now + relativedelta(months=1)
+
                         pool.current_period_start = now
-                        pool.current_period_end = now + timezone.timedelta(
-                            days=30 if pool.plan.billing_cycle == "monthly" else 365
-                        )
+                        pool.current_period_end = next_end
                         pool.activated_at = now
                         pool.save(update_fields=[
                             "current_period_start", "current_period_end",
@@ -1067,10 +1176,21 @@ def consume_credit_periods(self):
                         )
                     else:
                         # Start next billing period
-                        pool.current_period_start = now
-                        pool.current_period_end = now + timezone.timedelta(
-                            days=30 if pool.plan.billing_cycle == "monthly" else 365
-                        )
+                        # BUG-FIX: Use pool.current_period_end (the exact end of the
+                        # previous period) as the start of the next period, not `now`.
+                        # Previously used `now` which caused drift: if the task runs at
+                        # 05:00 UTC but the period ended at 00:00 UTC, the next period
+                        # would start 5 hours late, and this drift accumulates.
+                        period_start = pool.current_period_end
+                        if pool.plan.billing_cycle == "yearly":
+                            next_end = period_start + relativedelta(years=1)
+                        elif pool.plan.billing_cycle == "lifetime":
+                            next_end = period_start + relativedelta(years=2)
+                        else:
+                            next_end = period_start + relativedelta(months=1)
+
+                        pool.current_period_start = period_start
+                        pool.current_period_end = next_end
                         pool.save(update_fields=[
                             "periods_consumed", "current_period_start",
                             "current_period_end", "updated_at"
@@ -1081,12 +1201,12 @@ def consume_credit_periods(self):
                             f"{periods_remaining} remaining (user={pool.user.email})"
                         )
 
-            except Exception as e:
-                stats["errors"] += 1
-                logger.error(
-                    f"CREDIT_CONSUME: Error processing pool {pool.id}: {e}",
-                    exc_info=True,
-                )
+                except Exception as e:
+                    stats["errors"] += 1
+                    logger.error(
+                        f"CREDIT_CONSUME: Error processing pool {pool.id}: {e}",
+                        exc_info=True,
+                    )
 
         logger.info(
             f"Credit period consumption complete: "
@@ -1108,31 +1228,63 @@ def consume_credit_periods(self):
 def expire_credit_pools(self):
     """Periodic task to mark expired credit pools.
 
-    Called daily by Celery Beat. Finds active pools where expires_at
-    has passed and marks them as expired, regardless of remaining periods.
+    Called daily by Celery Beat. Finds active pools that have reached their
+    expiry and marks them as EXPIRED or EXHAUSTED.
 
-    This handles the case where an admin sets a hard expiry date on a
-    credit pool (e.g., promotional credits that expire after 6 months).
+    Two expiry mechanisms (Enhancement 5):
+      1. **Hard expiry**: pools with an explicit expires_at set by an admin
+         (e.g., promotional credits). A 24-hour grace period applies before
+         the pool is hard-expired.
+      2. **Soft expiry safety net**: pools where expires_at is None (soft
+         expiry) but whose commitment_end has passed AND periods_remaining
+         is still > 0. Normally, the consume_credit_periods task handles
+         these by marking them EXHAUSTED, but if that task misses a day or
+         has an error, this task catches the stragglers.
+
+    BUG-FIX: Previously only handled hard-expiry pools (expires_at__lte=now).
+    Now also catches soft-expiry pools that have slipped past their
+    commitment_end without being properly exhausted.
 
     Returns:
-        {"expired": int, "errors": int}
+        {"expired": int, "grace_period": int, "soft_expired": int, "errors": int}
     """
     from django.utils import timezone
-    from django.db import transaction
+    from django.db import transaction, models
+    from dateutil.relativedelta import relativedelta
     from .models import CreditPool, CreditTransaction
 
     try:
         now = timezone.now()
-        stats = {"expired": 0, "errors": 0}
+        stats = {"expired": 0, "grace_period": 0, "soft_expired": 0, "errors": 0}
 
-        # Find active pools that have expired
-        expired_pools = CreditPool.objects.filter(
+        # ── Part 1: Hard-expiry pools (expires_at is set) ──────────────────
+        # ENHANCEMENT-3: Apply a 24-hour grace period before hard-expiring.
+        # During the grace period, the pool remains ACTIVE and the frontend
+        # displays an urgent expiry banner. After the grace period, the pool
+        # is marked EXPIRED.
+        hard_expiry_pools = CreditPool.objects.filter(
             status=CreditPool.CreditPoolStatus.ACTIVE,
             expires_at__lte=now,
         ).select_related("user", "product", "plan")
 
-        for pool in expired_pools:
+        for pool in hard_expiry_pools:
             try:
+                # ENHANCEMENT-3: 24-hour grace period before hard expiry
+                grace_period_end = pool.expires_at + timezone.timedelta(
+                    hours=CREDIT_EXPIRY_GRACE_HOURS
+                )
+
+                if now < grace_period_end:
+                    # Within grace period — pool remains ACTIVE
+                    # Frontend banner handles urgency display
+                    stats["grace_period"] += 1
+                    logger.info(
+                        f"CREDIT_EXPIRE: Pool {pool.id} in grace period "
+                        f"(user={pool.user.email}, grace ends {grace_period_end})"
+                    )
+                    continue
+
+                # Past grace period — hard expire
                 with transaction.atomic():
                     periods_remaining = pool.credit_periods - pool.periods_consumed
 
@@ -1163,13 +1315,412 @@ def expire_credit_pools(self):
                     exc_info=True,
                 )
 
-        if stats["expired"] > 0:
+        # ── Part 2: Soft-expiry safety net ─────────────────────────────────
+        # BUG-FIX: Catch soft-expiry pools (expires_at is None) that have
+        # slipped past their commitment_end without being properly exhausted
+        # by the consume_credit_periods task. This can happen if that task
+        # misses a day or encounters an error.
+        #
+        # We cannot filter on commitment_end in the ORM (it's a @property),
+        # so we compute the expected commitment_end from activated_at +
+        # credit_periods and filter in Python.
+        soft_expiry_pools = CreditPool.objects.filter(
+            status=CreditPool.CreditPoolStatus.ACTIVE,
+            expires_at__isnull=True,
+            activated_at__isnull=False,
+            periods_consumed__lt=models.F("credit_periods"),
+        ).select_related("user", "product", "plan")
+
+        for pool in soft_expiry_pools:
+            try:
+                c_end = pool.commitment_end
+                if not c_end or c_end > now:
+                    continue  # Not yet past commitment end
+
+                # commitment_end has passed but pool still has remaining periods
+                # This is a safety net — normally consume_credit_periods handles this
+                with transaction.atomic():
+                    periods_remaining = pool.credit_periods - pool.periods_consumed
+
+                    CreditTransaction.objects.create(
+                        credit_pool=pool,
+                        action=CreditTransaction.TransactionType.EXPIRE,
+                        periods_delta=-periods_remaining,
+                        amount_cents_delta=0,
+                        periods_balance=0,
+                        reason=(
+                            f"Credit pool soft-expired: commitment_end ({c_end.strftime('%Y-%m-%d')}) "
+                            f"passed with {periods_remaining} period(s) remaining (safety net)"
+                        ),
+                    )
+
+                    pool.status = CreditPool.CreditPoolStatus.EXHAUSTED
+                    pool.current_period_start = None
+                    pool.current_period_end = None
+                    pool.save(update_fields=[
+                        "status", "current_period_start",
+                        "current_period_end", "updated_at",
+                    ])
+
+                    stats["soft_expired"] += 1
+                    logger.warning(
+                        f"CREDIT_EXPIRE_SAFETY: Pool {pool.id} soft-expired "
+                        f"(commitment_end={c_end}, {periods_remaining} periods remaining, "
+                        f"user={pool.user.email}) — consume task may have missed this pool"
+                    )
+
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error(
+                    f"CREDIT_EXPIRE: Error soft-expiring pool {pool.id}: {e}",
+                    exc_info=True,
+                )
+
+        if stats["expired"] > 0 or stats["grace_period"] > 0 or stats["soft_expired"] > 0:
             logger.info(
-                f"Credit expiry complete: {stats['expired']} expired, "
+                f"Credit expiry complete: {stats['expired']} hard-expired, "
+                f"{stats['grace_period']} in grace period, "
+                f"{stats['soft_expired']} soft-expired (safety net), "
                 f"{stats['errors']} errors"
             )
         return stats
 
     except Exception as exc:
         logger.error(f"Credit expiry task failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc)
+
+
+# =============================================================================
+# Credit Expiry Warning Notifications (Enhancement 3)
+# =============================================================================
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=300,  # 5 min between retries
+)
+def send_credit_expiry_warning(self):
+    """Daily task to send pre-expiry warning emails for active credit pools.
+
+    Called daily by Celery Beat at 05:15 UTC. Finds active credit pools
+    approaching their expiry or period end and sends staged warning emails
+    at 14-day, 7-day, and 1-day thresholds before expiry.
+
+    Each warning is sent at most once per pool, tracked via
+    CreditNotificationLog to prevent duplicate emails.
+    """
+    from django.utils import timezone
+    from django.db import IntegrityError, models
+    from django.core.mail import send_mail
+    from django.conf import settings
+    from .models import (
+        CreditPool,
+        CreditNotificationLog,
+    )
+
+    try:
+        now = timezone.now()
+        app_domain = getattr(settings, "STRIPE_APP_DOMAIN", "")
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@sattabase.com")
+
+        # BUG-FIX: periods_remaining is a Python @property, not a DB field.
+        # Django ORM cannot filter on @property — use F-expression instead.
+        pools = (
+            CreditPool.objects.filter(
+                status=CreditPool.CreditPoolStatus.ACTIVE,
+                periods_consumed__lt=models.F("credit_periods"),
+            )
+            .select_related("user", "plan", "product")
+            .order_by("expires_at")
+        )
+
+        stats = {
+            "checked": 0,
+            "expiry_14d_sent": 0,
+            "expiry_7d_sent": 0,
+            "expiry_1d_sent": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+
+        for pool in pools:
+            stats["checked"] += 1
+            try:
+                # Determine the effective end date for this pool
+                # ENHANCEMENT-4/5: Use expires_at (hard deadline) when set, otherwise
+                # fall back to commitment_end (natural end based on periods consumed).
+                # When both are None, fall back to current_period_end.
+                effective_end = pool.expires_at or pool.commitment_end or pool.current_period_end
+                if not effective_end:
+                    stats["skipped"] += 1
+                    continue
+
+                # ENHANCEMENT-5: Classify expiry type for messaging
+                is_hard_expiry = pool.expires_at is not None
+
+                days_until_expiry = (effective_end - now).days
+
+                # Check each threshold
+                for threshold_days in CREDIT_EXPIRY_WARNING_DAYS:
+                    if days_until_expiry > threshold_days:
+                        # Not yet within this threshold window
+                        continue
+
+                    # Determine the notification type
+                    if threshold_days == 14:
+                        notif_type = CreditNotificationLog.NotificationType.EXPIRY_14D
+                    elif threshold_days == 7:
+                        notif_type = CreditNotificationLog.NotificationType.EXPIRY_7D
+                    elif threshold_days == 1:
+                        notif_type = CreditNotificationLog.NotificationType.EXPIRY_1D
+                    else:
+                        continue
+
+                    # Skip if this notification was already sent
+                    if CreditNotificationLog.objects.filter(
+                        credit_pool=pool,
+                        notification_type=notif_type,
+                    ).exists():
+                        continue
+
+                    # Build and send the warning email
+                    display_name = pool.user.first_name or pool.user.email
+                    end_date_str = effective_end.strftime("%B %d, %Y")
+                    days_left = max(0, days_until_expiry)
+
+                    # Email content varies by threshold
+                    # ENHANCEMENT-5: Adjust messaging based on expiry type
+                    if threshold_days == 14:
+                        subject = f"Your credit commitment ends in 2 weeks — {pool.product.name}"
+                        urgency = "reminder"
+                        if is_hard_expiry:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit has a hard deadline "
+                                f"of {end_date_str}. Access will end on this date even if you have "
+                                f"remaining periods.\n"
+                                f"You have {pool.periods_remaining} billing period(s) remaining."
+                            )
+                        else:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit commitment "
+                                f"will end on {end_date_str}.\n"
+                                f"You have {pool.periods_remaining} billing period(s) remaining."
+                            )
+                        badge_text = "2 Weeks Left"
+                        badge_color = "#F59E0B"  # amber
+                    elif threshold_days == 7:
+                        subject = f"Your access will expire in {days_left} day(s) — {pool.product.name}"
+                        urgency = "warning"
+                        if is_hard_expiry:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit has a hard deadline "
+                                f"of {end_date_str}. After this date, your access will end regardless "
+                                f"of remaining periods."
+                            )
+                        else:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit commitment "
+                                f"expires on {end_date_str}.\n"
+                                f"After expiry, you will lose access to premium features."
+                            )
+                        badge_text = f"{days_left} Day(s) Left"
+                        badge_color = "#F97316"  # orange
+                    else:  # 1 day
+                        subject = f"URGENT: Your credit expires tomorrow — {pool.product.name}"
+                        urgency = "urgent"
+                        if is_hard_expiry:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit has a hard deadline "
+                                f"of {end_date_str}. This is your final notice — access will end on this "
+                                f"date regardless of remaining periods."
+                            )
+                        else:
+                            intro = (
+                                f"Hi {display_name},\n\n"
+                                f"Your {pool.product.name} - {pool.plan.name} credit commitment "
+                                f"expires on {end_date_str}.\n"
+                                f"This is your final notice — access will be revoked after expiry."
+                            )
+                        badge_text = "Final Notice"
+                        badge_color = "#EF4444"  # red
+
+                    html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;padding:32px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+
+<!-- Header -->
+<tr><td style="background-color:#2563EB;padding:32px 40px;">
+<h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.3px;">SattaBase</h1>
+<p style="margin:4px 0 0;color:#BFDBFE;font-size:13px;">Billing &amp; Subscription Platform</p>
+</td></tr>
+
+<!-- Urgency Badge -->
+<tr><td style="padding:32px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:{badge_color}15;border:1px solid {badge_color};border-radius:6px;padding:6px 14px;">
+<span style="color:{badge_color};font-size:13px;font-weight:600;">&#9888; {badge_text}</span>
+</td></tr></table>
+</td></tr>
+
+<!-- Message -->
+<tr><td style="padding:20px 40px 0;">
+<h2 style="margin:0;color:#111827;font-size:22px;font-weight:700;">Credit Expiry {urgency.capitalize()}</h2>
+<p style="margin:8px 0 0;color:#6B7280;font-size:15px;line-height:1.5;">
+{intro}
+</p>
+</td></tr>
+
+<!-- Details -->
+<tr><td style="padding:24px 40px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F9FAFB;border-radius:8px;border:1px solid #E5E7EB;">
+<tr><td style="padding:20px 24px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Product</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{pool.product.name}</span>
+</td>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Plan</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{pool.plan.name}</span>
+</td>
+</tr>
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Periods Remaining</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{pool.periods_remaining} / {pool.credit_periods}</span>
+</td>
+<td style="padding:8px 0;border-bottom:1px solid #E5E7EB;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Expires</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{end_date_str}</span>
+</td>
+</tr>
+<tr>
+<td style="padding:8px 0;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Auto-Renewal</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">No</span>
+</td>
+<td style="padding:8px 0;text-align:right;">
+<span style="color:#6B7280;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;">Amount</span><br>
+<span style="color:#111827;font-size:14px;font-weight:600;">{pool.display_amount}</span>
+</td>
+</tr>
+</table>
+</td></tr></table>
+</td></tr>
+
+<!-- Action Buttons -->
+<tr><td style="padding:28px 40px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="background-color:#2563EB;border-radius:6px;padding:0;">
+<a href="{app_domain}/dashboard/billing/credits/request" style="display:inline-block;padding:12px 24px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Purchase Credits</a>
+</td>
+<td style="width:12px;"></td>
+<td style="background-color:#F3F4F6;border-radius:6px;padding:0;">
+<a href="{app_domain}/dashboard/billing" style="display:inline-block;padding:12px 24px;color:#374151;font-size:14px;font-weight:600;text-decoration:none;">Subscribe with Stripe</a>
+</td>
+</tr></table>
+</td></tr>
+
+<!-- Info -->
+<tr><td style="padding:24px 40px 0;">
+<p style="margin:0;color:#6B7280;font-size:13px;line-height:1.6;">
+Credits do not auto-renew. To maintain uninterrupted access, please purchase new credits before your commitment ends or subscribe via Stripe for automatic renewal.
+</p>
+</td></tr>
+
+<!-- Footer -->
+<tr><td style="padding:32px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #E5E7EB;">
+<tr><td style="padding-top:20px;">
+<p style="margin:0;color:#9CA3AF;font-size:11px;line-height:1.5;">
+This email was sent by SattaBase. If you have any questions, please contact our support team.
+</p>
+</td></tr></table>
+</td></tr>
+
+</table>
+</td></tr></table>
+</body>
+</html>"""
+
+                    # Plain text fallback
+                    body = (
+                        f"Hi {display_name},\n\n"
+                        f"Your {pool.product.name} - {pool.plan.name} credit commitment "
+                        f"expires on {end_date_str}.\n"
+                        f"You have {pool.periods_remaining} billing period(s) remaining.\n\n"
+                        f"To maintain uninterrupted access, please:\n"
+                        f"  - Purchase new credits before your current commitment ends\n"
+                        f"  - Or subscribe via Stripe for automatic renewal\n\n"
+                        f"Purchase credits: {app_domain}/dashboard/billing/credits/request\n"
+                        f"Subscribe: {app_domain}/dashboard/billing\n\n"
+                        f"Thank you for being a valued customer.\n\n"
+                        f"— The SattaBase Team"
+                    )
+
+                    sent = send_mail(
+                        subject=subject,
+                        message=body,
+                        html_message=html_body,
+                        from_email=from_email,
+                        recipient_list=[pool.user.email],
+                        fail_silently=True,
+                    )
+
+                    if sent:
+                        # Log the notification to prevent duplicates
+                        try:
+                            CreditNotificationLog.objects.create(
+                                credit_pool=pool,
+                                notification_type=notif_type,
+                            )
+                        except IntegrityError:
+                            # Race condition — another worker already logged it
+                            pass
+
+                        notif_key = f"expiry_{threshold_days}d_sent"
+                        stats[notif_key] += 1
+                        logger.info(
+                            f"CREDIT_EXPIRY_WARNING: Sent {notif_type} to "
+                            f"{pool.user.email} for pool={pool.id} "
+                            f"(days_left={days_until_expiry})"
+                        )
+                    else:
+                        stats["errors"] += 1
+                        logger.error(
+                            f"CREDIT_EXPIRY_WARNING: Failed to send {notif_type} to "
+                            f"{pool.user.email} for pool={pool.id}"
+                        )
+
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error(
+                    f"CREDIT_EXPIRY_WARNING: Error processing pool={pool.id}: {e}",
+                    exc_info=True,
+                )
+
+        logger.info(
+            f"Credit expiry warning task completed: "
+            f"checked={stats['checked']}, "
+            f"14d={stats['expiry_14d_sent']}, "
+            f"7d={stats['expiry_7d_sent']}, "
+            f"1d={stats['expiry_1d_sent']}, "
+            f"skipped={stats['skipped']}, "
+            f"errors={stats['errors']}"
+        )
+        return stats
+
+    except Exception as exc:
+        logger.error(f"Credit expiry warning task failed: {exc}", exc_info=True)
         raise self.retry(exc=exc)

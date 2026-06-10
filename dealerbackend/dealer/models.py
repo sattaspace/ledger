@@ -27,6 +27,13 @@ class DealerConfig(models.Model):
     username = models.CharField(max_length=150, primary_key=True)
     full_name = models.CharField(max_length=255)
     role = models.CharField(max_length=100, default="Dealer")
+    business_name = models.CharField(max_length=255, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    phone_number = models.CharField(max_length=20, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    gst_number = models.CharField(max_length=20, blank=True, default="")
+    google_map_url = models.URLField(blank=True, default="")
+    communication_number = models.CharField(max_length=20, blank=True, default="")
     default_currency = models.CharField(
         max_length=3, choices=CURRENCIES, default="INR"
     )

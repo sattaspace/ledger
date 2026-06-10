@@ -1,28 +1,26 @@
 {
-  "extends": "astro/tsconfigs/strictest",
-  "include": [
-    ".astro/types.d.ts",
-    "**/*"
-  ],
-  "exclude": [
-    "dist"
-  ],
   "compilerOptions": {
-    "jsx": "preserve",
-    "jsxImportSource": "vue",
-    "baseUrl": ".",
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
     "paths": {
-      "@/*": ["src/*"],
-      "@components/*": ["src/components/*"],
-      "@layouts/*": ["src/layouts/*"],
-      "@composables/*": ["src/composables/*"],
-      "@stores/*": ["src/stores/*"],
-      "@lib/*": ["src/lib/*"],
-      "@utils/*": ["src/lib/utils/*"],
-      "@validators/*": ["src/lib/validators/*"],
-      "@api/*": ["src/lib/api/*"],
-      "@types/*": ["src/types/*"],
-      "@assets/*": ["src/assets/*"]
-    }
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   }
 }

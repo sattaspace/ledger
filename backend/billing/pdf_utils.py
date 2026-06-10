@@ -432,14 +432,111 @@ def generate_credit_invoice_pdf(inv) -> bytes:
         ]))
         story.append(pay_table)
 
+    # ─── ENHANCEMENT-2: COMMITMENT & VALIDITY SECTION ──────────────────────────
+    # Show commitment details, start/end dates, non-refundable status, and
+    # auto-renewal information for compliance and audit purposes.
+    if inv.credit_pool and inv.credit_pool.credit_periods:
+        pool = inv.credit_pool
+        billing_cycle = getattr(pool.plan, "billing_cycle", "monthly")
+        period_label = "month" if billing_cycle == "monthly" else "year"
+
+        story.append(Spacer(1, 16))
+        story.append(Paragraph("Commitment &amp; Validity", styles["section_heading"]))
+
+        # ENHANCEMENT-5: Use the model's commitment_end property instead of
+        # duplicating the calculation. This ensures consistency with the backend
+        # logic (which handles yearly/monthly/lifetime cycles) and avoids drift
+        # if the model property is updated in the future.
+        commitment_start = pool.activated_at or pool.current_period_start
+        commitment_end = pool.commitment_end  # Uses model's computed property
+
+        commitment_data = [
+            [
+                Paragraph("<b>Commitment Duration</b>", styles["body_muted"]),
+                Paragraph(
+                    f"{pool.credit_periods} {period_label}(s) ({pool.credit_periods} billing periods)",
+                    styles["body"],
+                ),
+            ],
+            [
+                Paragraph("<b>Commitment Start</b>", styles["body_muted"]),
+                Paragraph(
+                    commitment_start.strftime("%B %d, %Y") if commitment_start else "N/A",
+                    styles["body"],
+                ),
+            ],
+            [
+                Paragraph("<b>Commitment End</b>", styles["body_muted"]),
+                Paragraph(
+                    commitment_end.strftime("%B %d, %Y") if commitment_end else "N/A",
+                    styles["body"],
+                ),
+            ],
+            [
+                Paragraph("<b>Billing Cycle</b>", styles["body_muted"]),
+                Paragraph(billing_cycle.capitalize(), styles["body"]),
+            ],
+            [
+                Paragraph("<b>Non-Refundable</b>", styles["body_muted"]),
+                Paragraph("Yes — this is a prepaid commitment", styles["body"]),
+            ],
+            [
+                Paragraph("<b>Auto-Renewal</b>", styles["body_muted"]),
+                Paragraph("No — credits do not auto-renew", styles["body"]),
+            ],
+        ]
+
+        # ENHANCEMENT-5: Show hard expiry date when set (promotional/admin override).
+        # When expires_at is set, it represents a hard deadline that overrides
+        # the natural commitment end. This is distinct from commitment_end (soft expiry).
+        if pool.expires_at:
+            commitment_data.append([
+                Paragraph("<b>Hard Expiry Deadline</b>", styles["body_muted"]),
+                Paragraph(
+                    f"{pool.expires_at.strftime('%B %d, %Y')} — access ends on this date "
+                    f"regardless of remaining periods",
+                    styles["body"],
+                ),
+            ])
+
+        commit_table = Table(commitment_data, colWidths=[1.8 * inch, 5.0 * inch])
+        commit_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.5, BORDER_COLOR),
+            # Amber-tinted background to draw attention
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFFBEB")),  # Amber-50
+        ]))
+        story.append(commit_table)
+
     # ─── NOTES ─────────────────────────────────────────────────────────────────
     if inv.notes:
         story.append(Spacer(1, 12))
         story.append(Paragraph("Notes", styles["section_heading"]))
         story.append(Paragraph(inv.notes, styles["body"]))
 
+    # ─── ENHANCEMENT-2: TERMS ──────────────────────────────────────────────────
+    # Add a "Terms" note at the bottom of the PDF for compliance/audit purposes.
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("Terms", styles["section_heading"]))
+
+    terms_style = ParagraphStyle(
+        "TermsBody", parent=styles["body_muted"],
+        fontSize=7.5, leading=11, textColor=TEXT_SECONDARY,
+    )
+    terms_text = (
+        "This invoice represents a non-refundable prepaid commitment for the billing "
+        "periods stated above. Access to the subscribed plan is granted for the "
+        "duration of the commitment. Upon expiry of all credited periods, access "
+        "will be revoked unless a new credit purchase or Stripe subscription is "
+        "active. Unused periods are not eligible for refund or credit transfer. "
+        "Credits do not auto-renew."
+    )
+    story.append(Paragraph(terms_text, terms_style))
+
     # ─── FOOTER ────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 50))
+    story.append(Spacer(1, 40))
     story.append(HRFlowable(
         width="100%", thickness=0.5, color=BORDER_COLOR,
         spaceAfter=8, spaceBefore=0,

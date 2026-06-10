@@ -572,7 +572,15 @@ class CreditPoolOutputSchema(Schema):
     is_effectively_active: bool
     current_period_start: Optional[str] = Field(None, description="Start of current period (ISO 8601)")
     current_period_end: Optional[str] = Field(None, description="End of current period (ISO 8601)")
-    expires_at: Optional[str] = Field(None, description="Hard expiry (ISO 8601)")
+    expires_at: Optional[str] = Field(None, description="Hard expiry deadline (ISO 8601). None for soft-expiry pools.")
+    commitment_end: Optional[str] = Field(
+        None,
+        description="Natural commitment end date (ISO 8601). Computed from activated_at + credit_periods.",
+    )
+    expiry_type: str = Field(
+        "soft",
+        description="Expiry mechanism: 'soft' = natural end when periods consumed, 'hard' = admin deadline",
+    )
     created_at: Optional[str] = Field(None, description="Creation timestamp (ISO 8601)")
 
 
@@ -655,10 +663,20 @@ class CreditRequestInputSchema(Schema):
     LOW-07 FIX: Added maximum limit to prevent excessively large credit purchases.
     Maximum is set to 10,000,000 cents ($100,000) which should cover most legitimate
     use cases while preventing accidental or malicious extreme values.
+    
+    ENHANCEMENT-1: Added credit_periods field with minimum commitment enforcement.
+    Users must commit to at least 3 billing periods for monthly plans and 1 for
+    yearly plans. The amount_cents must equal credit_periods * plan.price_cents.
     """
 
     product_slug: str = Field(..., description="Product slug")
     plan_slug: str = Field(..., description="Plan slug")
+    credit_periods: int = Field(
+        3,
+        ge=1,
+        le=36,
+        description="Number of billing periods to commit (min 3 for monthly, min 1 for yearly)",
+    )
     # LOW-07 FIX: Added maximum limit (10,000,000 cents = $100,000)
     amount_cents: int = Field(
         ...,

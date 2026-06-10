@@ -171,6 +171,9 @@ onUnmounted(() => {
           {{ detail }}
         </div>
 
+        <!-- Default slot for custom content (forms, context info, etc.) -->
+        <slot />
+
         <!-- Actions -->
         <div class="flex items-center justify-end gap-3 pt-2">
           <button

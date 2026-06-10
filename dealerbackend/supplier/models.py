@@ -23,6 +23,10 @@ class Supplier(models.Model):
         ordering = ["name"]
         verbose_name = "Supplier"
         verbose_name_plural = "Suppliers"
+        indexes = [
+            # For category-based filtering
+            models.Index(fields=["category"]),
+        ]
 
     def __str__(self):
         return self.name

@@ -14,7 +14,7 @@
  */
 
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { useAuth } from "@/composables";
 import { useSubscription } from "@/composables";
 import { showToast } from "@/lib/toast";
@@ -146,7 +146,8 @@ const annualSavings = computed(() => {
 });
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
 
   // 6.5: Capture return_url from query param or sessionStorage
   const params = new URLSearchParams(window.location.search);

@@ -13,7 +13,7 @@
  */
 
 import { ref, onMounted, computed } from "vue";
-import { requireAuth, getErrorMessage } from "@/lib/auth";
+import { requireAuthAsync, getErrorMessage } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { creditsApi } from "@/lib/credits";
 
@@ -70,7 +70,8 @@ async function fetchBankAccounts() {
 }
 
 onMounted(async () => {
-  if (!requireAuth()) return;
+  // AUTH-13 FIX: Use requireAuthAsync() to wait for token init before checking
+  if (!(await requireAuthAsync())) return;
   await fetchBankAccounts();
 });
 
