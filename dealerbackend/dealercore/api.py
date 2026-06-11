@@ -30,9 +30,13 @@ api = NinjaExtraAPI(
 from inventory.api import InventoryController
 from sales.api import SalesController
 from dsr.api import DSRController
+from dsr.invitation_api import DsrInvitationController
 from supplier.api import SupplierController
 from dealer.api import DealerController
 from reports.api import ReportsController
+from common.auth_controller import AuthController
+from common.sso_controller import SSOController
+from common.access_controller import AccessController
 
 api.register_controllers(
     InventoryController,
@@ -41,4 +45,8 @@ api.register_controllers(
     SupplierController,
     DealerController,
     ReportsController,
+    AuthController,  # Authentication endpoints
+    DsrInvitationController,  # DSR invitation endpoints
+    SSOController,  # SSO endpoints
+    AccessController,  # Access control endpoints
 )

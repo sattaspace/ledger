@@ -172,7 +172,7 @@ watch(
 </script>
 
 <template>
-  <div class="chart-container" style="position: relative; width: 100%; height: 100%;">
-    <canvas ref="canvasRef"></canvas>
+  <div class="chart-container" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;">
+    <canvas ref="canvasRef" style="width: 100% !important; height: 100% !important;"></canvas>
   </div>
 </template>

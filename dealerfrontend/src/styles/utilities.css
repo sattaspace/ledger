@@ -1,0 +1,247 @@
+/**
+ * DEALERCORE v3.0 — Shared CSS Utilities
+ *
+ * Custom CSS that complements Tailwind.
+ * Import this in main.ts or App.vue after Tailwind.
+ */
+
+/* ─── CSS Custom Properties ──────────────────────────────────────────────── */
+:root {
+  /* Header and footer heights for viewport calculations */
+  --dc-header-h: 88px;
+  --dc-footer-h: 36px;
+  
+  /* Animation durations */
+  --dc-animate-fast: 0.3s;
+  --dc-animate-normal: 0.5s;
+  --dc-animate-slow: 2.5s;
+  
+  /* Z-index scale */
+  --dc-z-dropdown: 100;
+  --dc-z-sticky: 200;
+  --dc-z-modal: 300;
+  --dc-z-tooltip: 400;
+  --dc-z-toast: 500;
+}
+
+/* ─── Animations ─────────────────────────────────────────────────────────── */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+/* ─── Animation Utility Classes ──────────────────────────────────────────── */
+
+.animate-fadeIn {
+  animation: fadeIn var(--dc-animate-normal) ease-out forwards;
+}
+
+.animate-fadeIn-fast {
+  animation: fadeIn var(--dc-animate-fast) ease-out forwards;
+}
+
+.animate-fadeIn-slow {
+  animation: fadeIn 0.8s ease-out forwards;
+}
+
+.animate-fadeOut {
+  animation: fadeOut var(--dc-animate-normal) ease-out forwards;
+}
+
+.animate-slideInRight {
+  animation: slideInRight var(--dc-animate-normal) ease-out forwards;
+}
+
+.animate-slideInLeft {
+  animation: slideInLeft var(--dc-animate-normal) ease-out forwards;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow var(--dc-animate-slow) ease-in-out infinite;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.animate-bounce-subtle {
+  animation: bounce-subtle 2s ease-in-out infinite;
+}
+
+/* ─── Layout Utilities ───────────────────────────────────────────────────── */
+
+/* Max height for scrolled content areas */
+.max-h-content {
+  max-height: calc(100vh - var(--dc-header-h) - var(--dc-footer-h) - 48px);
+}
+
+/* Scrollable container with custom scrollbar */
+.scrollable {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.scrollable::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollable::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ─── Glass Morphism ─────────────────────────────────────────────────────── */
+
+.glass {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.glass-dark {
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* ─── Text Utilities ─────────────────────────────────────────────────────── */
+
+/* Line clamp utilities (fallback for older browsers) */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ─── Interactive States ─────────────────────────────────────────────────── */
+
+/* Hover lift effect */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* Pressed/active effect */
+.active-press:active {
+  transform: scale(0.98);
+}
+
+/* Focus ring for accessibility */
+.focus-ring:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* ─── Print Utilities ────────────────────────────────────────────────────── */
+
+@media print {
+  .print-hidden {
+    display: none !important;
+  }
+  
+  .print-full-width {
+    width: 100% !important;
+    max-width: none !important;
+  }
+}

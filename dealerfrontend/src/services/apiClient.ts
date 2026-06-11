@@ -386,7 +386,7 @@ function resolveConfig(): ApiClientConfig {
       ? (import.meta as any).env
       : {};
 
-  const baseURL = env.VITE_API_BASE_URL || "http://localhost:8000";
+  const baseURL = env.VITE_API_BASE_URL || "http://localhost:8088";
 
   return {
     baseURL,

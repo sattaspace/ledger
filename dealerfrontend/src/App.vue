@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { 
   Package, 
   ShoppingCart, 
@@ -16,9 +16,17 @@ import {
   Settings,
   Sparkles,
   Award,
-  Users
+  Users,
+  User,
+  CreditCard
 } from 'lucide-vue-next';
+import { sattabaseUrls } from './lib/constants';
 import type { DatabaseSchema, Product, SaleRecord, RestockRecord, DSR, Supplier, DealerConfig, Brand, Category } from './types';
+// ─── Shared Utilities ──────────────────────────────────────────────────────
+import { useFormatters } from './composables/useFormatters';
+import { useAuth } from './composables/useAuth';
+import './styles/utilities.css';
+
 import Overview from './components/Overview.vue';
 import Inventory from './components/Inventory.vue';
 import Sales from './components/Sales.vue';
@@ -26,6 +34,9 @@ import Collections from './components/Collections.vue';
 import Reports from './components/Reports.vue';
 import Suppliers from './components/Suppliers.vue';
 import BadDebt from './components/BadDebt.vue';
+import LoginPage from './components/LoginPage.vue';
+import SessionGuard from './components/SessionGuard.vue';
+import ManageBillingButton from './components/ManageBillingButton.vue';
 
 // ─── Centralized API Services ──────────────────────────────────────────
 // All API communication flows through these service singletons.
@@ -543,6 +554,29 @@ const handleNavigate = (tabId: string) => {
   fetchFullDetails();
 };
 
+// ─── Authentication ──────────────────────────────────────────────────────
+const { isAuthenticated, logout } = useAuth();
+
+const handleLoginSuccess = () => {
+  // Reload page to properly initialize authenticated state
+  // This ensures all data is fresh and components mount correctly
+  window.location.reload();
+};
+
+const handleLogout = async () => {
+  await logout();
+  // Clear any sensitive data
+  products.value = [];
+  sales.value = [];
+  dsrs.value = [];
+  suppliers.value = [];
+  summary.value = null;
+};
+
+const handleSessionRestored = () => {
+  fetchFullDetails();
+};
+
 const formatCurrency = (amt: number) => {
   const cur = activeDealer.value?.defaultCurrency || 'INR';
   const loc = activeDealer.value?.defaultLocale || 'en-IN';
@@ -565,6 +599,19 @@ const navItems = [
 </script>
 
 <template>
+  <!-- Login Page - shown when not authenticated -->
+  <LoginPage 
+    v-if="!isAuthenticated" 
+    @login="handleLoginSuccess"
+  />
+  
+  <!-- Main App - shown when authenticated -->
+  <SessionGuard 
+    v-else
+    require-auth
+    @auth-required="handleLogout"
+    @session-restored="handleSessionRestored"
+  >
   <div class="app-shell">
     
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -635,6 +682,24 @@ const navItems = [
           </div>
         </button>
         <div class="sidebar-user-actions">
+          <!-- Billing in SattaBase -->
+          <a 
+            :href="sattabaseUrls.billing"
+            target="_blank"
+            class="sidebar-action-btn sidebar-action-btn--billing"
+            title="Manage Billing in SattaBase"
+          >
+            <CreditCard class="sidebar-action-icon" />
+          </a>
+          <!-- Account Profile in SattaBase -->
+          <a 
+            :href="sattabaseUrls.accountProfile"
+            target="_blank"
+            class="sidebar-action-btn"
+            title="Account Profile"
+          >
+            <User class="sidebar-action-icon" />
+          </a>
           <button 
             @click="showSettingsModal = true"
             class="sidebar-action-btn"
@@ -648,6 +713,13 @@ const navItems = [
             title="Sync Database"
           >
             <RefreshCw class="sidebar-action-icon" />
+          </button>
+          <button 
+            @click="handleLogout"
+            class="sidebar-action-btn sidebar-action-btn--logout"
+            title="Logout"
+          >
+            <LogOut class="sidebar-action-icon" />
           </button>
         </div>
       </div>
@@ -672,6 +744,13 @@ const navItems = [
             title="System Settings"
           >
             <Settings class="mobile-action-icon" />
+          </button>
+          <button 
+            @click="handleLogout"
+            class="mobile-action-btn mobile-action-btn--logout"
+            title="Logout"
+          >
+            <LogOut class="mobile-action-icon" />
           </button>
         </div>
       </div>
@@ -1044,6 +1123,7 @@ const navItems = [
       </div>
     </Transition>
   </div>
+  </SessionGuard>
 </template>
 
 <style>
@@ -1375,6 +1455,24 @@ const navItems = [
   transform: rotate(180deg);
 }
 
+.sidebar-action-btn--logout {
+  color: rgba(255,255,255,0.6);
+}
+
+.sidebar-action-btn--logout:hover {
+  background: rgba(244,63,94,0.2);
+  color: #f43f5e;
+}
+
+.sidebar-action-btn--billing {
+  color: rgba(255,255,255,0.6);
+}
+
+.sidebar-action-btn--billing:hover {
+  background: rgba(59,130,246,0.2);
+  color: #3b82f6;
+}
+
 .sidebar-action-icon {
   width: 15px;
   height: 15px;
@@ -1450,6 +1548,11 @@ const navItems = [
 .mobile-action-btn:hover {
   background: #f1f5f9;
   color: #1e293b;
+}
+
+.mobile-action-btn--logout:hover {
+  background: #fef2f2;
+  color: #f43f5e;
 }
 
 .mobile-action-icon {

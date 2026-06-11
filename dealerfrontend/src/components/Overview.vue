@@ -13,6 +13,7 @@ import {
   CheckCircle,
   Clock
 } from 'lucide-vue-next';
+import { useFormatters } from '../composables/useFormatters';
 import { BaseChart, ChartCard } from './charts';
 import type { SaleRecord } from '../types';
 import type { SummaryData } from '../services/api/reports.service';
@@ -32,16 +33,8 @@ const emit = defineEmits<{
   (e: 'quickAction', actionType: string): void;
 }>();
 
-// Default currency formatter
-const formatCurrency = computed(() => {
-  return props.formatCurrency || ((amt: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 0
-    }).format(amt);
-  });
-});
+// Use shared formatter
+const { formatCurrency } = useFormatters({ formatCurrency: props.formatCurrency });
 
 // ═══════════════════════════════════════════════════════════
 // CHART DATA COMPUTEDS

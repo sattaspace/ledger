@@ -140,12 +140,12 @@ python manage.py seed_data --flush        # Wipe + reseed fresh
 python manage.py seed_data --flush --verbose   # Verbose output
 
 # 6. Run async server
-daphne dealercore.asgi:application --port 8000
+daphne dealercore.asgi:application --port 8088
 # or
-uvicorn dealercore.asgi:application --host 0.0.0.0 --port 8000 --reload
+uvicorn dealercore.asgi:application --host 0.0.0.0 --port 8088 --reload
 
 # 7. Access API docs
-# http://localhost:8000/api/docs
+# http://localhost:8088/api/docs
 ```
 
 ---
@@ -229,7 +229,7 @@ Supplier ───── referenced by name in RestockRecord (no FK)
 The frontend `apiClient.ts` sends requests to `VITE_API_BASE_URL`. Set:
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000/api
+VITE_API_BASE_URL=http://localhost:8088/api
 ```
 
 The frontend service layer (`src/services/api/*.ts`) maps 1:1 to these backend endpoints.

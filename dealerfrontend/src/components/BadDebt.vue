@@ -12,6 +12,7 @@ import {
   Download,
   X
 } from 'lucide-vue-next';
+import { useFormatters } from '../composables/useFormatters';
 import type { SaleRecord } from '../types';
 
 const props = defineProps<{
@@ -128,16 +129,8 @@ const handleExport = async () => {
   }
 };
 
-// Default currency formatter
-const formatCurrency = computed(() => {
-  return props.formatCurrency || ((amt: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 0
-    }).format(amt);
-  });
-});
+// Use shared formatter
+const { formatCurrency } = useFormatters({ formatCurrency: props.formatCurrency });
 </script>
 
 <template>

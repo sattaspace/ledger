@@ -70,6 +70,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'common.permission_middleware.PermissionMiddleware',  # Extract role from JWT
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -96,11 +97,11 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
     "SL_CORS_ALLOWED_ORIGINS",
     default=[
-        "http://localhost:4322",
-        "http://localhost:8087",
-        "http://127.0.0.1:4322",
-        "http://127.0.0.1:8087",
-        "http://127.0.0.1:8000",
+        "http://localhost:4323",
+        "http://localhost:8088",
+        "http://127.0.0.1:4323",
+        "http://127.0.0.1:8088",
+        "http://localhost:4321",
         "http://127.0.0.1:4321",
     ],
 )

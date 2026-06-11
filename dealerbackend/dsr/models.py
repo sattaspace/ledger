@@ -6,7 +6,15 @@ Daily Sales Representatives and Order Collectors.
 Relationships:
   DSR → DSR (self-referencing: parent_dsr for OC hierarchy)
   DSR ←── SaleRecord (FK: dsr, defined in sales app)
+  DSR ←→ Dealer (many-to-many via DsrDealerAssignment)
+  DSR ←── DsrInvitation
+
+Exports:
+  DSR, DsrInvitation, DsrDealerAssignment
 """
+
+# Re-export invitation models
+from .invitation_models import DsrInvitation, DsrDealerAssignment
 
 from django.db import models
 

@@ -21,7 +21,8 @@ import "../index.css";
     class="bg-slate-50 min-h-screen selection:bg-blue-100 antialiased overflow-hidden m-0 p-0 font-sans text-slate-900"
   >
     <div id="root">
-      <App client:load />
+      <!-- client:only prevents hydration mismatch during auth state changes -->
+      <App client:only="vue" />
     </div>
   </body>
 </html>
