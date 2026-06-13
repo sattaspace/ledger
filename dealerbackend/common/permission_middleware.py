@@ -69,6 +69,18 @@ class PermissionMiddleware:
         """
         Extract user role and identity from JWT token.
         
+        FIX S-1: JWT signatures are now VERIFIED. We choose the verification
+        key based on the configured SattaBase settings:
+          - SATTABASE_JWT_PUBLIC_KEY set  → RS256 with that public key
+          - SATTABASE_JWT_SHARED_SECRET set → HS256 with that shared secret
+          - Otherwise → fall back to the local SECRET_KEY (HS256, dev only)
+        `require=["exp"]` enforces expiry. `iss`/`aud` are validated when
+        `SATTABASE_JWT_ISSUER` / `SATTABASE_JWT_AUDIENCE` are set.
+
+        FIX S-6: only catch the JWT exceptions we expect. Programming errors
+        (AttributeError, KeyError, etc.) must propagate so they show up in
+        logs instead of silently granting anonymous access.
+
         Note: Dealer detection via DealerConfig is handled asynchronously
         in get_dealer_context() to work properly with Django async views.
         
@@ -80,145 +92,79 @@ class PermissionMiddleware:
         
         token = auth_header[7:]  # Remove "Bearer "
         
+        # Pick the verification key/algorithm
+        public_key = getattr(settings, 'SATTABASE_JWT_PUBLIC_KEY', '') or ''
+        shared_secret = getattr(settings, 'SATTABASE_JWT_SHARED_SECRET', '') or ''
+        if public_key:
+            verify_key = public_key
+            algorithms = [getattr(settings, 'SATTABASE_JWT_ALGORITHM', 'RS256') or 'RS256']
+        elif shared_secret:
+            verify_key = shared_secret
+            algorithms = ['HS256']
+        else:
+            # Fallback to local SECRET_KEY (HS256). In production, set one of
+            # the two env vars above; otherwise signature verification is
+            # effectively using the local dev key.
+            verify_key = settings.SECRET_KEY
+            algorithms = ['HS256']
+
+        decode_kwargs = {
+            'algorithms': algorithms,
+            'options': {
+                'verify_signature': True,
+                'require': ['exp'],
+            },
+        }
+        issuer = getattr(settings, 'SATTABASE_JWT_ISSUER', '') or ''
+        audience = getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or ''
+        if issuer:
+            decode_kwargs['issuer'] = issuer
+        if audience:
+            decode_kwargs['audience'] = audience
+
         try:
-            # Decode JWT without verification (SattaBase verifies it)
-            payload = jwt.decode(token, options={"verify_signature": False})
-            
-            # Extract role from JWT claims
-            role_str = payload.get('role', '').lower()
-            
-            # Extract user identity for dealer context
-            # SattaBase uses user_id (not username)
-            username = payload.get('username') or payload.get('sub') or payload.get('user_id')
-            email = payload.get('email')
-            
-            # Check is_dealer flag from JWT (may not be present)
-            is_dealer = payload.get('is_dealer', False)
-            
-            # Map to Role enum
-            role_map = {
-                'dealer': Role.DEALER,
-                'dsr': Role.DSR,
-                'collector': Role.COLLECTOR,
-                'admin': Role.ADMIN,
-            }
-            
-            role = role_map.get(role_str)
-            
-            # If no explicit role but is_dealer, assume DEALER role
-            if not role and is_dealer:
-                role = Role.DEALER
-            
-            return role, is_dealer, username, email
-            
+            payload = jwt.decode(token, verify_key, **decode_kwargs)
+        except jwt.ExpiredSignatureError:
+            return None, False, None, None
         except jwt.InvalidTokenError:
             return None, False, None, None
-        except Exception:
-            return None, False, None, None
+        # Programming errors / unexpected exceptions propagate so they show
+        # up in logs instead of silently becoming "anonymous".
+        
+        # Extract role from JWT claims
+        role_str = payload.get('role', '').lower()
+        
+        # Extract user identity for dealer context
+        # SattaBase uses user_id (not username)
+        username = payload.get('username') or payload.get('sub') or payload.get('user_id')
+        email = payload.get('email')
+        
+        # Check is_dealer flag from JWT (may not be present)
+        is_dealer = payload.get('is_dealer', False)
+        
+        # Map to Role enum
+        role_map = {
+            'dealer': Role.DEALER,
+            'dsr': Role.DSR,
+            'collector': Role.COLLECTOR,
+            'admin': Role.ADMIN,
+        }
+        
+        role = role_map.get(role_str)
+        
+        # If no explicit role but is_dealer, assume DEALER role
+        if not role and is_dealer:
+            role = Role.DEALER
+        
+        return role, is_dealer, username, email
 
 
-class DealerOnlyMiddleware:
-    """Middleware to restrict endpoints to dealers only"""
-    
-    def __init__(self, get_response: Callable):
-        self.get_response = get_response
-    
-    def __call__(self, request: HttpRequest):
-        if not getattr(request, 'is_dealer', False):
-            return JsonResponse(
-                {"detail": "Dealer access required", "code": "dealer_required"},
-                status=403
-            )
-        return self.get_response(request)
-
-
-class DSRPlusMiddleware:
-    """Middleware to restrict endpoints to DSRs and above"""
-    
-    def __init__(self, get_response: Callable):
-        self.get_response = get_response
-    
-    def __call__(self, request: HttpRequest):
-        role = getattr(request, 'user_role', None)
-        is_dealer = getattr(request, 'is_dealer', False)
-        
-        if not (is_dealer or role in [Role.DEALER, Role.DSR, Role.ADMIN]):
-            return JsonResponse(
-                {"detail": "DSR access required", "code": "dsr_required"},
-                status=403
-            )
-        return self.get_response(request)
-
-
-# Async versions for Django Ninja
-class AsyncPermissionMiddleware:
-    """Async middleware for permission checking"""
-    
-    async def __call__(self, request: HttpRequest, call_next):
-        role, is_dealer, username, email = self._extract_user_info(request)
-        
-        # Check for X-Dealer-Username header (for multi-dealer DSR context)
-        selected_dealer = request.headers.get('X-Dealer-Username')
-        
-        # Determine effective dealer username:
-        # - For dealers: always use their own username (ignore header)
-        # - For DSRs/Collectors: use header if provided, otherwise use JWT username
-        if is_dealer:
-            effective_dealer = username  # Dealers can only access their own data
-        elif selected_dealer:
-            effective_dealer = selected_dealer  # DSR selected dealer context
-        else:
-            effective_dealer = username  # Fallback to JWT username
-        
-        request.user_role = role
-        request.is_dealer = is_dealer
-        request.permissions = get_role_permissions(role) if role else []
-        request.permission_checker = PermissionChecker(role=role, is_dealer=is_dealer)
-        request.dealer_username = effective_dealer  # For dealer context scoping
-        request.user_email = email  # For DSR/invitation matching
-        request.selected_dealer = selected_dealer  # The explicitly selected dealer (for validation)
-        
-        response = await call_next(request)
-        return response
-    
-    def _extract_user_info(self, request: HttpRequest) -> tuple[Optional[Role], bool, Optional[str], Optional[str]]:
-        """Extract user role and identity from JWT.
-        
-        Note: Dealer detection via DealerConfig is handled asynchronously
-        in get_dealer_context() to work properly with Django async views.
-        """
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return None, False, None, None
-        
-        token = auth_header[7:]
-        
-        try:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            role_str = payload.get('role', '').lower()
-            
-            # Extract user identity (SattaBase uses user_id)
-            username = payload.get('username') or payload.get('sub') or payload.get('user_id')
-            email = payload.get('email')
-            
-            # Check is_dealer flag from JWT (may not be present)
-            is_dealer = payload.get('is_dealer', False)
-            
-            role_map = {
-                'dealer': Role.DEALER,
-                'dsr': Role.DSR,
-                'collector': Role.COLLECTOR,
-                'admin': Role.ADMIN,
-            }
-            
-            role = role_map.get(role_str)
-            if not role and is_dealer:
-                role = Role.DEALER
-            
-            return role, is_dealer, username, email
-            
-        except Exception:
-            return None, False, None, None
+# NOTE: The legacy DealerOnlyMiddleware, DSRPlusMiddleware, and
+# AsyncPermissionMiddleware classes have been removed — they were never
+# registered in settings.MIDDLEWARE and were dead code. Role gating for
+# controllers is now done declaratively via the `permissions=[...]`
+# argument using the IsJwtAuthenticated / IsDealerOnly / IsDsrOrDealer
+# permission classes in `common/permissions.py`.
 
 
 # Permission check helper for controllers

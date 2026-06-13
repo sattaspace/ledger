@@ -37,29 +37,62 @@ from dsr.auth_schemas import (
     MessageOutput,
 )
 from common.dealer_context import get_dealer_context
+from common.permissions import IsJwtAuthenticated, IsDealerOnly
 from common.tasks import send_dsr_invitation_email, send_dsr_notification_email
+from common.rate_limit import rate_limit
 
 
 def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
-    """Get dealer from request context."""
-    dealer_username = request.headers.get("X-Dealer-Username")
-    if not dealer_username:
+    """Get dealer from request context (sync version).
+
+    FIX S-3: prefer the dealer_username that the PermissionMiddleware resolved
+    from the verified JWT. Falls back to the X-Dealer-Username header ONLY if
+    the middleware didn't set one. Cross-check the header against the JWT
+    derived value to prevent header-spoofing dealer impersonation.
+    """
+    jwt_dealer = getattr(request, "dealer_username", None)
+    header_dealer = request.headers.get("X-Dealer-Username")
+
+    chosen = jwt_dealer or header_dealer
+    if not chosen:
         return None
-    
+
+    # If both are set they must agree — otherwise someone is trying to spoof.
+    if (
+        jwt_dealer
+        and header_dealer
+        and jwt_dealer != header_dealer
+    ):
+        return None
+
     try:
-        return DealerConfig.objects.get(username=dealer_username)
+        return DealerConfig.objects.get(username=chosen)
     except DealerConfig.DoesNotExist:
         return None
 
 
 async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
-    """Async version of get_dealer_from_request."""
-    dealer_username = request.headers.get("X-Dealer-Username")
-    if not dealer_username:
+    """Async version of get_dealer_from_request.
+
+    FIX S-3: same change as the sync helper — derive dealer from the verified
+    JWT (via the middleware), not from the raw X-Dealer-Username header.
+    """
+    jwt_dealer = getattr(request, "dealer_username", None)
+    header_dealer = request.headers.get("X-Dealer-Username")
+
+    chosen = jwt_dealer or header_dealer
+    if not chosen:
         return None
-    
+
+    if (
+        jwt_dealer
+        and header_dealer
+        and jwt_dealer != header_dealer
+    ):
+        return None
+
     try:
-        return await DealerConfig.objects.aget(username=dealer_username)
+        return await DealerConfig.objects.aget(username=chosen)
     except DealerConfig.DoesNotExist:
         return None
 
@@ -68,7 +101,15 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
 # DEALER DSR MANAGEMENT CONTROLLER
 # ═══════════════════════════════════════════════════════════════════════════
 
-@api_controller("/dealer/dsr", tags=["Dealer DSR Management"], permissions=[AllowAny])
+@api_controller(
+    "/dealer/dsr",
+    tags=["Dealer DSR Management"],
+    # FIX S-7: was `permissions=[AllowAny]`. The controller manages dealer-only
+    # data (DSR roster, invitations, assignments), so require both a valid JWT
+    # (any role) AND a dealer identity. Per-endpoint ownership checks happen
+    # inside each method via `aget_dealer_from_request`.
+    permissions=[IsJwtAuthenticated, IsDealerOnly],
+)
 class DealerDsrController:
     """
     Dealer DSR Management endpoints.
@@ -140,7 +181,12 @@ class DealerDsrController:
             existing_assignment = await DsrDealerAssignment.objects.filter(
                 dsr=dsr_profile,
                 dealer=dealer,
-            ).aexists()
+                # FIX H-16: only treat ACTIVE assignments as "already assigned".
+                # REMOVED / LEFT assignments are still in the table (history is
+                # preserved) but the DSR is not currently on the team, so a
+                # new invite + reactivation is the expected workflow.
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).afirst()
             
             if existing_assignment:
                 return 400, {
@@ -150,7 +196,16 @@ class DealerDsrController:
         
         # Create invitation
         invitation_id = f"INV-{dealer.username}-{email.split('@')[0][:8]}-{secrets.token_hex(4)}"
-        
+
+        # FIX H-15: validate role against DsrInvitation.ROLE_CHOICES so the
+        # dealer can't invite a DSR with an unknown role (e.g. "superadmin").
+        valid_roles = {choice for choice, _ in DsrInvitation.ROLE_CHOICES}
+        if data.role not in valid_roles:
+            return 400, {
+                "detail": f"Invalid role '{data.role}'. Must be one of: {sorted(valid_roles)}",
+                "code": "invalid_role",
+            }
+
         # Set permissions
         permissions = data.permissions
         if not permissions and data.role in DEFAULT_PERMISSIONS:
@@ -167,14 +222,21 @@ class DealerDsrController:
             parent_dsr_id=data.parent_dsr_id,
             message=data.message or "",
         )
-        
+
+        # FIX L-9: regenerate the token so we have the raw value for the
+        # email URL, then store the hash in the DB. The raw token is NOT
+        # persisted — only the hash lives in invitation.token.
+        raw_token = invitation._generate_token()
+        invitation.token = DsrInvitation.hash_token(raw_token)
+        await invitation.asave(update_fields=["token", "updated_at"])
+
         # Generate registration URL if DSR not registered
         registration_url = None
         frontend_url = getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')
-        
+
         if not existing_user:
-            # DSR not registered - create registration link
-            registration_url = f"{frontend_url}/dsr/register/{invitation.token}"
+            # DSR not registered - create registration link (uses RAW token)
+            registration_url = f"{frontend_url}/dsr/register/{raw_token}"
             
             # Send invitation email via Celery
             send_dsr_invitation_email.delay(
@@ -205,13 +267,17 @@ class DealerDsrController:
             
             logger.info(f"[DSR INVITE] Notification email queued for registered DSR {email}")
         
+        # FIX H-20: do NOT return the raw token in the response body. With the
+        # previous `AllowAny` controller this was a full impersonation vector:
+        # any caller could grab the token and use it to register as the
+        # invited DSR. The token lives in the registration URL (for the email
+        # link); the dealer doesn't need it separately.
         return {
             "id": invitation.id,
             "dsr_email": invitation.dsr_email,
             "dsr_phone": invitation.dsr_phone,
             "role": invitation.role,
             "status": invitation.status,
-            "token": invitation.token,
             "expires_at": invitation.expires_at,
             "registration_url": registration_url,
             "message": "Invitation email sent" if existing_user else "Registration link sent to email",
@@ -274,7 +340,9 @@ class DealerDsrController:
         async for assignment in DsrDealerAssignment.objects.filter(
             dealer=dealer,
             status=DsrDealerAssignment.STATUS_ACTIVE,
-        ).select_related("dsr"):
+        ).select_related("dsr", "dsr__user"):
+            # Check has_account by checking if user_id is set (avoids lazy loading)
+            has_account = assignment.dsr.user_id is not None
             active.append({
                 "id": assignment.id,
                 "dsr_id": assignment.dsr.id,
@@ -285,7 +353,7 @@ class DealerDsrController:
                 "permissions": assignment.permissions,
                 "assigned_at": assignment.assigned_at,
                 "commission_rate": float(assignment.commission_rate) if assignment.commission_rate else None,
-                "has_account": assignment.dsr.has_account,
+                "has_account": has_account,
             })
         
         # Pending invitations
@@ -342,6 +410,15 @@ class DealerDsrController:
         
         # Update fields
         if data.role is not None:
+            # FIX H-15: validate against DsrInvitation.ROLE_CHOICES so a
+            # caller can't smuggle in `role="superadmin"` (or any other
+            # unknown string) to bypass downstream role-string checks.
+            valid_roles = {choice for choice, _ in DsrInvitation.ROLE_CHOICES}
+            if data.role not in valid_roles:
+                return 400, {
+                    "detail": f"Invalid role '{data.role}'. Must be one of: {sorted(valid_roles)}",
+                    "code": "invalid_role",
+                }
             assignment.role = data.role
             # Update permissions based on new role if not explicitly provided
             if data.permissions is None and data.role in DEFAULT_PERMISSIONS:
@@ -401,10 +478,9 @@ class DealerDsrController:
             dealer=dealer
         ).aupdate(original_dsr_status='removed')
         
-        # Deactivate assignment (dealer removing)
+        # Deactivate assignment (dealer removing) - use async version
         reason = data.reason if data else None
-        assignment.deactivate_by_dealer(reason or "")
-        await assignment.asave()
+        await assignment.adeactivate_by_dealer(reason or "")
         
         # TODO: Notify DSR about removal via email
         

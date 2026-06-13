@@ -221,10 +221,14 @@ class DsrInvitation(models.Model):
             models.Index(fields=["dsr", "status"]),
         ]
         constraints = [
-            # One pending invitation per phone per dealer
+            # One pending invitation per phone per dealer.
+            # FIX H-13: dsr_phone defaults to ""; without this exclusion two
+            # pending email-only invitations would collide on (dealer, "")
+            # and the second save would crash with IntegrityError. Only enforce
+            # uniqueness when a phone was actually supplied.
             models.UniqueConstraint(
                 fields=["dealer", "dsr_phone"],
-                condition=models.Q(status="pending"),
+                condition=models.Q(status="pending") & ~models.Q(dsr_phone=""),
                 name="unique_pending_invitation_per_dealer_phone",
             ),
         ]
@@ -232,13 +236,33 @@ class DsrInvitation(models.Model):
     def __str__(self):
         return f"Invitation to {self.dsr_phone} from {self.dealer.full_name} ({self.status})"
     
+    @staticmethod
+    def hash_token(raw_token: str) -> str:
+        """FIX L-9: return the SHA-256 hex digest of an invitation token.
+
+        Invitation tokens are equivalent to password-reset tokens — a DB
+        dump of the invitations table should not let an attacker take over
+        any account. We store the hash; the raw token only travels in the
+        email link.
+
+        Callers should:
+        1. Generate a raw token (e.g. `secrets.token_urlsafe(32)`).
+        2. Store the hash via `invitation.token = DsrInvitation.hash_token(raw)`.
+        3. Embed the RAW token in the email URL.
+        4. When accepting, hash the incoming URL token and look up by hash.
+        """
+        import hashlib
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
     def save(self, *args, **kwargs):
-        # Generate token and expiry on first save
+        # Generate token and expiry on first save.
+        # The `token` field may already be a hash (set by the controller).
+        # We only auto-generate if it's empty.
         if not self.token:
             self.token = self._generate_token()
         if not self.expires_at:
             self.expires_at = timezone.now() + timedelta(days=7)  # 7 days expiry
-        
+
         # Set default permissions based on role if not provided
         if not self.permissions and self.role in DEFAULT_PERMISSIONS:
             self.permissions = DEFAULT_PERMISSIONS[self.role].copy()
@@ -263,8 +287,14 @@ class DsrInvitation(models.Model):
             self.status = self.STATUS_EXPIRED
             self.save(update_fields=["status"])
     
+    async def aexpire(self):
+        """Mark invitation as expired (async version for async views)."""
+        if self.status == self.STATUS_PENDING and self.is_expired():
+            self.status = self.STATUS_EXPIRED
+            await self.asave(update_fields=["status"])
+    
     def accept(self, dsr):
-        """Mark invitation as accepted by DSR"""
+        """Mark invitation as accepted by DSR (synchronous version)"""
         self.status = self.STATUS_ACCEPTED
         self.accepted_at = timezone.now()
         self.responded_at = timezone.now()
@@ -272,17 +302,38 @@ class DsrInvitation(models.Model):
         self.dsr = dsr
         self.save(update_fields=["status", "accepted_at", "responded_at", "accepted_by", "dsr"])
     
+    async def aaccept(self, dsr):
+        """Mark invitation as accepted by DSR (async version for async views)"""
+        self.status = self.STATUS_ACCEPTED
+        self.accepted_at = timezone.now()
+        self.responded_at = timezone.now()
+        self.accepted_by = dsr
+        self.dsr = dsr
+        await self.asave(update_fields=["status", "accepted_at", "responded_at", "accepted_by", "dsr"])
+    
     def reject(self):
-        """Mark invitation as rejected by DSR"""
+        """Mark invitation as rejected by DSR (synchronous version)"""
         self.status = self.STATUS_REJECTED
         self.responded_at = timezone.now()
         self.save(update_fields=["status", "responded_at"])
+    
+    async def areject(self):
+        """Mark invitation as rejected by DSR (async version for async views)"""
+        self.status = self.STATUS_REJECTED
+        self.responded_at = timezone.now()
+        await self.asave(update_fields=["status", "responded_at"])
     
     def revoke(self):
         """Revoke pending invitation by dealer"""
         if self.status == self.STATUS_PENDING:
             self.status = self.STATUS_REVOKED
             self.save(update_fields=["status"])
+    
+    async def arevoke(self):
+        """Revoke pending invitation by dealer (async version)"""
+        if self.status == self.STATUS_PENDING:
+            self.status = self.STATUS_REVOKED
+            await self.asave(update_fields=["status"])
 
 
 class DsrDealerAssignment(models.Model):
@@ -317,17 +368,25 @@ class DsrDealerAssignment(models.Model):
     ]
     
     id = models.CharField(max_length=100, primary_key=True)
-    
+
+    # FIX M-13: change on_delete from CASCADE to SET_NULL so deleting a DSR
+    # or Dealer preserves the assignment history rows (the docstring at
+    # the top of this class promises "records are never deleted").
+    # CASCADE was silently violating that promise.
     dsr = models.ForeignKey(
         "dsr.DSR",
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="dealer_assignments",
         db_column="dsr_id",
     )
-    
+
     dealer = models.ForeignKey(
         DealerConfig,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="dsr_assignments",
         db_column="dealer_username",
     )
@@ -430,6 +489,12 @@ class DsrDealerAssignment(models.Model):
         self.activated_at = timezone.now()
         self.save(update_fields=["status", "activated_at"])
     
+    async def aactivate(self):
+        """Activate this assignment (async version)."""
+        self.status = self.STATUS_ACTIVE
+        self.activated_at = timezone.now()
+        await self.asave(update_fields=["status", "activated_at"])
+    
     def deactivate_by_dealer(self, reason: str = ""):
         """
         Deactivate by dealer (removal).
@@ -441,6 +506,17 @@ class DsrDealerAssignment(models.Model):
         self.removal_reason = reason
         self.save(update_fields=["status", "removed_at", "removed_by", "removal_reason"])
     
+    async def adeactivate_by_dealer(self, reason: str = ""):
+        """
+        Deactivate by dealer (removal) - async version.
+        Transaction records will be preserved with DSR name snapshot.
+        """
+        self.status = self.STATUS_REMOVED
+        self.removed_at = timezone.now()
+        self.removed_by = "dealer"
+        self.removal_reason = reason
+        await self.asave(update_fields=["status", "removed_at", "removed_by", "removal_reason"])
+    
     def deactivate_by_dsr(self, reason: str = ""):
         """
         Deactivate by DSR (leaving).
@@ -451,6 +527,17 @@ class DsrDealerAssignment(models.Model):
         self.removed_by = "dsr"
         self.removal_reason = reason
         self.save(update_fields=["status", "removed_at", "removed_by", "removal_reason"])
+    
+    async def adeactivate_by_dsr(self, reason: str = ""):
+        """
+        Deactivate by DSR (leaving) - async version.
+        Transaction records will be preserved with DSR name snapshot.
+        """
+        self.status = self.STATUS_LEFT
+        self.removed_at = timezone.now()
+        self.removed_by = "dsr"
+        self.removal_reason = reason
+        await self.asave(update_fields=["status", "removed_at", "removed_by", "removal_reason"])
     
     def get_permissions(self) -> dict:
         """Get permissions for this assignment."""

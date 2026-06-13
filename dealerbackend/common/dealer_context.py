@@ -195,10 +195,12 @@ async def validate_dsr_access(request, dealer_username: str) -> bool:
         )
     
     # Check for active assignment
+    # FIX S-2: filter on `status` DB field, not the `is_active` @property
+    # (which raises FieldError when used in a queryset filter).
     has_access = await DsrDealerAssignment.objects.filter(
         dsr__email=user_email,  # DSR is matched by email
         dealer_id=dealer_username,
-        is_active=True,
+        status=DsrDealerAssignment.STATUS_ACTIVE,
     ).aexists()
     
     if not has_access:
@@ -243,9 +245,10 @@ async def get_dealer_choices(request) -> list[str]:
         return []
     
     # Get all active dealer assignments
+    # FIX S-2: filter on `status` DB field, not the `is_active` @property.
     assignments = DsrDealerAssignment.objects.filter(
         dsr__email=user_email,
-        is_active=True,
+        status=DsrDealerAssignment.STATUS_ACTIVE,
     ).select_related('dealer').only('dealer_id')
     
     return [assignment.dealer_id async for assignment in assignments]

@@ -24,13 +24,38 @@ environ.Env.read_env(os.path.join(BASE_DIR.parent, ".env"))
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-=3$*v73(-9%a#8$*ba7$spzzk4$!zqqq75vm)7y12%jtjpc_q4'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool("DJANGO_DEBUG", default=True)
 
-ALLOWED_HOSTS = ['*']
+# FIX S-5: SECRET_KEY must come from environment in production.
+# In development (DEBUG=True) we fall back to an insecure default so local
+# setup keeps working without a .env file, but a loud warning is logged.
+# In production, a missing SECRET_KEY causes startup to fail.
+_RAW_SECRET_KEY = os.getenv("DJANGO_SECRET_KEY") or os.getenv("SECRET_KEY")
+if _RAW_SECRET_KEY:
+    SECRET_KEY = _RAW_SECRET_KEY
+elif DEBUG:
+    import warnings
+    warnings.warn(
+        "DJANGO_SECRET_KEY is not set — using an insecure development "
+        "default. NEVER deploy with this default. Set DJANGO_SECRET_KEY "
+        "in your environment or .env file.",
+        RuntimeWarning,
+    )
+    SECRET_KEY = 'django-insecure-=3$*v73(-9%a#8$*ba7$spzzk4$!zqqq75vm)7y12%jtjpc_q4'
+else:
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY environment variable is required when "
+        "DEBUG=False. Refusing to start with an insecure default."
+    )
+
+# FIX L-4: restrict ALLOWED_HOSTS by default. In production, set
+# DJANGO_ALLOWED_HOSTS to a comma-separated list. In DEBUG we keep the
+# permissive default for local development.
+ALLOWED_HOSTS = env.list(
+    "DJANGO_ALLOWED_HOSTS",
+    default=["*"] if DEBUG else [],
+)
 
 
 # Application definition
@@ -204,25 +229,29 @@ AUTH_USER_MODEL = 'users.DsrUser'
 # =============================================================================
 # SATTABASE INTEGRATION SETTINGS
 # =============================================================================
-# Configuration for connecting to SattaBase central authentication system.
-# The frontend calls SattaBase directly for auth; these settings are for
-# server-to-server calls (e.g., token validation, webhook processing).
-
-# SattaBase Backend API URL
-SATTABASE_API_URL = os.getenv("SB_API_BASE_URL", "http://localhost:8086/api/v1")
-
-# Service Domain identifier - must match ServiceDomain in SattaBase
-SATTABASE_SERVICE_DOMAIN = os.getenv("SB_SERVICE_DOMAIN", "localhost:4323")
-
-# API Key for server-to-server calls (from SattaBase admin)
-SATTABASE_API_KEY = os.getenv("SB_API_KEY", "")
-
-# SattaBase Frontend URL (for redirects, email links)
-SATTABASE_FRONTEND_URL = os.getenv("SB_FRONTEND_URL", "http://localhost:4321")
+# NOTE: Dealer authentication goes directly from the frontend to SattaBase
+# (login, refresh, /billing/auth/me, /auth/authorize). The legacy
+# sattabase_client.py + AuthController/SSOController/AccessController proxy
+# layer was removed; there are no remaining server-to-server flows that
+# require backend-to-SattaBase HTTP. JWT verification is now done locally
+# by PermissionMiddleware using the keys below.
 
 # JWT Configuration (must match SattaBase)
 # Access token lifetime for token validation
 JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=60)
+
+# SattaBase JWT verification (FIX S-1).
+# The PermissionMiddleware needs to verify tokens issued by SattaBase.
+# SattaBase signs with RS256 by default — set SATTABASE_JWT_PUBLIC_KEY (PEM,
+# single line or with \n) to enable verification. If unset, the middleware
+# falls back to HS256 with `SATTABASE_JWT_SHARED_SECRET` (less secure; use
+# only in development). If both are unset, token verification fails closed
+# (every request is treated as unauthenticated).
+SATTABASE_JWT_ALGORITHM = os.getenv("SATTABASE_JWT_ALGORITHM", "RS256")
+SATTABASE_JWT_PUBLIC_KEY = os.getenv("SATTABASE_JWT_PUBLIC_KEY", "")
+SATTABASE_JWT_SHARED_SECRET = os.getenv("SATTABASE_JWT_SHARED_SECRET", "")
+SATTABASE_JWT_ISSUER = os.getenv("SATTABASE_JWT_ISSUER", "sattabase")
+SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "dealercore")
 
 
 

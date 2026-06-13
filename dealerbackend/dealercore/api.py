@@ -36,9 +36,6 @@ from dsr.dealer_dsr_api import DealerDsrController
 from supplier.api import SupplierController
 from dealer.api import DealerController
 from reports.api import ReportsController
-from common.auth_controller import AuthController
-from common.sso_controller import SSOController
-from common.access_controller import AccessController
 
 api.register_controllers(
     # Core Modules
@@ -50,7 +47,10 @@ api.register_controllers(
     ReportsController,
     
     # Authentication
-    AuthController,  # Dealer authentication (via SattaBase)
+    # Note: Dealer authentication goes directly from frontend to SattaBase.
+    # The legacy AuthController/SSOController/AccessController that proxied
+    # SattaBase were removed because the frontend already calls SattaBase
+    # directly (login, refresh, /billing/auth/me, /auth/authorize, etc.).
     DsrAuthController,  # DSR authentication (direct login)
     
     # DSR Invitation & Assignment System
@@ -60,8 +60,4 @@ api.register_controllers(
     
     # Legacy (for backward compatibility)
     LegacyDsrInvitationController,  # Old invitation endpoints
-    
-    # SSO & Access
-    SSOController,  # SSO endpoints
-    AccessController,  # Access control endpoints
 )
