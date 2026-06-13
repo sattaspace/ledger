@@ -1,0 +1,23 @@
+You're Invited to Join {{ dealer_name }} on {{ site_name }}
+=============================================================
+
+{{ dealer_name }}{% if dealer_business %} ({{ dealer_business }}){% endif %} is inviting you to join their team as a {{ role }}.
+
+{% if message %}
+Personal message from {{ dealer_name }}:
+"{{ message }}"
+{% endif %}
+
+To accept this invitation and create your account, please visit:
+
+{{ registration_url }}
+
+{% if expires_at %}
+This invitation expires on {{ expires_at }}.
+{% endif %}
+
+If you did not expect this invitation, you can safely ignore this email.
+
+---
+© {{ current_year }} {{ site_name }}
+This email was sent to {{ email }}

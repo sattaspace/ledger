@@ -4,11 +4,13 @@ DEALERCORE v3.0 — Dealer DSR Management API
 Endpoints for dealers to manage DSRs (invite, remove, update permissions).
 
 Dealer-side operations:
-- Invite DSR by phone/email
+- Invite DSR by email (phone optional)
 - List DSRs (active, pending, removed)
 - Update DSR permissions
 - Remove DSR from team
 - Revoke pending invitations
+
+Email is now the primary identifier for DSR invitations.
 """
 
 import secrets
@@ -35,6 +37,7 @@ from dsr.auth_schemas import (
     MessageOutput,
 )
 from common.dealer_context import get_dealer_context
+from common.tasks import send_dsr_invitation_email, send_dsr_notification_email
 
 
 def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
@@ -71,7 +74,7 @@ class DealerDsrController:
     Dealer DSR Management endpoints.
     
     Dealers can:
-    - Invite DSRs by phone/email
+    - Invite DSRs by email (primary identifier)
     - View all DSR assignments
     - Update DSR permissions
     - Remove DSRs from their team
@@ -82,41 +85,55 @@ class DealerDsrController:
         """
         Invite a DSR to join the dealer's team.
         
+        Email is the primary identifier (required).
+        Phone is optional for contact purposes.
+        
         If DSR is not registered:
         - Creates pending invitation
         - Returns registration URL with token
+        - Sends invitation email via Celery
         
         If DSR is registered:
         - Creates pending invitation linked to existing DSR
+        - Sends notification email via Celery
         - DSR will see it in their invitation list
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
         
-        # Check for existing pending invitation
+        # Normalize email
+        email = data.dsr_email.lower().strip()
+        phone = data.dsr_phone.strip() if data.dsr_phone else ""
+        
+        # Check for existing pending invitation by email
         existing = await DsrInvitation.objects.filter(
             dealer=dealer,
-            dsr_phone=data.dsr_phone,
+            dsr_email=email,
             status=DsrInvitation.STATUS_PENDING,
         ).aexists()
         
         if existing:
             return 400, {
-                "detail": "Pending invitation already exists for this phone number",
+                "detail": "Pending invitation already exists for this email",
                 "code": "invitation_exists"
             }
         
-        # Check if DSR already exists (registered)
-        existing_user = await DsrUser.objects.filter(phone=data.dsr_phone).aexists()
+        # Check if DSR already exists (registered) - search by email
         dsr_profile = None
+        existing_user = None
         
-        if existing_user:
+        try:
+            existing_user = await DsrUser.objects.aget(email__iexact=email)
             # Get DSR profile
-            try:
-                dsr_profile = await DSR.objects.aget(user__phone=data.dsr_phone)
-            except DSR.DoesNotExist:
-                pass
+            dsr_profile = await DSR.objects.aget(user=existing_user)
+        except DsrUser.DoesNotExist:
+            pass
+        except DSR.DoesNotExist:
+            pass
         
         # Check if already assigned to this dealer
         if dsr_profile:
@@ -132,7 +149,7 @@ class DealerDsrController:
                 }
         
         # Create invitation
-        invitation_id = f"INV-{dealer.username}-{data.dsr_phone[-4:]}-{secrets.token_hex(4)}"
+        invitation_id = f"INV-{dealer.username}-{email.split('@')[0][:8]}-{secrets.token_hex(4)}"
         
         # Set permissions
         permissions = data.permissions
@@ -142,8 +159,8 @@ class DealerDsrController:
         invitation = await DsrInvitation.objects.acreate(
             id=invitation_id,
             dealer=dealer,
-            dsr_phone=data.dsr_phone,
-            dsr_email=data.dsr_email or "",
+            dsr_phone=phone,
+            dsr_email=email,
             dsr=dsr_profile,
             role=data.role,
             permissions=permissions or {},
@@ -153,29 +170,51 @@ class DealerDsrController:
         
         # Generate registration URL if DSR not registered
         registration_url = None
+        frontend_url = getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')
+        
         if not existing_user:
-            # TODO: Use actual frontend URL from settings
-            frontend_url = getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')
+            # DSR not registered - create registration link
             registration_url = f"{frontend_url}/dsr/register/{invitation.token}"
             
-            # TODO: Send SMS with registration link
-            # send_sms(data.dsr_phone, f"You've been invited to join {dealer.full_name}...")
+            # Send invitation email via Celery
+            send_dsr_invitation_email.delay(
+                email=email,
+                dealer_name=dealer.full_name or dealer.username,
+                dealer_business=dealer.business_name or "",
+                role=data.role,
+                registration_url=registration_url,
+                expires_at=invitation.expires_at.isoformat() if invitation.expires_at else None,
+                message=data.message,
+            )
+            
+            logger.info(f"[DSR INVITE] Invitation email queued for {email}")
         
         else:
-            # TODO: Send notification to existing DSR
-            # They'll see it in their invitation list when they log in
-            pass
+            # DSR is registered - send notification email
+            dsr_name = existing_user.full_name or email.split('@')[0]
+            
+            send_dsr_notification_email.delay(
+                email=email,
+                dsr_name=dsr_name,
+                dealer_name=dealer.full_name or dealer.username,
+                dealer_business=dealer.business_name or "",
+                role=data.role,
+                invitation_id=invitation.id,
+                message=data.message,
+            )
+            
+            logger.info(f"[DSR INVITE] Notification email queued for registered DSR {email}")
         
         return {
             "id": invitation.id,
-            "dsr_phone": invitation.dsr_phone,
             "dsr_email": invitation.dsr_email,
+            "dsr_phone": invitation.dsr_phone,
             "role": invitation.role,
             "status": invitation.status,
             "token": invitation.token,
             "expires_at": invitation.expires_at,
             "registration_url": registration_url,
-            "message": "Invitation sent" if existing_user else "Registration link generated",
+            "message": "Invitation email sent" if existing_user else "Registration link sent to email",
         }
     
     @http_get("/invitations", response={200: dict})
@@ -191,8 +230,8 @@ class DealerDsrController:
         ).order_by("-created_at"):
             invitations.append({
                 "id": inv.id,
-                "dsr_phone": inv.dsr_phone,
                 "dsr_email": inv.dsr_email,
+                "dsr_phone": inv.dsr_phone,
                 "role": inv.role,
                 "status": inv.status,
                 "created_at": inv.created_at,
@@ -240,8 +279,8 @@ class DealerDsrController:
                 "id": assignment.id,
                 "dsr_id": assignment.dsr.id,
                 "dsr_name": assignment.dsr.name,
-                "dsr_phone": assignment.dsr.phone,
                 "dsr_email": assignment.dsr.email,
+                "dsr_phone": assignment.dsr.phone,
                 "role": assignment.role,
                 "permissions": assignment.permissions,
                 "assigned_at": assignment.assigned_at,
@@ -257,8 +296,8 @@ class DealerDsrController:
         ):
             pending_invitations.append({
                 "id": inv.id,
-                "dsr_phone": inv.dsr_phone,
                 "dsr_email": inv.dsr_email,
+                "dsr_phone": inv.dsr_phone,
                 "role": inv.role,
                 "created_at": inv.created_at,
                 "expires_at": inv.expires_at,
@@ -367,27 +406,27 @@ class DealerDsrController:
         assignment.deactivate_by_dealer(reason or "")
         await assignment.asave()
         
-        # TODO: Notify DSR about removal
+        # TODO: Notify DSR about removal via email
         
         return {"message": f"DSR {assignment.dsr.name} removed from team"}
     
     @http_get("/search", response={200: dict})
-    async def search_dsr(self, request: HttpRequest, phone: str = ""):
+    async def search_dsr(self, request: HttpRequest, email: str = ""):
         """
-        Search for existing DSR by phone number.
+        Search for existing DSR by email.
         
         Used in AddRepModal to check if DSR already has an account.
         """
-        if not phone:
+        if not email:
             return {"exists": False}
         
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
         
-        # Check if DSR user exists
+        # Check if DSR user exists by email
         try:
-            user = await DsrUser.objects.aget(phone=phone)
+            user = await DsrUser.objects.aget(email__iexact=email)
             dsr = await DSR.objects.aget(user=user)
             
             # Check if already assigned to this dealer
@@ -402,6 +441,7 @@ class DealerDsrController:
                 "registered": True,
                 "dsr_id": dsr.id,
                 "dsr_name": dsr.name,
+                "dsr_email": user.email,
                 "dsr_phone": dsr.phone,
                 "already_assigned": is_assigned,
             }
@@ -410,7 +450,7 @@ class DealerDsrController:
         
         # Check if there's a pending invitation
         pending_inv = await DsrInvitation.objects.filter(
-            dsr_phone=phone,
+            dsr_email__iexact=email,
             dealer=dealer,
             status=DsrInvitation.STATUS_PENDING,
         ).afirst()

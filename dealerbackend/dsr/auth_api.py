@@ -105,6 +105,12 @@ def generate_tokens(user: DsrUser, dealer_context: Optional[DealerConfig] = None
     return access, str(refresh)
 
 
+async def agenerate_tokens(user: DsrUser, dealer_context: Optional[DealerConfig] = None) -> tuple[str, str]:
+    """Async wrapper for generate_tokens."""
+    from asgiref.sync import sync_to_async
+    return await sync_to_async(generate_tokens)(user, dealer_context)
+
+
 def decode_token(token: str) -> Optional[dict]:
     """Decode and validate a JWT token."""
     try:
@@ -168,56 +174,85 @@ class DsrAuthController:
     """
     DSR Authentication endpoints.
     
-    DSRs log in with phone + password directly to DealerBackend.
+    DSRs log in with email + password directly to DealerBackend.
     This is separate from dealer authentication (which uses SattaBase).
     """
     
-    @http_post("/register", response={200: DsrSelfRegisterOutput, 400: dict})
+    @http_post("/register", response={200: DsrSelfRegisterOutput, 400: dict, 409: dict})
     async def self_register(self, request: HttpRequest, data: DsrSelfRegisterInput):
         """
         DSR Self-Registration (Independent Profile).
         
         Creates an independent DSR account without any dealer assignment.
         DSR can then receive invitations from dealers.
-        """
-        # Check if phone already exists
-        if await DsrUser.objects.filter(phone=data.phone).aexists():
-            return error_phone_exists()
         
-        # Check if email already exists (if provided)
-        if data.email and await DsrUser.objects.filter(email__iexact=data.email).aexists():
+        Email is required and must be unique (primary identifier).
+        Phone is optional.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # DEBUG: Log incoming data
+        logger.info(f"[DSR REGISTER] Received registration request: email={data.email}, phone={data.phone}, full_name={data.full_name}")
+        print(f"[DSR REGISTER] Received registration request: email={data.email}, phone={data.phone}, full_name={data.full_name}")
+        
+        # Check if email already exists (email is primary identifier)
+        email_exists = await DsrUser.objects.filter(email__iexact=data.email).aexists()
+        logger.info(f"[DSR REGISTER] Email exists check: {email_exists}")
+        print(f"[DSR REGISTER] Email exists check: {email_exists}")
+        
+        if email_exists:
+            logger.warning(f"[DSR REGISTER] Email already registered: {data.email}")
+            print(f"[DSR REGISTER] Email already registered: {data.email}")
             return error_email_exists()
         
-        # Create user account
-        user = await DsrUser.objects.acreate_user(
-            phone=data.phone,
-            password=data.password,
-            full_name=data.full_name,
-            email=data.email or "",
-            user_type=DsrUser.TYPE_DSR,
-        )
+        # Create user account (email is required, phone is optional)
+        print(f"[DSR REGISTER] Creating user with email={data.email}")
+        try:
+            user = await DsrUser.objects.acreate_user(
+                email=data.email,
+                password=data.password,
+                full_name=data.full_name,
+                phone=data.phone or "",
+                user_type=DsrUser.TYPE_DSR,
+            )
+            print(f"[DSR REGISTER] User created successfully: id={user.id}, email={user.email}")
+        except Exception as e:
+            print(f"[DSR REGISTER] ERROR creating user: {type(e).__name__}: {e}")
+            logger.error(f"[DSR REGISTER] ERROR creating user: {type(e).__name__}: {e}")
+            raise
         
         # Create DSR profile
         dsr_id = f"DSR-{str(user.id)[:8].upper()}"
-        dsr = await DSR.objects.acreate(
-            id=dsr_id,
-            name=data.full_name,
-            phone=data.phone,
-            role=DSR.ROLE_DSR,
-            user=user,
-            email=data.email or "",
-        )
+        print(f"[DSR REGISTER] Creating DSR profile with id={dsr_id}")
+        try:
+            dsr = await DSR.objects.acreate(
+                id=dsr_id,
+                name=data.full_name,
+                phone=data.phone or "",
+                role=DSR.ROLE_DSR,
+                user=user,
+                email=data.email,
+            )
+            print(f"[DSR REGISTER] DSR profile created successfully: id={dsr.id}")
+        except Exception as e:
+            print(f"[DSR REGISTER] ERROR creating DSR profile: {type(e).__name__}: {e}")
+            logger.error(f"[DSR REGISTER] ERROR creating DSR profile: {type(e).__name__}: {e}")
+            # Check DSR model fields
+            from django.db import connection
+            print(f"[DSR REGISTER] DSR model fields: {[f.name for f in DSR._meta.get_fields()]}")
+            raise
         
         # Generate tokens
-        access, refresh = generate_tokens(user)
+        access, refresh = await agenerate_tokens(user)
         
         return {
             "access": access,
             "refresh": refresh,
             "user": {
                 "id": str(user.id),
-                "phone": user.phone,
                 "email": user.email,
+                "phone": user.phone,
                 "user_type": user.user_type,
                 "full_name": user.full_name,
                 "avatar_url": user.avatar_url,
@@ -229,7 +264,7 @@ class DsrAuthController:
             "message": "Registration successful. You can now receive dealer invitations.",
         }
     
-    @http_post("/register/{token}", response={200: DsrRegisterOutput, 400: dict})
+    @http_post("/register/{token}", response={200: DsrRegisterOutput, 400: dict, 409: dict, 410: dict})
     async def register_via_invitation(self, request: HttpRequest, token: str, data: DsrRegisterInput):
         """
         Register DSR account via invitation token.
@@ -302,7 +337,7 @@ class DsrAuthController:
         await user.asave(update_fields=["selected_dealer"])
         
         # Generate tokens
-        access, refresh = generate_tokens(user)
+        access, refresh = await agenerate_tokens(user)
         
         return {
             "access": access,
@@ -339,39 +374,43 @@ class DsrAuthController:
         - require_dealer_selection flag (true if multiple dealers)
         
         Error Codes:
-        - invalid_credentials: Wrong phone/email or password
+        - invalid_credentials: Wrong email or password
         - account_deactivated: User account is disabled
         - profile_not_found: DSR profile missing
         - no_dealer_assignment: DSR not assigned to any dealer
         """
-        # Find user by phone or email
-        user = None
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Try phone first
+        print(f"[DSR LOGIN] Login attempt with email: {data.email}")
+        
+        # Find user by email (email is the primary identifier)
         try:
-            user = await DsrUser.objects.aget(phone=data.phone_or_email)
+            user = await DsrUser.objects.aget(email__iexact=data.email)
+            print(f"[DSR LOGIN] Found user by email: {user.id}")
         except DsrUser.DoesNotExist:
-            pass
-        
-        # Try email if not found
-        if not user:
-            try:
-                user = await DsrUser.objects.aget(email__iexact=data.phone_or_email)
-            except DsrUser.DoesNotExist:
-                return error_invalid_credentials()
+            print(f"[DSR LOGIN] User not found by email: {data.email}")
+            return error_invalid_credentials()
         
         # Check password
         if not user.check_password(data.password):
+            print(f"[DSR LOGIN] Invalid password for user: {user.id}")
             return error_invalid_credentials()
+        
+        print(f"[DSR LOGIN] Password correct for user: {user.id}")
         
         # Check if active
         if not user.is_active:
+            print(f"[DSR LOGIN] User account is deactivated: {user.id}")
             return error_account_deactivated()
         
         # Get DSR profile
         try:
             dsr = await DSR.objects.aget(user=user)
+            print(f"[DSR LOGIN] Found DSR profile: {dsr.id}")
         except DSR.DoesNotExist:
+            print(f"[DSR LOGIN] DSR profile NOT FOUND for user: {user.id}")
+            print(f"[DSR LOGIN] User details: email={user.email}, phone={user.phone}, full_name={user.full_name}")
             return error_profile_not_found()
         
         # Get assigned dealers
@@ -386,12 +425,33 @@ class DsrAuthController:
                 "business_name": assignment.dealer.business_name,
             })
         
-        # Check if DSR has any dealer assignments
-        if not dealers:
-            return error_no_dealer_assignment()
-        
         # Generate tokens
-        access, refresh = generate_tokens(user)
+        access, refresh = await agenerate_tokens(user)
+        
+        # If DSR has no dealer assignments, still allow login
+        # They can view pending invitations in their dashboard
+        if not dealers:
+            print(f"[DSR LOGIN] No dealer assignments for DSR: {dsr.id}")
+            return {
+                "access": access,
+                "refresh": refresh,
+                "user": {
+                    "id": str(user.id),
+                    "email": user.email,
+                    "phone": user.phone,
+                    "user_type": user.user_type,
+                    "full_name": user.full_name,
+                    "avatar_url": user.avatar_url,
+                    "phone_verified": user.phone_verified,
+                    "email_verified": user.email_verified,
+                    "created_at": user.created_at,
+                    "has_dsr_profile": True,
+                },
+                "dealers": [],
+                "require_dealer_selection": False,
+                "message": "You are not assigned to any dealer yet. Check your invitations.",
+                "awaiting_invitation": True,  # Flag for frontend
+            }
         
         # If only one dealer, auto-select it
         require_dealer_selection = len(dealers) > 1
@@ -463,7 +523,7 @@ class DsrAuthController:
         await user.asave(update_fields=["selected_dealer"])
         
         # Generate new tokens with dealer context
-        access, refresh = generate_tokens(user)
+        access, refresh = await agenerate_tokens(user)
         
         return {
             "access": access,
@@ -649,7 +709,7 @@ class DsrAuthController:
         # Always return success to prevent enumeration
         return {"message": "If the account exists, a password reset link has been sent."}
     
-    @http_post("/password-reset/confirm", response={200: MessageOutput, 400: dict})
+    @http_post("/password-reset/confirm", response={200: MessageOutput, 400: dict, 401: dict})
     async def confirm_password_reset(self, request: HttpRequest, data: PasswordResetConfirmInput):
         """Confirm password reset with token."""
         # Find user by reset token
@@ -732,7 +792,7 @@ class DsrInvitationController:
             "rejected": rejected,
         }
     
-    @http_post("/{invitation_id}/accept", response={200: AcceptInvitationOutput, 400: dict, 401: dict, 404: dict})
+    @http_post("/{invitation_id}/accept", response={200: AcceptInvitationOutput, 400: dict, 401: dict, 404: dict, 410: dict})
     async def accept_invitation(self, request: HttpRequest, invitation_id: str):
         """Accept a dealer invitation."""
         user = await aget_user_from_token(request)
@@ -798,7 +858,7 @@ class DsrInvitationController:
             await user.asave(update_fields=["selected_dealer"])
         
         # Generate new tokens
-        access, refresh = generate_tokens(user)
+        access, refresh = await agenerate_tokens(user)
         
         return {
             "access": access,

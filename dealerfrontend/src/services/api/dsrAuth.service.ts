@@ -32,6 +32,7 @@ export interface DsrLoginResponse {
   user: DsrUser;
   dealers: DealerChoice[];
   require_dealer_selection: boolean;
+  awaiting_invitation?: boolean; // True if DSR has no dealer assignments
   message?: string;
 }
 
@@ -131,21 +132,41 @@ export const dsrAuthService = {
   /**
    * Login as DSR
    */
-  async login(
-    emailOrPhone: string,
-    password: string,
-  ): Promise<DsrLoginResponse> {
-    const response = await apiClient.post<DsrLoginResponse>("/dsr/auth/login", {
-      phone_or_email: emailOrPhone,
-      password,
+  async login(email: string, password: string): Promise<DsrLoginResponse> {
+    const apiResponse = await apiClient.post<DsrLoginResponse>(
+      "/dsr/auth/login",
+      {
+        email,
+        password,
+      },
+    );
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data;
+
+    console.log("[DSR AUTH] Login response:", {
+      hasAccess: !!response.access,
+      hasRefresh: !!response.refresh,
+      hasUser: !!response.user,
+      awaitingInvitation: response.awaiting_invitation,
     });
 
     // Store tokens and user
     this.setTokens(response.access, response.refresh);
     this.setUser(response.user);
 
-    // If only one dealer, store it
-    if (!response.require_dealer_selection && response.dealers.length === 1) {
+    // Verify tokens were stored
+    console.log("[DSR AUTH] Tokens stored:", {
+      storedAccess: !!this.getAccessToken(),
+      storedRefresh: !!this.getRefreshToken(),
+    });
+
+    // If only one dealer, store it (check dealers array exists first)
+    if (
+      !response.require_dealer_selection &&
+      response.dealers &&
+      response.dealers.length === 1
+    ) {
       this.setSelectedDealer(response.dealers[0]);
     }
 
@@ -154,22 +175,26 @@ export const dsrAuthService = {
 
   /**
    * Self-register as DSR (independent profile)
+   * Email is required, phone is optional
    */
   async selfRegister(
-    phone: string,
+    email: string,
     fullName: string,
     password: string,
-    email?: string,
+    phone?: string,
   ): Promise<DsrLoginResponse> {
-    const response = await apiClient.post<DsrLoginResponse>(
+    const apiResponse = await apiClient.post<DsrLoginResponse>(
       "/dsr/auth/register",
       {
-        phone,
+        email,
         full_name: fullName,
         password,
-        email: email || "",
+        phone: phone || "",
       },
     );
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data;
 
     // Store tokens and user
     this.setTokens(response.access, response.refresh);
@@ -187,7 +212,7 @@ export const dsrAuthService = {
     phone: string,
     password: string,
   ): Promise<DsrRegisterResponse> {
-    const response = await apiClient.post<DsrRegisterResponse>(
+    const apiResponse = await apiClient.post<DsrRegisterResponse>(
       "/dsr/auth/register",
       {
         token,
@@ -196,6 +221,9 @@ export const dsrAuthService = {
         password,
       },
     );
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data;
 
     // Store tokens and user
     this.setTokens(response.access, response.refresh);
@@ -213,7 +241,11 @@ export const dsrAuthService = {
   ): Promise<{ access: string; refresh: string; dealer: DealerChoice }> {
     const accessToken = this.getAccessToken();
 
-    const response = await apiClient.post<{
+    if (!accessToken) {
+      throw new Error("No access token available. Please login again.");
+    }
+
+    const apiResponse = await apiClient.post<{
       access: string;
       refresh: string;
       dealer: DealerChoice;
@@ -226,6 +258,9 @@ export const dsrAuthService = {
         },
       },
     );
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data;
 
     // Update tokens and selected dealer
     this.setTokens(response.access, response.refresh);
@@ -240,13 +275,26 @@ export const dsrAuthService = {
   async getProfile(): Promise<DsrProfileResponse> {
     const accessToken = this.getAccessToken();
 
-    const response = await apiClient.get<DsrProfileResponse>("/dsr/auth/me", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    console.log("[DSR AUTH] getProfile - token check:", {
+      hasToken: !!accessToken,
+      tokenPreview: accessToken ? `${accessToken.substring(0, 20)}...` : "null",
     });
 
-    return response;
+    if (!accessToken) {
+      throw new Error("No access token available. Please login again.");
+    }
+
+    const apiResponse = await apiClient.get<DsrProfileResponse>(
+      "/dsr/auth/me",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    );
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    return apiResponse.data;
   },
 
   /**
@@ -259,10 +307,13 @@ export const dsrAuthService = {
       throw new Error("No refresh token available");
     }
 
-    const response = await apiClient.post<{ access: string; refresh?: string }>(
-      "/dsr/auth/refresh",
-      { refresh: refreshToken },
-    );
+    const apiResponse = await apiClient.post<{
+      access: string;
+      refresh?: string;
+    }>("/dsr/auth/refresh", { refresh: refreshToken });
+
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data;
 
     // Update tokens
     this.setTokens(response.access, response.refresh || refreshToken);
@@ -297,12 +348,13 @@ export const dsrAuthService = {
    * Request password reset
    */
   async requestPasswordReset(email: string): Promise<{ message: string }> {
-    return apiClient.post<{ message: string }>(
+    const apiResponse = await apiClient.post<{ message: string }>(
       "/dsr/auth/password-reset/request",
       {
         email,
       },
     );
+    return apiResponse.data;
   },
 
   /**
@@ -312,13 +364,14 @@ export const dsrAuthService = {
     token: string,
     newPassword: string,
   ): Promise<{ message: string }> {
-    return apiClient.post<{ message: string }>(
+    const apiResponse = await apiClient.post<{ message: string }>(
       "/dsr/auth/password-reset/confirm",
       {
         token,
         new_password: newPassword,
       },
     );
+    return apiResponse.data;
   },
 
   // ─── Auth State Helpers ───────────────────────────────────────────────────

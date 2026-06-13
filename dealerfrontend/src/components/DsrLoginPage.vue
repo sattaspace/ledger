@@ -41,9 +41,21 @@ async function handleLogin() {
   try {
     const response = await dsrAuthService.login(email.value, password.value);
     
+    // Check if DSR is awaiting invitation (no dealer assignments)
+    if (response.awaiting_invitation) {
+      // Still log them in - they can view pending invitations
+      console.log('[DSR LOGIN] Awaiting invitation - no dealer assignments');
+      if (response.message) {
+        // Could show a toast notification here
+        console.log('[DSR LOGIN] Message:', response.message);
+      }
+      emit('login');
+      return;
+    }
+    
     if (response.require_dealer_selection) {
       // Show dealer selection
-      dealers.value = response.dealers;
+      dealers.value = response.dealers || [];
       showDealerSelection.value = true;
     } else {
       // Auto-selected, emit login success
@@ -51,7 +63,22 @@ async function handleLogin() {
     }
   } catch (error: any) {
     console.error('DSR login failed:', error);
-    errorMessage.value = error?.response?.data?.detail || 'Login failed. Please check your credentials.';
+    // ApiError has data.detail or data.code, or message directly
+    const detail = error?.data?.detail || error?.message || 'Login failed. Please check your credentials.';
+    const code = error?.data?.code;
+    
+    // Provide user-friendly messages based on error code
+    if (code === 'profile_not_found') {
+      errorMessage.value = 'DSR profile not found. Please complete your registration first.';
+    } else if (code === 'invalid_credentials') {
+      errorMessage.value = 'Invalid email or password. Please try again.';
+    } else if (code === 'account_deactivated') {
+      errorMessage.value = 'Your account has been deactivated. Please contact support.';
+    } else if (code === 'no_dealer_assignment') {
+      errorMessage.value = 'You are not assigned to any dealer. Please wait for a dealer invitation.';
+    } else {
+      errorMessage.value = detail;
+    }
   } finally {
     isLoading.value = false;
   }
@@ -69,7 +96,7 @@ async function handleSelectDealer() {
     emit('login');
   } catch (error: any) {
     console.error('Dealer selection failed:', error);
-    errorMessage.value = error?.response?.data?.detail || 'Failed to select dealer. Please try again.';
+    errorMessage.value = error?.data?.detail || error?.message || 'Failed to select dealer. Please try again.';
   } finally {
     isSelectingDealer.value = false;
   }
@@ -210,14 +237,14 @@ function goBackToLogin() {
             
             <form @submit.prevent="handleLogin" class="space-y-5">
               <div>
-                <label for="emailOrPhone" class="block text-sm font-medium text-slate-700 mb-1">
-                  Email or Phone
+                <label for="email" class="block text-sm font-medium text-slate-700 mb-1">
+                  Email
                 </label>
                 <input
-                  id="emailOrPhone"
+                  id="email"
                   v-model="email"
-                  type="text"
-                  placeholder="Enter your email or phone number"
+                  type="email"
+                  placeholder="Enter your email"
                   class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                   required
                 />

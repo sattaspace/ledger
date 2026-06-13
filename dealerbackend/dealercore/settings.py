@@ -127,7 +127,7 @@ ROOT_URLCONF = 'dealercore.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -246,4 +246,36 @@ NINJA_JWT = {
 # Invitation settings
 DSR_INVITATION_EXPIRY_DAYS = 7
 DSR_PASSWORD_RESET_EXPIRY_HOURS = 24
+
+
+# =============================================================================
+# CELERY CONFIGURATION
+# =============================================================================
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = "django-db"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
+
+# =============================================================================
+# EMAIL CONFIGURATION
+# =============================================================================
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@dealercore.local")
+
+# DealerFrontend URL for invitation links
+DEALER_FRONTEND_URL = os.getenv("DEALER_FRONTEND_URL", "http://localhost:4323")
+
+# Site name for emails
+SITE_NAME = os.getenv("SITE_NAME", "DealerCore")
+
+
 

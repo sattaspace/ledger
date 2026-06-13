@@ -4,8 +4,8 @@ DEALERCORE v3.0 — DSR Authentication Schemas
 Request/Response schemas for DSR authentication endpoints.
 
 Supports:
-- Phone-based authentication (primary)
-- Email for notifications (optional)
+- Email-based authentication (primary)
+- Phone for contact (optional)
 - Self-registration (independent profile)
 - Invitation accept/reject
 - Dealer assignment management
@@ -21,8 +21,8 @@ from datetime import datetime
 # ═══════════════════════════════════════════════════════════════════════════
 
 class DsrLoginInput(Schema):
-    """DSR login credentials - phone or email + password."""
-    phone_or_email: str  # Can be phone number or email
+    """DSR login credentials - email + password."""
+    email: str
     password: str
 
 
@@ -36,8 +36,8 @@ class DealerChoice(Schema):
 class DsrUserOutput(Schema):
     """DSR user profile."""
     id: str
-    phone: str
-    email: Optional[str] = None
+    email: str
+    phone: str = ""
     user_type: str
     full_name: str
     avatar_url: str = ""
@@ -54,6 +54,7 @@ class DsrLoginOutput(Schema):
     user: DsrUserOutput
     dealers: List[DealerChoice] = []
     require_dealer_selection: bool = False
+    awaiting_invitation: bool = False  # True if DSR has no dealer assignments
     message: str = "Login successful"
 
 
@@ -63,10 +64,10 @@ class DsrLoginOutput(Schema):
 
 class DsrSelfRegisterInput(Schema):
     """DSR self-registration (no invitation required)."""
-    phone: str
+    email: str  # Required - primary identifier
     password: str
     full_name: str
-    email: Optional[str] = None
+    phone: Optional[str] = None  # Optional - for contact
 
 
 class DsrSelfRegisterOutput(Schema):
@@ -259,8 +260,8 @@ class TokenRefreshOutput(Schema):
 
 class DealerInviteDsrInput(Schema):
     """Dealer inviting a DSR."""
-    dsr_phone: str
-    dsr_email: Optional[str] = None
+    dsr_email: str  # Required - primary identifier
+    dsr_phone: Optional[str] = None  # Optional - for contact
     role: str = "DSR"
     permissions: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
@@ -270,8 +271,8 @@ class DealerInviteDsrInput(Schema):
 class DealerInviteOutput(Schema):
     """Dealer invitation response."""
     id: str
-    dsr_phone: str
-    dsr_email: str = ""
+    dsr_email: str
+    dsr_phone: str = ""
     role: str
     status: str
     token: str

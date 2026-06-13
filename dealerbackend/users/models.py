@@ -37,8 +37,8 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     DSRs register independently and can serve multiple dealers.
     
     Authentication:
-    - Phone is the primary identifier (USERNAME_FIELD)
-    - Email is optional, for notifications
+    - Email is the primary identifier (USERNAME_FIELD)
+    - Phone is optional, for contact purposes
     
     Future-Ready:
     - Reserved fields for freelance marketplace
@@ -61,23 +61,22 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     # Authentication identifiers
-    # Phone is PRIMARY (required, unique)
-    phone = models.CharField(
-        _("phone number"),
-        max_length=20,
+    # Email is PRIMARY (required, unique) - used for login
+    email = models.EmailField(
+        _("email address"),
         unique=True,
         db_index=True,
         help_text=_("Primary identifier for login (required)"),
     )
     
-    # Email is secondary (optional, for notifications)
-    email = models.EmailField(
-        _("email address"),
-        unique=True,
+    # Phone is optional (for contact purposes)
+    phone = models.CharField(
+        _("phone number"),
+        max_length=20,
         blank=True,
-        null=True,
+        default="",
         db_index=True,
-        help_text=_("Email for notifications (optional)"),
+        help_text=_("Phone number for contact (optional)"),
     )
     
     # User type
@@ -234,8 +233,8 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     
     objects = DsrUserManager()
     
-    # Phone is the primary identifier
-    USERNAME_FIELD = "phone"
+    # Email is the primary identifier
+    USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["full_name"]
     
     class Meta:

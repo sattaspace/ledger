@@ -27,7 +27,7 @@ const successMessage = ref('');
 // Computed
 const canSubmit = computed(() => {
   return fullName.value && 
-         phone.value && 
+         email.value && 
          password.value && 
          confirmPassword.value && 
          password.value === confirmPassword.value &&
@@ -53,10 +53,10 @@ async function handleRegister() {
   
   try {
     const response = await dsrAuthService.selfRegister(
-      phone.value,
+      email.value,
       fullName.value,
       password.value,
-      email.value || undefined
+      phone.value || undefined
     );
     
     successMessage.value = 'Registration successful! You can now receive invitations from dealers.';
@@ -67,7 +67,18 @@ async function handleRegister() {
     }, 1500);
   } catch (error: any) {
     console.error('Registration failed:', error);
-    errorMessage.value = error?.response?.data?.detail || 'Registration failed. Please try again.';
+    // ApiError has data.detail or data.code, or message directly
+    const detail = error?.data?.detail || error?.message || 'Registration failed. Please try again.';
+    const code = error?.data?.code;
+    
+    // Provide user-friendly messages based on error code
+    if (code === 'email_exists') {
+      errorMessage.value = 'An account with this email already exists. Please login instead.';
+    } else if (code === 'phone_exists') {
+      errorMessage.value = 'An account with this phone number already exists. Please login instead.';
+    } else {
+      errorMessage.value = detail;
+    }
   } finally {
     isLoading.value = false;
   }
@@ -168,29 +179,29 @@ async function handleRegister() {
             </div>
             
             <div>
-              <label for="phone" class="block text-sm font-medium text-slate-700 mb-1">
-                Phone Number <span class="text-red-500">*</span>
-              </label>
-              <input
-                id="phone"
-                v-model="phone"
-                type="tel"
-                placeholder="Enter your phone number"
-                class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                required
-              />
-              <p class="mt-1 text-xs text-slate-500">This will be your primary identifier</p>
-            </div>
-            
-            <div>
               <label for="email" class="block text-sm font-medium text-slate-700 mb-1">
-                Email (optional)
+                Email <span class="text-red-500">*</span>
               </label>
               <input
                 id="email"
                 v-model="email"
                 type="email"
                 placeholder="Enter your email"
+                class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
+                required
+              />
+              <p class="mt-1 text-xs text-slate-500">This will be your primary identifier for login</p>
+            </div>
+            
+            <div>
+              <label for="phone" class="block text-sm font-medium text-slate-700 mb-1">
+                Phone Number (optional)
+              </label>
+              <input
+                id="phone"
+                v-model="phone"
+                type="tel"
+                placeholder="Enter your phone number"
                 class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
               />
             </div>

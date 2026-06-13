@@ -1,0 +1,19 @@
+New Invitation from {{ dealer_name }} on {{ site_name }}
+=========================================================
+
+Hello {{ dsr_name }}!
+
+{{ dealer_name }}{% if dealer_business %} ({{ dealer_business }}){% endif %} is inviting you to join their team as a {{ role }}.
+
+{% if message %}
+Personal message:
+"{{ message }}"
+{% endif %}
+
+Log in to your dashboard to view and respond to this invitation:
+
+{{ dashboard_url }}
+
+---
+© {{ current_year }} {{ site_name }}
+This email was sent to {{ email }}

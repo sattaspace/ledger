@@ -2,13 +2,12 @@
 /**
  * AddRepModal — Unified modal for inviting/adding sales representatives.
  *
- * New Flow (Phase 4 Redesigned):
- * 1. Enter phone number to search for existing DSR
- * 2. If DSR registered: Send in-app invitation (they'll see it in their dashboard)
- * 3. If DSR not registered: Generate registration link to share
+ * Email-First Flow (Updated):
+ * 1. Enter email address to search for existing DSR
+ * 2. If DSR registered: Send in-app notification (they'll see it in their dashboard)
+ * 3. If DSR not registered: Send invitation email with registration link
  * 4. Dealer sets role and permissions
- *
- * Legacy support: Direct add mode for backward compatibility
+ * 5. Phone number is optional for contact purposes
  */
 
 import { ref, computed, watch } from 'vue';
@@ -46,7 +45,7 @@ const emit = defineEmits<{
 
 // ─── Composables ───────────────────────────────────────────────────────────────
 
-const { getLimit } = useAccess();
+// useAccess is used in the Computed section below
 
 // ─── State ─────────────────────────────────────────────────────────────────────
 
@@ -60,9 +59,9 @@ const searchStep = ref<'input' | 'searching' | 'found' | 'not_found' | 'inviting
 const role = ref<'DSR' | 'Senior_DSR' | 'Manager' | 'Order Collector'>('DSR');
 const parentDsrId = ref('');
 
-// Search mode fields
-const dsrPhone = ref('');
+// Search mode fields - EMAIL IS NOW PRIMARY
 const dsrEmail = ref('');
+const dsrPhone = ref('');  // Optional
 const dsrMessage = ref('');
 
 // Search results
@@ -71,6 +70,7 @@ const searchResult = ref<{
   registered: boolean;
   dsr_id?: string;
   dsr_name?: string;
+  dsr_email?: string;
   dsr_phone?: string;
   already_assigned?: boolean;
   has_pending_invitation?: boolean;
@@ -92,11 +92,20 @@ const copiedLink = ref(false);
 
 // ─── Computed ──────────────────────────────────────────────────────────────────
 
-const maxDsrs = getLimit('max_dsrs', 5);
-const currentDsrCount = computed(() => props.dsrs.length);
+const { access, getLimit } = useAccess();
+const maxDsrs = getLimit('max_dsrs', 5);  // Default 5 if not set
+const currentDsrCount = computed(() => props.dsrs?.length || 0);
 const canAddMore = computed(() => {
   const limit = maxDsrs.value;
-  if (limit < 0 || limit >= 999999) return true;
+  console.log('[AddRepModal] canAddMore check:', {
+    limit,
+    currentDsrCount: currentDsrCount.value,
+    accessMap: access.value
+  });
+  // 0 or negative = unlimited
+  if (limit === 0 || limit < 0) return true;
+  // Very high number = effectively unlimited
+  if (limit >= 999999) return true;
   return currentDsrCount.value < limit;
 });
 
@@ -112,16 +121,21 @@ const roleOptions = [
   { value: 'Order Collector', label: 'Order Collector', description: 'Reports to DSR' },
 ];
 
-// Validation
-const canSearch = computed(() => dsrPhone.value.trim().length >= 10);
+// Validation - EMAIL IS REQUIRED
+const canSearch = computed(() => {
+  const email = dsrEmail.value.trim();
+  return email.length > 0 && email.includes('@');
+});
+
 const canInvite = computed(() => {
-  if (!dsrPhone.value.trim()) return false;
+  if (!dsrEmail.value.trim()) return false;
   if (role.value === 'Order Collector' && !parentDsrId.value) return false;
   return true;
 });
+
 const canDirectAdd = computed(() => {
   if (!dsrName.value.trim()) return false;
-  if (!dsrPhone.value.trim()) return false;
+  if (!dsrEmail.value.trim()) return false;
   if (role.value === 'Order Collector' && !parentDsrId.value) return false;
   return true;
 });
@@ -131,8 +145,8 @@ const canDirectAdd = computed(() => {
 function resetForm() {
   mode.value = 'search';
   searchStep.value = 'input';
-  dsrPhone.value = '';
   dsrEmail.value = '';
+  dsrPhone.value = '';
   dsrMessage.value = '';
   dsrName.value = '';
   role.value = 'DSR';
@@ -150,7 +164,7 @@ function handleClose() {
   emit('close');
 }
 
-// Search for existing DSR by phone
+// Search for existing DSR by EMAIL
 async function handleSearch() {
   if (!canSearch.value || !canAddMore.value) return;
 
@@ -159,19 +173,22 @@ async function handleSearch() {
   searchResult.value = null;
 
   try {
-    const response = await apiClient.get<{
+    // Construct URL with query params (apiClient doesn't support params option)
+    const searchEmail = encodeURIComponent(dsrEmail.value.trim());
+    const apiResponse = await apiClient.get<{
       exists: boolean;
       registered: boolean;
       dsr_id?: string;
       dsr_name?: string;
+      dsr_email?: string;
       dsr_phone?: string;
       already_assigned?: boolean;
       has_pending_invitation?: boolean;
       invitation_id?: string;
-    }>('/dealer/dsr/search', {
-      params: { phone: dsrPhone.value.trim() }
-    });
+    }>(`/dealer/dsr/search?email=${searchEmail}`);
 
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data || apiResponse;
     searchResult.value = response;
     
     if (response.already_assigned) {
@@ -179,23 +196,26 @@ async function handleSearch() {
       errorMessage.value = 'This DSR is already assigned to your team.';
     } else if (response.has_pending_invitation) {
       searchStep.value = 'input';
-      errorMessage.value = 'A pending invitation already exists for this phone number.';
+      errorMessage.value = 'A pending invitation already exists for this email address.';
     } else if (response.registered) {
       searchStep.value = 'found';
-      // Pre-fill name if found
+      // Pre-fill name and phone if found
       if (response.dsr_name) {
         dsrName.value = response.dsr_name;
+      }
+      if (response.dsr_phone) {
+        dsrPhone.value = response.dsr_phone;
       }
     } else {
       searchStep.value = 'not_found';
     }
   } catch (err: any) {
     searchStep.value = 'input';
-    errorMessage.value = err.response?.data?.detail || 'Failed to search for DSR';
+    errorMessage.value = err.data?.detail || err.message || 'Failed to search for DSR';
   }
 }
 
-// Send invitation
+// Send invitation - EMAIL IS REQUIRED, PHONE IS OPTIONAL
 async function handleSendInvitation() {
   if (!canInvite.value || !canAddMore.value) return;
 
@@ -204,10 +224,10 @@ async function handleSendInvitation() {
   successMessage.value = '';
 
   try {
-    const response = await apiClient.post<{
+    const apiResponse = await apiClient.post<{
       id: string;
-      dsr_phone: string;
       dsr_email: string;
+      dsr_phone: string;
       role: string;
       status: string;
       token: string;
@@ -215,13 +235,15 @@ async function handleSendInvitation() {
       registration_url?: string;
       message: string;
     }>('/dealer/dsr/invite', {
-      dsr_phone: dsrPhone.value.trim(),
-      dsr_email: dsrEmail.value.trim() || undefined,
+      dsr_email: dsrEmail.value.trim(),  // REQUIRED
+      dsr_phone: dsrPhone.value.trim() || undefined,  // OPTIONAL
       role: role.value,
       parent_dsr_id: role.value === 'Order Collector' ? parentDsrId.value : undefined,
       message: dsrMessage.value.trim() || undefined,
     });
 
+    // apiClient returns { ok, status, data } - access actual data via .data
+    const response = apiResponse.data || apiResponse;
     invitationToken.value = response.token;
     
     // If registration URL is returned, DSR is not registered
@@ -235,7 +257,7 @@ async function handleSendInvitation() {
 
   } catch (err: any) {
     searchStep.value = searchResult.value?.registered ? 'found' : 'not_found';
-    errorMessage.value = err.response?.data?.detail || 'Failed to send invitation';
+    errorMessage.value = err.data?.detail || err.message || 'Failed to send invitation';
   }
 }
 
@@ -265,7 +287,8 @@ async function handleDirectAdd() {
   try {
     const payload = {
       name: dsrName.value.trim(),
-      phone: dsrPhone.value.trim(),
+      email: dsrEmail.value.trim(),
+      phone: dsrPhone.value.trim() || undefined,
       role: role.value,
       parent_dsr_id: role.value === 'Order Collector' ? parentDsrId.value : null,
     };
@@ -301,7 +324,7 @@ function goToSearchMode() {
 }
 
 // Watch for errors reset
-watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
+watch([dsrEmail, dsrPhone, dsrName, role, parentDsrId, mode], () => {
   if (errorMessage.value) errorMessage.value = '';
 });
 </script>
@@ -380,13 +403,13 @@ watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
 
               <!-- Search Mode -->
               <template v-if="mode === 'search'">
-                <!-- Step: Input - Enter phone to search -->
+                <!-- Step: Input - Enter email to search -->
                 <template v-if="searchStep === 'input'">
                   <div class="text-center py-4">
                     <div class="bg-emerald-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                      <Phone class="h-8 w-8 text-emerald-600" />
+                      <Mail class="h-8 w-8 text-emerald-600" />
                     </div>
-                    <h3 class="text-lg font-semibold text-slate-800 mb-2">Enter DSR Phone Number</h3>
+                    <h3 class="text-lg font-semibold text-slate-800 mb-2">Enter DSR Email Address</h3>
                     <p class="text-sm text-slate-500">
                       We'll check if they're already registered in the system
                     </p>
@@ -395,15 +418,14 @@ watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
                   <div class="space-y-4">
                     <div class="space-y-2">
                       <label class="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                        <Phone class="h-4 w-4 text-emerald-500" />
-                        Phone Number *
+                        <Mail class="h-4 w-4 text-emerald-500" />
+                        Email Address *
                       </label>
                       <input
-                        type="tel"
-                        v-model="dsrPhone"
-                        placeholder="+91 91122 33445"
-                        :disabled="!canAddMore"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800 disabled:opacity-50"
+                        v-model="dsrEmail"
+                        type="email"
+                        placeholder="dsr@example.com"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                         @keyup.enter="handleSearch"
                       />
                     </div>
@@ -411,32 +433,42 @@ watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
                     <button
                       @click="handleSearch"
                       :disabled="!canSearch || !canAddMore"
-                      class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
                     >
                       <Search class="h-5 w-5" />
-                      Search for DSR
+                      Search
                     </button>
                   </div>
                 </template>
 
                 <!-- Step: Searching -->
                 <template v-else-if="searchStep === 'searching'">
-                  <div class="text-center py-8">
-                    <Loader2 class="h-10 w-10 text-emerald-600 animate-spin mx-auto mb-4" />
+                  <div class="text-center py-12">
+                    <Loader2 class="h-12 w-12 text-emerald-600 animate-spin mx-auto mb-4" />
                     <p class="text-slate-600">Searching for DSR...</p>
                   </div>
                 </template>
 
                 <!-- Step: Found - DSR is registered -->
                 <template v-else-if="searchStep === 'found'">
+                  <div class="text-center py-4">
+                    <div class="bg-emerald-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                      <CheckCircle class="h-8 w-8 text-emerald-600" />
+                    </div>
+                    <h3 class="text-lg font-semibold text-slate-800 mb-2">DSR Found!</h3>
+                    <p class="text-sm text-slate-500">
+                      {{ searchResult?.dsr_name || 'A DSR' }} is already registered
+                    </p>
+                  </div>
+
                   <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-4">
                     <div class="flex items-center gap-3">
-                      <div class="bg-emerald-100 p-2 rounded-full">
-                        <CheckCircle class="h-5 w-5 text-emerald-600" />
+                      <div class="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-semibold">
+                        {{ (searchResult?.dsr_name || 'DSR').split(' ').map(n => n[0]).join('').slice(0, 2) }}
                       </div>
                       <div>
-                        <p class="font-semibold text-emerald-800">DSR Found!</p>
-                        <p class="text-sm text-emerald-600">{{ searchResult?.dsr_name }} is registered in the system.</p>
+                        <p class="font-semibold text-slate-800">{{ searchResult?.dsr_name || 'DSR' }}</p>
+                        <p class="text-sm text-slate-500">{{ searchResult?.dsr_email }}</p>
                       </div>
                     </div>
                   </div>
@@ -444,112 +476,10 @@ watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
                   <!-- Role Selection -->
                   <div class="space-y-4">
                     <div class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700">Assign Role</label>
-                      <div class="grid grid-cols-2 gap-2">
-                        <button
-                          v-for="opt in roleOptions"
-                          :key="opt.value"
-                          type="button"
-                          @click="role = opt.value as any"
-                          :class="[
-                            'p-3 rounded-xl border-2 text-left transition',
-                            role === opt.value
-                              ? 'border-emerald-500 bg-emerald-50'
-                              : 'border-slate-200 hover:border-slate-300'
-                          ]"
-                        >
-                          <p class="font-semibold text-slate-800 text-sm">{{ opt.label }}</p>
-                          <p class="text-xs text-slate-500">{{ opt.description }}</p>
-                        </button>
-                      </div>
-                    </div>
-
-                    <!-- Parent DSR for Collectors -->
-                    <div v-if="role === 'Order Collector'" class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                        <Users class="h-4 w-4 text-emerald-500" />
-                        Supervisor DSR *
-                      </label>
-                      <select
-                        v-model="parentDsrId"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                      >
-                        <option value="">Select a supervisor...</option>
-                        <option v-for="d in availableParentDsrs" :key="d.id" :value="d.id">
-                          {{ d.name }}
-                        </option>
-                      </select>
-                    </div>
-
-                    <!-- Optional Email -->
-                    <div class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                        <Mail class="h-4 w-4 text-slate-400" />
-                        Email (optional)
-                      </label>
-                      <input
-                        type="email"
-                        v-model="dsrEmail"
-                        placeholder="dsr@example.com"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800"
-                      />
-                    </div>
-
-                    <!-- Optional Message -->
-                    <div class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700">Message (optional)</label>
-                      <textarea
-                        v-model="dsrMessage"
-                        placeholder="Welcome to our team..."
-                        rows="2"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800 resize-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div class="flex gap-3 pt-2">
-                    <button
-                      @click="resetSearch"
-                      class="py-2.5 px-4 border border-slate-300 rounded-xl text-sm font-semibold hover:bg-slate-50 transition"
-                    >
-                      Back
-                    </button>
-                    <button
-                      @click="handleSendInvitation"
-                      :disabled="!canInvite"
-                      class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <Send class="h-4 w-4" />
-                      Send Invitation
-                    </button>
-                  </div>
-                </template>
-
-                <!-- Step: Not Found - DSR not registered -->
-                <template v-else-if="searchStep === 'not_found'">
-                  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
-                    <div class="flex items-center gap-3">
-                      <div class="bg-amber-100 p-2 rounded-full">
-                        <UserPlus class="h-5 w-5 text-amber-600" />
-                      </div>
-                      <div>
-                        <p class="font-semibold text-amber-800">DSR Not Registered</p>
-                        <p class="text-sm text-amber-600">This phone number is not registered in our system.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p class="text-sm text-slate-600 mb-4">
-                    You can invite them to register. Set their role and we'll generate a registration link for you to share.
-                  </p>
-
-                  <!-- Role Selection -->
-                  <div class="space-y-4">
-                    <div class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700">Assign Role</label>
+                      <label class="text-sm font-semibold text-slate-700">Role</label>
                       <select
                         v-model="role"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
                       >
                         <option v-for="opt in roleOptions" :key="opt.value" :value="opt.value">
                           {{ opt.label }} - {{ opt.description }}
@@ -557,203 +487,212 @@ watch([dsrPhone, dsrName, role, parentDsrId, mode], () => {
                       </select>
                     </div>
 
-                    <!-- Parent DSR for Collectors -->
+                    <!-- Parent DSR (for Order Collector) -->
                     <div v-if="role === 'Order Collector'" class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700">Supervisor DSR *</label>
+                      <label class="text-sm font-semibold text-slate-700">Parent DSR *</label>
                       <select
                         v-model="parentDsrId"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
                       >
-                        <option value="">Select a supervisor...</option>
-                        <option v-for="d in availableParentDsrs" :key="d.id" :value="d.id">
-                          {{ d.name }}
+                        <option value="">Select parent DSR...</option>
+                        <option v-for="dsr in availableParentDsrs" :key="dsr.id" :value="dsr.id">
+                          {{ dsr.name }}
                         </option>
                       </select>
                     </div>
 
-                    <!-- Optional Email -->
+                    <!-- Optional Message -->
                     <div class="space-y-2">
-                      <label class="text-sm font-semibold text-slate-700">Email (optional)</label>
-                      <input
-                        type="email"
-                        v-model="dsrEmail"
-                        placeholder="dsr@example.com"
-                        class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800"
+                      <label class="text-sm font-semibold text-slate-700">Message (optional)</label>
+                      <textarea
+                        v-model="dsrMessage"
+                        placeholder="Add a personal message to the invitation..."
+                        rows="2"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none resize-none"
                       />
-                      <p class="text-xs text-slate-500">If provided, we'll send the invitation via email</p>
+                    </div>
+
+                    <div class="flex gap-3">
+                      <button
+                        @click="resetSearch"
+                        class="flex-1 py-3 border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold rounded-xl transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        @click="handleSendInvitation"
+                        :disabled="!canInvite"
+                        class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Send class="h-5 w-5" />
+                        Send Invitation
+                      </button>
                     </div>
                   </div>
+                </template>
 
-                  <div class="flex gap-3 pt-2">
-                    <button
-                      @click="resetSearch"
-                      class="py-2.5 px-4 border border-slate-300 rounded-xl text-sm font-semibold hover:bg-slate-50 transition"
-                    >
-                      Back
-                    </button>
-                    <button
-                      @click="handleSendInvitation"
-                      :disabled="!canInvite"
-                      class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <Send class="h-4 w-4" />
-                      Generate Invitation
-                    </button>
+                <!-- Step: Not Found - DSR is not registered -->
+                <template v-else-if="searchStep === 'not_found'">
+                  <div class="text-center py-4">
+                    <div class="bg-amber-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                      <Mail class="h-8 w-8 text-amber-600" />
+                    </div>
+                    <h3 class="text-lg font-semibold text-slate-800 mb-2">DSR Not Registered</h3>
+                    <p class="text-sm text-slate-500">
+                      We'll send an email invitation with a registration link
+                    </p>
+                  </div>
+
+                  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                    <p class="text-sm text-amber-800">
+                      <strong>{{ dsrEmail }}</strong> is not registered yet.
+                      An invitation email will be sent with a link to create their account.
+                    </p>
+                  </div>
+
+                  <!-- Role and Details -->
+                  <div class="space-y-4">
+                    <div class="space-y-2">
+                      <label class="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                        <Mail class="h-4 w-4 text-emerald-500" />
+                        Email Address *
+                      </label>
+                      <input
+                        v-model="dsrEmail"
+                        type="email"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl bg-slate-50 text-slate-600"
+                        disabled
+                      />
+                    </div>
+
+                    <!-- Phone (Optional) -->
+                    <div class="space-y-2">
+                      <label class="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                        <Phone class="h-4 w-4 text-slate-400" />
+                        Phone Number (optional)
+                      </label>
+                      <input
+                        v-model="dsrPhone"
+                        type="tel"
+                        placeholder="+91 98765 43210"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
+                      />
+                    </div>
+
+                    <div class="space-y-2">
+                      <label class="text-sm font-semibold text-slate-700">Role</label>
+                      <select
+                        v-model="role"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+                      >
+                        <option v-for="opt in roleOptions" :key="opt.value" :value="opt.value">
+                          {{ opt.label }} - {{ opt.description }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <!-- Parent DSR (for Order Collector) -->
+                    <div v-if="role === 'Order Collector'" class="space-y-2">
+                      <label class="text-sm font-semibold text-slate-700">Parent DSR *</label>
+                      <select
+                        v-model="parentDsrId"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+                      >
+                        <option value="">Select parent DSR...</option>
+                        <option v-for="dsr in availableParentDsrs" :key="dsr.id" :value="dsr.id">
+                          {{ dsr.name }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <!-- Optional Message -->
+                    <div class="space-y-2">
+                      <label class="text-sm font-semibold text-slate-700">Message (optional)</label>
+                      <textarea
+                        v-model="dsrMessage"
+                        placeholder="Add a personal message to the invitation..."
+                        rows="2"
+                        class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none resize-none"
+                      />
+                    </div>
+
+                    <div class="flex gap-3">
+                      <button
+                        @click="resetSearch"
+                        class="flex-1 py-3 border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold rounded-xl transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        @click="handleSendInvitation"
+                        :disabled="!canInvite"
+                        class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Send class="h-5 w-5" />
+                        Send Invitation
+                      </button>
+                    </div>
                   </div>
                 </template>
 
                 <!-- Step: Inviting -->
                 <template v-else-if="searchStep === 'inviting'">
-                  <div class="text-center py-8">
-                    <Loader2 class="h-10 w-10 text-emerald-600 animate-spin mx-auto mb-4" />
+                  <div class="text-center py-12">
+                    <Loader2 class="h-12 w-12 text-emerald-600 animate-spin mx-auto mb-4" />
                     <p class="text-slate-600">Sending invitation...</p>
                   </div>
                 </template>
 
                 <!-- Step: Success -->
                 <template v-else-if="searchStep === 'success'">
-                  <div class="text-center py-4">
-                    <div class="bg-emerald-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                      <CheckCircle class="h-8 w-8 text-emerald-600" />
+                  <div class="text-center py-8">
+                    <div class="bg-emerald-100 p-4 rounded-full w-20 h-20 mx-auto mb-4 flex items-center justify-center">
+                      <CheckCircle class="h-10 w-10 text-emerald-600" />
                     </div>
-                    <h3 class="text-lg font-semibold text-slate-800 mb-2">Invitation Sent!</h3>
-                    <p class="text-sm text-slate-500 mb-6">
+                    <h3 class="text-xl font-semibold text-slate-800 mb-2">Invitation Sent!</h3>
+                    <p class="text-slate-500 mb-6">
                       {{ searchResult?.registered 
                         ? 'The DSR will see the invitation in their dashboard.' 
-                        : 'Share the registration link with the DSR to complete signup.' 
+                        : 'An email has been sent with registration instructions.' 
                       }}
                     </p>
 
                     <!-- Show registration link if DSR not registered -->
-                    <div v-if="registrationUrl" class="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
-                      <label class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Registration Link</label>
-                      <div class="mt-2 flex items-center gap-2">
+                    <div v-if="registrationUrl" class="bg-slate-50 rounded-xl p-4 mb-4">
+                      <p class="text-xs text-slate-500 mb-2">Or share this registration link directly:</p>
+                      <div class="flex items-center gap-2">
                         <input
-                          type="text"
                           :value="registrationUrl"
                           readonly
-                          class="flex-1 text-xs py-2 px-3 bg-white border border-slate-200 rounded-lg text-slate-700 truncate"
+                          class="flex-1 px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg truncate"
                         />
                         <button
                           @click="copyRegistrationLink"
-                          :class="[
-                            'p-2 rounded-lg transition',
-                            copiedLink ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                          ]"
+                          class="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
                         >
-                          <Copy class="h-4 w-4" />
+                          <Copy v-if="!copiedLink" class="h-4 w-4" />
+                          <CheckCircle v-else class="h-4 w-4" />
                         </button>
-                        <a
-                          :href="registrationUrl"
-                          target="_blank"
-                          class="p-2 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-lg transition"
-                        >
-                          <ExternalLink class="h-4 w-4" />
-                        </a>
                       </div>
-                      <p v-if="copiedLink" class="text-xs text-emerald-600 mt-2">Link copied to clipboard!</p>
                     </div>
 
                     <div class="flex gap-3">
                       <button
-                        @click="handleClose"
-                        class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition"
+                        @click="resetForm"
+                        class="flex-1 py-3 border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold rounded-xl transition-colors"
                       >
-                        Done
+                        Invite Another
                       </button>
                       <button
-                        @click="resetForm"
-                        class="flex-1 py-2.5 border border-emerald-300 text-emerald-700 rounded-xl text-sm font-semibold hover:bg-emerald-50 transition"
+                        @click="handleClose"
+                        class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-colors"
                       >
-                        Add Another
+                        Done
                       </button>
                     </div>
                   </div>
                 </template>
               </template>
-
-              <!-- Direct Add Mode (Legacy) -->
-              <template v-else-if="mode === 'direct'">
-                <div class="space-y-4">
-                  <div class="space-y-2">
-                    <label class="text-sm font-semibold text-slate-700">Full Name *</label>
-                    <input
-                      type="text"
-                      v-model="dsrName"
-                      placeholder="e.g. Rajesh Kumar"
-                      :disabled="isLoading"
-                      class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800"
-                    />
-                  </div>
-
-                  <div class="space-y-2">
-                    <label class="text-sm font-semibold text-slate-700">Phone Number *</label>
-                    <input
-                      type="text"
-                      v-model="dsrPhone"
-                      placeholder="e.g. +91 91122 33445"
-                      :disabled="isLoading"
-                      class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-800 font-mono"
-                    />
-                  </div>
-
-                  <div class="space-y-2">
-                    <label class="text-sm font-semibold text-slate-700">Role</label>
-                    <select
-                      v-model="role"
-                      :disabled="isLoading"
-                      class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      <option v-for="opt in roleOptions" :key="opt.value" :value="opt.value">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </div>
-
-                  <div v-if="role === 'Order Collector'" class="space-y-2">
-                    <label class="text-sm font-semibold text-slate-700">Supervisor DSR *</label>
-                    <select
-                      v-model="parentDsrId"
-                      :disabled="isLoading"
-                      class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      <option value="">Select a supervisor...</option>
-                      <option v-for="d in availableParentDsrs" :key="d.id" :value="d.id">
-                        {{ d.name }}
-                      </option>
-                    </select>
-                  </div>
-                </div>
-
-                <div class="flex justify-end gap-3 pt-4">
-                  <button
-                    type="button"
-                    @click="goToSearchMode"
-                    class="py-2.5 px-4 border border-slate-300 rounded-xl text-sm font-semibold hover:bg-slate-50 transition"
-                  >
-                    Back to Search
-                  </button>
-                  <button
-                    @click="handleDirectAdd"
-                    :disabled="!canDirectAdd || isLoading || !canAddMore"
-                    class="py-2.5 px-5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                  >
-                    <Loader2 v-if="isLoading" class="h-4 w-4 animate-spin" />
-                    <UserPlus v-else class="h-4 w-4" />
-                    Add Directly
-                  </button>
-                </div>
-              </template>
-
-              <!-- Mode Toggle (only show in input step) -->
-              <div v-if="searchStep === 'input'" class="pt-4 border-t border-slate-100">
-                <button
-                  @click="mode = 'direct'"
-                  class="w-full text-center text-sm text-slate-500 hover:text-slate-700"
-                >
-                  Or <span class="text-emerald-600 font-medium">add directly</span> without invitation
-                </button>
-              </div>
             </div>
           </div>
         </Transition>

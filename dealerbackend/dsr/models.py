@@ -21,7 +21,11 @@ from django.db import models
 
 class DSR(models.Model):
     """DSR (Daily Sales Representative) or Order Collector.
-    Self-referential FK for OC → parent DSR hierarchy."""
+    Self-referential FK for OC → parent DSR hierarchy.
+    
+    The DSR model stores the profile/record data.
+    Authentication is handled by the related DsrUser.
+    """
 
     ROLE_DSR = "DSR"
     ROLE_OC = "Order Collector"
@@ -34,6 +38,20 @@ class DSR(models.Model):
     name = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_DSR)
+
+    # Link to user account for authentication
+    # One DSR has one user account (optional - legacy DSRs may not have one)
+    user = models.OneToOneField(
+        "users.DsrUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dsr_profile",
+        help_text="User account for login (null for legacy DSRs)",
+    )
+    
+    # Email stored for reference (synced from user account if linked)
+    email = models.EmailField(blank=True, default="")
 
     # Self-referential FK for hierarchy (OC reports to a parent DSR)
     parent_dsr = models.ForeignKey(
@@ -58,7 +76,24 @@ class DSR(models.Model):
             models.Index(fields=["parent_dsr", "role"]),
             # For role-based filtering
             models.Index(fields=["role"]),
+            # For user lookup
+            models.Index(fields=["user"]),
+            # For email lookup
+            models.Index(fields=["email"]),
         ]
 
     def __str__(self):
         return f"{self.name} ({self.role})"
+    
+    def sync_from_user(self):
+        """Sync profile data from linked user account."""
+        if self.user:
+            self.email = self.user.email
+            self.name = self.user.full_name or self.name
+            self.phone = self.user.phone or self.phone
+            self.save(update_fields=["email", "name", "phone"])
+    
+    @property
+    def has_account(self) -> bool:
+        """Check if this DSR has a user account (can log in)."""
+        return self.user is not None

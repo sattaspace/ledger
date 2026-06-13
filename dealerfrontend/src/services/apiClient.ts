@@ -227,13 +227,16 @@ class ApiClient {
       ...customConfig,
     };
 
-    // Add auth token from SattaBase auth
-    const token = getAccessToken();
-    if (token) {
-      config.headers = {
-        ...config.headers,
-        Authorization: `Bearer ${token}`,
-      };
+    // Add auth token from SattaBase auth ONLY if no Authorization header was already provided
+    // This allows DSR auth to pass its own token without being overwritten
+    if (!config.headers?.Authorization) {
+      const token = getAccessToken();
+      if (token) {
+        config.headers = {
+          ...config.headers,
+          Authorization: `Bearer ${token}`,
+        };
+      }
     }
 
     // Add X-Dealer-Username header for multi-tenancy
