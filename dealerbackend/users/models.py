@@ -138,7 +138,15 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_login = models.DateTimeField(_("last login"), blank=True, null=True)
-    
+
+    # FIX H-7: tracks when the password was last changed. JWTs issued by
+    # the dealer backend embed this value as a `pwd_changed_at` claim;
+    # on every protected request we compare it to the current value in
+    # the DB and reject the token if it predates the last change. This
+    # means a token issued before a password change is automatically
+    # invalid once the user updates their password.
+    password_changed_at = models.DateTimeField(null=True, blank=True)
+
     # Password reset
     password_reset_token = models.CharField(max_length=64, blank=True, default="")
     password_reset_expires = models.DateTimeField(null=True, blank=True)
@@ -290,24 +298,65 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
         self.email_verified_at = timezone.now()
         self.save(update_fields=["email_verified", "email_verified_at"])
     
+    @staticmethod
+    def _hash_reset_token(token: str) -> str:
+        """FIX M-4: store a SHA-256 hash of the token instead of the raw value.
+        A DB dump can no longer be used to take over accounts with outstanding
+        reset requests. Hashing is sufficient because the token already has
+        256 bits of entropy (secrets.token_urlsafe(32)) — no need for bcrypt.
+        """
+        import hashlib
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    # FIX H-7: override Django's set_password so every password change
+    # (including via set_password() called by the admin or by an external
+    # flow) bumps `password_changed_at`. The token claim check in
+    # `decode_token()` then automatically invalidates any token that was
+    # issued before the new value.
+    def set_password(self, raw_password: str) -> None:
+        super().set_password(raw_password)
+        self.password_changed_at = timezone.now()
+
+    async def aset_password(self, raw_password: str) -> None:
+        """FIX H-7: async variant used by async views so callers don't have
+        to wrap in sync_to_async."""
+        from asgiref.sync import sync_to_async
+        await sync_to_async(self.set_password)(raw_password)
+
     def set_password_reset_token(self, token: str, expires_hours: int = 24):
-        """Set password reset token with expiration."""
+        """Set password reset token with expiration (sync)."""
         from datetime import timedelta
-        self.password_reset_token = token
+        self.password_reset_token = self._hash_reset_token(token)
         self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
         self.save(update_fields=["password_reset_token", "password_reset_expires"])
-    
+
+    async def aset_password_reset_token(self, token: str, expires_hours: int = 24):
+        """FIX H-9: async variant for async views."""
+        from datetime import timedelta
+        self.password_reset_token = self._hash_reset_token(token)
+        self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
+        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
+
     def clear_password_reset_token(self):
-        """Clear password reset token."""
+        """Clear password reset token (sync)."""
         self.password_reset_token = ""
         self.password_reset_expires = None
         self.save(update_fields=["password_reset_token", "password_reset_expires"])
-    
+
+    async def aclear_password_reset_token(self):
+        """FIX H-9: async variant for async views."""
+        self.password_reset_token = ""
+        self.password_reset_expires = None
+        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
+
     def is_password_reset_valid(self, token: str) -> bool:
-        """Check if password reset token is valid."""
+        """Check if password reset token is valid (constant-time compare)."""
         if not self.password_reset_token or not self.password_reset_expires:
             return False
-        if self.password_reset_token != token:
+        # FIX M-4: compare hashed token.
+        import hmac
+        expected = self._hash_reset_token(token)
+        if not hmac.compare_digest(expected, self.password_reset_token):
             return False
         return timezone.now() < self.password_reset_expires
     
