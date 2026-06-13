@@ -184,6 +184,7 @@ bun-debug.log*
 .env
 .env.*
 !.env.example
+!.envbk.example
 
 # vercel
 .vercel
