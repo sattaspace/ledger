@@ -1,30 +1,69 @@
 <script setup lang="ts">
+/**
+ * Manage Billing Button
+ *
+ * Handles SSO redirect to SattaBase for billing management.
+ * Uses the authorization code flow for seamless cross-domain authentication.
+ *
+ * Flow:
+ * 1. User clicks "Manage Billing"
+ * 2. Frontend calls POST /auth/authorize to get one-time auth code
+ * 3. Frontend redirects to SattaBase callback with the code
+ * 4. SattaBase exchanges code for tokens, logs user in
+ * 5. User manages billing on SattaBase
+ */
 import { ref } from 'vue';
 import { CreditCard, ExternalLink, Loader2 } from 'lucide-vue-next';
-import { useSSO } from '../composables/useSSO';
-
-const { redirectToSattaBase, openSattaBaseInNewTab, isLoading, error } = useSSO();
+import { apiClient } from '../lib/api';
+import config from '../../sattabase.config';
 
 const props = defineProps<{
   variant?: 'button' | 'link' | 'menu-item';
   openInNewTab?: boolean;
 }>();
 
+const isLoading = ref(false);
+const error = ref<string | null>(null);
 const showError = ref(false);
+
+/**
+ * Generate auth code and redirect to SattaBase billing
+ */
+async function handleBillingRedirect(targetPath: string = '/dashboard/billing'): Promise<void> {
+  isLoading.value = true;
+  error.value = null;
+
+  try {
+    // Get authorization code from SattaBase
+    const { code } = await apiClient.post<{ code: string; expires_in: number }>('/auth/authorize');
+
+    // Build callback URL
+    const callbackUrl = `${config.baseDomainUrl}/auth/callback`;
+    const params = new URLSearchParams({
+      code,
+      return_to: targetPath,
+    });
+
+    const redirectUrl = `${callbackUrl}?${params.toString()}`;
+
+    // Redirect or open in new tab
+    if (props.openInNewTab) {
+      window.open(redirectUrl, '_blank');
+    } else {
+      window.location.href = redirectUrl;
+    }
+  } catch (err: any) {
+    error.value = err.message || 'Failed to connect to billing';
+    showError.value = true;
+    setTimeout(() => showError.value = false, 5000);
+  } finally {
+    isLoading.value = false;
+  }
+}
 
 async function handleClick() {
   showError.value = false;
-  
-  try {
-    if (props.openInNewTab) {
-      await openSattaBaseInNewTab();
-    } else {
-      await redirectToSattaBase();
-    }
-  } catch {
-    showError.value = true;
-    setTimeout(() => showError.value = false, 5000);
-  }
+  await handleBillingRedirect('/dashboard/billing');
 }
 </script>
 

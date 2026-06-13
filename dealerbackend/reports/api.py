@@ -34,10 +34,12 @@ from ninja_extra import api_controller, route
 from ninja.errors import HttpError
 
 from dealercore.async_db import async_aggregate
+from common.dealer_context import get_dealer_context
 from dealer.models import DealerConfig
 from inventory.models import Product, RestockRecord
 from sales.models import SaleRecord, CreditPayment
 from dsr.models import DSR
+from dsr.invitation_models import DsrDealerAssignment
 from reports.schemas import (
     AiReconciliationOut,
     CustomerDueRow,
@@ -118,7 +120,7 @@ class ReportsController:
             raise HttpError(400, "Offset cannot be negative.")
 
     @route.get("summary", response=SummaryOut, summary="Dashboard summary")
-    async def get_summary(self, dealer_username: str = ""):
+    async def get_summary(self, request):
         """Compute and return full dashboard summary data.
 
         FINANCIAL MODEL:
@@ -129,28 +131,25 @@ class ReportsController:
           - Credit Collected: amount_paid on active credit sales
           - Written-off Outstanding: Uncollected balance on written-off sales
 
-        Query Parameters:
-            dealer_username: The dealer to fetch info for. Defaults to first dealer if not provided.
+        Dealer Context:
+            Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        # Get dealer context from request (set by middleware)
+        dealer_username = await get_dealer_context(request)
 
         # ── Fetch dealer info ──
-        # BUG FIX: If no dealer_username provided, use first available dealer
-        # instead of failing silently with "sanjay" hardcoded
         dealer_info: Optional[DealerInfo] = None
         try:
-            if dealer_username:
-                dealer = await DealerConfig.objects.aget(username=dealer_username)
-            else:
-                # Get first dealer as fallback
-                dealer = await DealerConfig.objects.all().order_by("username").afirst()
+            dealer = await DealerConfig.objects.aget(username=dealer_username)
             if dealer:
                 dealer_info = _dealer_info(dealer)
         except DealerConfig.DoesNotExist:
             pass
 
         # ── Revenue (excludes written-off & voided sales) ──
+        # All queries are filtered by dealer_id for multi-tenancy
         active_totals = await async_aggregate(
-            SaleRecord.objects.filter(ACTIVE_SALES_FILTER),
+            SaleRecord.objects.filter(ACTIVE_SALES_FILTER, dealer_id=dealer_username),
             revenue=Coalesce(Sum("total_amount"), Decimal("0")),
         )
         revenue = active_totals["revenue"]
@@ -159,7 +158,7 @@ class ReportsController:
         # Previously this reported full total_amount which double-counted
         # partial payments already collected before write-off.
         written_off_stats = await async_aggregate(
-            SaleRecord.objects.filter(is_closed_with_due=True, is_voided=False),
+            SaleRecord.objects.filter(is_closed_with_due=True, is_voided=False, dealer_id=dealer_username),
             written_off_total=Coalesce(Sum("total_amount"), Decimal("0")),
             written_off_paid=Coalesce(Sum("amount_paid"), Decimal("0")),
         )
@@ -170,7 +169,7 @@ class ReportsController:
         # Use net_amount (after returns) for accurate pending calculation:
         # pending = total_amount - return_total_amount - amount_paid
         active_credit_stats = await async_aggregate(
-            SaleRecord.objects.filter(ACTIVE_CREDIT_FILTER),
+            SaleRecord.objects.filter(ACTIVE_CREDIT_FILTER, dealer_id=dealer_username),
             credit_pending=Coalesce(
                 Sum("total_amount") - Sum("return_total_amount") - Sum("amount_paid"), Decimal("0")
             ),
@@ -179,19 +178,19 @@ class ReportsController:
 
         # Count of active credit invoices with outstanding balance (for badge)
         credit_pending_count = await SaleRecord.objects.filter(
-            DUE_CREDIT_FILTER
+            DUE_CREDIT_FILTER, dealer_id=dealer_username
         ).acount()
 
         # ── COGS (from ALL restock records — costs were incurred) ──
         cogs_total = await async_aggregate(
-            RestockRecord.objects.all(),
+            RestockRecord.objects.filter(dealer_id=dealer_username),
             total=Coalesce(Sum("total_cost"), Decimal("0"))
         )
         cogs = cogs_total["total"]
         gross_profit = revenue - cogs
 
         # ── Low stock items ──
-        low_stock_qs = Product.objects.filter(stock__lt=F("min_stock_alert"))
+        low_stock_qs = Product.objects.filter(stock__lt=F("min_stock_alert"), dealer_id=dealer_username)
         low_stock_items: List[LowStockItem] = []
         async for p in low_stock_qs:
             low_stock_items.append(
@@ -205,8 +204,14 @@ class ReportsController:
             )
 
         # ── DSR performance (excludes written-off & voided sales) ──
+        # Get DSR IDs assigned to this dealer via junction table
+        assigned_dsr_ids = DsrDealerAssignment.objects.filter(
+            dealer_id=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE
+        ).values_list('dsr_id', flat=True)
+        
         dsr_performance: List[DsrPerformanceRow] = []
-        async for dsr in DSR.objects.annotate(
+        async for dsr in DSR.objects.filter(id__in=assigned_dsr_ids).annotate(
             total_sales=Coalesce(
                 Sum("sales__total_amount", filter=DSR_ACTIVE_SALES_FILTER, default=Decimal("0")),
                 Decimal("0"),
@@ -234,7 +239,7 @@ class ReportsController:
 
         # ── Product performance (excludes written-off & voided sales from total) ──
         product_agg = (
-            SaleRecord.objects.filter(ACTIVE_SALES_FILTER)
+            SaleRecord.objects.filter(ACTIVE_SALES_FILTER, dealer_id=dealer_username)
             .values("product_name")
             .annotate(
                 quantity=Sum("quantity"),
@@ -253,8 +258,8 @@ class ReportsController:
             )
 
         # ── Counts ──
-        total_sales_count = await SaleRecord.objects.acount()
-        total_products_count = await Product.objects.acount()
+        total_sales_count = await SaleRecord.objects.filter(dealer_id=dealer_username).acount()
+        total_products_count = await Product.objects.filter(dealer_id=dealer_username).acount()
 
         return SummaryOut(
             revenue=revenue,
@@ -275,7 +280,7 @@ class ReportsController:
         )
 
     @route.get("customer-due", response=DueReportOut, summary="Customer-wise due report")
-    async def get_customer_due(self, dealer_username: str = ""):
+    async def get_customer_due(self, request):
         """Customer-wise breakdown of pending credit collections.
 
         Groups all active (non-voided, non-written-off) credit sales with
@@ -283,26 +288,25 @@ class ReportsController:
         and balance_due = net_amount - amount_paid.
 
         Suitable for print: includes dealer header, generation timestamp.
-        
-        Query Parameters:
-            dealer_username: The dealer to fetch info for. Defaults to first dealer if not provided.
+
+        Dealer Context:
+            Uses X-Dealer-Username header to scope all data to the current dealer.
         """
-        # BUG FIX: Proper fallback to first dealer instead of hardcoded "sanjay"
+        # Get dealer context from request
+        dealer_username = await get_dealer_context(request)
+
         dealer_info = None
         try:
-            if dealer_username:
-                dealer = await DealerConfig.objects.aget(username=dealer_username)
-            else:
-                dealer = await DealerConfig.objects.all().order_by("username").afirst()
+            dealer = await DealerConfig.objects.aget(username=dealer_username)
             if dealer:
                 dealer_info = _dealer_info(dealer)
         except DealerConfig.DoesNotExist:
             pass
 
         rows: List[CustomerDueRow] = []
-        # Group by customer_name
+        # Group by customer_name (filtered by dealer)
         customer_agg = (
-            SaleRecord.objects.filter(DUE_CREDIT_FILTER)
+            SaleRecord.objects.filter(DUE_CREDIT_FILTER, dealer_id=dealer_username)
             .values("customer_name")
             .annotate(
                 total_amount=Coalesce(Sum("total_amount"), Decimal("0")),
@@ -318,10 +322,10 @@ class ReportsController:
             if due <= 0:
                 continue  # Skip if no actual balance due
 
-            # Fetch individual sales for this customer
+            # Fetch individual sales for this customer (filtered by dealer)
             sales_list: List[CustomerDueSale] = []
             async for sale in SaleRecord.objects.filter(
-                DUE_CREDIT_FILTER, customer_name=cust["customer_name"]
+                DUE_CREDIT_FILTER, customer_name=cust["customer_name"], dealer_id=dealer_username
             ).order_by("-date"):
                 sale_due = sale.net_amount - sale.amount_paid
                 if sale_due <= 0:
@@ -344,10 +348,10 @@ class ReportsController:
                     )
                 )
 
-            # Get phone from first sale
+            # Get phone from first sale (filtered by dealer)
             phone = ""
             first_sale = await SaleRecord.objects.filter(
-                DUE_CREDIT_FILTER, customer_name=cust["customer_name"]
+                DUE_CREDIT_FILTER, customer_name=cust["customer_name"], dealer_id=dealer_username
             ).afirst()
             if first_sale:
                 phone = first_sale.customer_phone
@@ -375,23 +379,22 @@ class ReportsController:
         )
 
     @route.get("vehicle-due", response=DueReportOut, summary="Vehicle-wise due report")
-    async def get_vehicle_due(self, dealer_username: str = ""):
+    async def get_vehicle_due(self, request):
         """Vehicle-wise breakdown of pending credit collections.
 
         Groups all active credit sales with outstanding balances by
         vehicle_number. Only includes sales where is_vehicle=True.
         Voided and written-off sales are excluded.
-        
-        Query Parameters:
-            dealer_username: The dealer to fetch info for. Defaults to first dealer if not provided.
+
+        Dealer Context:
+            Uses X-Dealer-Username header to scope all data to the current dealer.
         """
-        # BUG FIX: Proper fallback to first dealer instead of hardcoded "sanjay"
+        # Get dealer context from request
+        dealer_username = await get_dealer_context(request)
+
         dealer_info = None
         try:
-            if dealer_username:
-                dealer = await DealerConfig.objects.aget(username=dealer_username)
-            else:
-                dealer = await DealerConfig.objects.all().order_by("username").afirst()
+            dealer = await DealerConfig.objects.aget(username=dealer_username)
             if dealer:
                 dealer_info = _dealer_info(dealer)
         except DealerConfig.DoesNotExist:
@@ -403,6 +406,7 @@ class ReportsController:
                 DUE_CREDIT_FILTER,
                 is_vehicle=True,
                 vehicle_number__gt="",  # non-empty vehicle number
+                dealer_id=dealer_username,
             )
             .values("vehicle_number")
             .annotate(
@@ -424,6 +428,7 @@ class ReportsController:
                 DUE_CREDIT_FILTER,
                 is_vehicle=True,
                 vehicle_number=veh["vehicle_number"],
+                dealer_id=dealer_username,
             ).order_by("-date"):
                 sale_due = sale.net_amount - sale.amount_paid
                 if sale_due <= 0:
@@ -469,7 +474,7 @@ class ReportsController:
         )
 
     @route.get("dsr-due", response=DueReportOut, summary="DSR/Collector-wise due report")
-    async def get_dsr_due(self, dealer_username: str = ""):
+    async def get_dsr_due(self, request):
         """DSR/Collector-wise breakdown of pending credit collections.
 
         Groups sales by the CURRENT collector (dsr field), not the original
@@ -477,17 +482,16 @@ class ReportsController:
 
         If dsr is null, sales are grouped under "Unassigned".
         The original_dsr_name is shown per-sale for attribution tracking.
-        
-        Query Parameters:
-            dealer_username: The dealer to fetch info for. Defaults to first dealer if not provided.
+
+        Dealer Context:
+            Uses X-Dealer-Username header to scope all data to the current dealer.
         """
-        # BUG FIX: Proper fallback to first dealer instead of hardcoded "sanjay"
+        # Get dealer context from request
+        dealer_username = await get_dealer_context(request)
+
         dealer_info = None
         try:
-            if dealer_username:
-                dealer = await DealerConfig.objects.aget(username=dealer_username)
-            else:
-                dealer = await DealerConfig.objects.all().order_by("username").afirst()
+            dealer = await DealerConfig.objects.aget(username=dealer_username)
             if dealer:
                 dealer_info = _dealer_info(dealer)
         except DealerConfig.DoesNotExist:
@@ -495,10 +499,10 @@ class ReportsController:
 
         rows: List[DsrDueRow] = []
 
-        # First get all DSRs that have active due sales
+        # First get all DSRs that have active due sales (filtered by dealer)
         dsr_ids_with_due = set()
         async for sale in SaleRecord.objects.filter(
-            DUE_CREDIT_FILTER
+            DUE_CREDIT_FILTER, dealer_id=dealer_username
         ).values_list("dsr_id", flat=True):
             dsr_ids_with_due.add(sale)
 
@@ -506,7 +510,7 @@ class ReportsController:
         all_dsr_ids = list(dsr_ids_with_due)
 
         for dsr_id in all_dsr_ids:
-            filter_q = Q(DUE_CREDIT_FILTER, dsr_id=dsr_id)
+            filter_q = Q(DUE_CREDIT_FILTER, dsr_id=dsr_id, dealer_id=dealer_username)
 
             # Get DSR info
             dsr_name = "Unassigned"
@@ -585,7 +589,7 @@ class ReportsController:
         response=AiReconciliationOut,
         summary="AI-powered reconciliation",
     )
-    async def get_ai_reconciliation(self):
+    async def get_ai_reconciliation(self, request):
         """Generate an AI-powered reconciliation report.
 
         This endpoint provides a structured financial summary suitable for
@@ -594,7 +598,12 @@ class ReportsController:
 
         Current implementation returns a structured text report based on
         actual database metrics (pending sales, written-off amounts, etc.).
+
+        Dealer Context:
+            Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        # Get dealer context from request
+        dealer_username = await get_dealer_context(request)
 
         # Active pending/partial only (excludes written-off and voided)
         pending_sales = await SaleRecord.objects.filter(
@@ -604,6 +613,7 @@ class ReportsController:
             ],
             is_voided=False,
             is_closed_with_due=False,
+            dealer_id=dealer_username,
         ).acount()
 
         total_pending = await async_aggregate(
@@ -614,13 +624,14 @@ class ReportsController:
                 ],
                 is_voided=False,
                 is_closed_with_due=False,
+                dealer_id=dealer_username,
             ),
             amount=Coalesce(Sum("total_amount") - Sum("amount_paid"), Decimal("0"))
         )
 
         # Written-off stats
         written_off_stats = await async_aggregate(
-            SaleRecord.objects.filter(is_closed_with_due=True, is_voided=False),
+            SaleRecord.objects.filter(is_closed_with_due=True, is_voided=False, dealer_id=dealer_username),
             total=Coalesce(Sum("total_amount"), Decimal("0")),
             outstanding=Coalesce(
                 Sum("total_amount") - Sum("amount_paid"), Decimal("0")
@@ -629,13 +640,17 @@ class ReportsController:
 
         # Additional metrics for richer reports
         total_revenue = await async_aggregate(
-            SaleRecord.objects.filter(is_voided=False, is_closed_with_due=False),
+            SaleRecord.objects.filter(is_voided=False, is_closed_with_due=False, dealer_id=dealer_username),
             revenue=Coalesce(Sum("total_amount"), Decimal("0")),
         )
 
-        dsr_count = await DSR.objects.acount()
+        # Count DSRs assigned to this dealer via junction table
+        dsr_count = await DsrDealerAssignment.objects.filter(
+            dealer_id=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE
+        ).acount()
         customer_count = await SaleRecord.objects.filter(
-            is_voided=False
+            is_voided=False, dealer_id=dealer_username
         ).values("customer_name").distinct().acount()
 
         # Generate structured report text

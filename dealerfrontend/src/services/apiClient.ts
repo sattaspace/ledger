@@ -1,17 +1,23 @@
 /**
- * DEALERCORE v3.0 — Centralized API Client
+ * DEALERCORE v3.0 — Centralized API Client for Dealer Backend
  *
- * This is the single point of HTTP communication for the entire frontend.
+ * This is the single point of HTTP communication for dealer business data.
  * All data fetching (GET, POST, PUT, DELETE) must flow through this client.
  *
+ * IMPORTANT: This client is for dealer backend business endpoints ONLY.
+ * For SattaBase auth/billing API calls, use `apiClient` from `lib/api.ts`.
+ *
  * Features:
- * - Configurable base URL (points to Django Ninja backend)
- * - Request/Response interceptors (auth headers, logging, error normalization)
+ * - Configurable base URL (points to Django Ninja dealer backend)
+ * - Automatic JWT token injection from SattaBase auth
+ * - Request/Response interceptors
  * - Automatic JSON parsing
  * - Typed error handling with ApiError class
  * - Timeout support
  * - Automatic snake_case → camelCase key conversion for all API responses
  */
+
+import { getAccessToken, getSelectedDealerUsername } from "../lib/api";
 
 // ─── snake_case → camelCase Transformer ─────────────────────────────────────
 
@@ -221,6 +227,25 @@ class ApiClient {
       ...customConfig,
     };
 
+    // Add auth token from SattaBase auth
+    const token = getAccessToken();
+    if (token) {
+      config.headers = {
+        ...config.headers,
+        Authorization: `Bearer ${token}`,
+      };
+    }
+
+    // Add X-Dealer-Username header for multi-tenancy
+    // This header tells the backend which dealer's data to access
+    const dealerUsername = getSelectedDealerUsername();
+    if (dealerUsername) {
+      config.headers = {
+        ...config.headers,
+        "X-Dealer-Username": dealerUsername,
+      };
+    }
+
     // Add body for POST/PUT/PATCH
     // Transform camelCase keys to snake_case so Django backend can parse them
     if (body !== undefined && method !== "GET") {
@@ -246,6 +271,18 @@ class ApiClient {
     config.signal = controller.signal;
 
     try {
+      // DEBUG: Log all API requests
+      console.log(
+        `%c[API] ${method} ${endpoint}`,
+        "color: #6366f1; font-weight: bold",
+        {
+          url,
+          dealerUsername: config.headers?.["X-Dealer-Username"] || "none",
+          hasToken: !!token,
+          body: body ? "(has body)" : "none",
+        },
+      );
+
       const response = await fetch(url, config as RequestInit);
 
       // Run response interceptors
@@ -268,6 +305,17 @@ class ApiClient {
       }
 
       if (!response.ok) {
+        // DEBUG: Log error responses
+        console.error(
+          `%c[API ERROR] ${method} ${endpoint}`,
+          "color: #ef4444; font-weight: bold",
+          {
+            status: response.status,
+            statusText: response.statusText,
+            data,
+          },
+        );
+
         const apiError = new ApiError(
           response.status,
           response.statusText,
@@ -287,6 +335,21 @@ class ApiClient {
       // Transform all snake_case keys to camelCase so the frontend
       // can consume data using JavaScript/TypeScript naming conventions
       const transformedData = transformKeysToCamelCase<T>(data);
+
+      // DEBUG: Log successful responses
+      console.log(
+        `%c[API SUCCESS] ${method} ${endpoint}`,
+        "color: #10b981; font-weight: bold",
+        {
+          status: response.status,
+          dataType: Array.isArray(transformedData)
+            ? `Array(${transformedData.length})`
+            : typeof transformedData,
+          preview: Array.isArray(transformedData)
+            ? transformedData.slice(0, 2)
+            : transformedData,
+        },
+      );
 
       return {
         ok: true,
@@ -376,8 +439,8 @@ class ApiClient {
 /**
  * Determine the API configuration from environment variables.
  *
- * VITE_API_BASE_URL  — Your Django Ninja backend URL.
- *                       e.g. http://localhost:8000/api
+ * PUBLIC_DEALER_API_URL — Your Django Ninja dealer backend URL.
+ *                          e.g. http://localhost:8088/api
  */
 function resolveConfig(): ApiClientConfig {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -386,7 +449,10 @@ function resolveConfig(): ApiClientConfig {
       ? (import.meta as any).env
       : {};
 
-  const baseURL = env.VITE_API_BASE_URL || "http://localhost:8088";
+  const baseURL =
+    env.PUBLIC_DEALER_API_URL ||
+    env.VITE_API_BASE_URL ||
+    "http://localhost:8088/api";
 
   return {
     baseURL,

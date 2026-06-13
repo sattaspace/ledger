@@ -28,6 +28,7 @@ from ninja.errors import HttpError
 from dealercore.async_db import async_aggregate, async_exists
 from dsr.models import DSR
 from dsr.schemas import CreateDSRIn, DSROut, UpdateDSRIn
+from dsr.invitation_models import DsrDealerAssignment
 from sales.models import SaleRecord
 
 # ─── Reusable Filters ──────────────────────────────────────
@@ -47,6 +48,12 @@ COLLECTION_SALES_FOR_DSR = Q(
 
 @api_controller("/dsrs", tags=["DSR"])
 class DSRController:
+    """DSR API Controller with dealer-scoped data isolation.
+    
+    All DSR queries are filtered by the authenticated dealer's context.
+    DSRs are linked to dealers via DsrDealerAssignment junction table.
+    """
+    
     # Maximum records per page to prevent memory exhaustion
     MAX_PAGE_LIMIT = 1000
 
@@ -58,10 +65,19 @@ class DSRController:
             raise HttpError(400, "Limit must be at least 1.")
         if offset < 0:
             raise HttpError(400, "Offset cannot be negative.")
+    
+    def _get_dealer_username(self, request) -> str:
+        """Extract dealer username from request context."""
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            raise HttpError(401, "Authentication required - dealer context not found")
+        return dealer_username
 
-    @route.get("", response=list[DSROut], summary="List all DSRs")
-    async def list_dsrs(self, limit: int = 100, offset: int = 0):
-        """Return all DSRs with annotated active_sales_count.
+    @route.get("", response=list[DSROut], summary="List all DSRs for current dealer")
+    async def list_dsrs(self, request, limit: int = 100, offset: int = 0):
+        """Return DSRs assigned to the current dealer with annotated active_sales_count.
+        
+        DSRs are filtered by DsrDealerAssignment for the authenticated dealer.
         active_sales_count excludes voided, written-off, and fully paid sales.
         
         Query Parameters:
@@ -69,7 +85,18 @@ class DSRController:
             offset: Number of records to skip (for pagination)
         """
         self._validate_pagination(limit, offset)
-        qs = DSR.objects.prefetch_related("subordinates").annotate(
+        dealer_username = self._get_dealer_username(request)
+        
+        # Get DSR IDs that have an active assignment with this dealer
+        assigned_dsr_ids = DsrDealerAssignment.objects.filter(
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE
+        ).values_list('dsr_id', flat=True)
+        
+        # Filter DSRs by the assignment
+        qs = DSR.objects.filter(
+            id__in=assigned_dsr_ids
+        ).prefetch_related("subordinates").annotate(
             active_sales_count=Count(
                 "sales",
                 filter=Q(
@@ -82,6 +109,7 @@ class DSRController:
                 ),
             ),
         ).order_by("name")[offset:offset+limit]
+        
         results = []
         async for dsr in qs:
             results.append(
@@ -98,8 +126,23 @@ class DSRController:
         return results
 
     @route.get("{dsr_id}", response=DSROut, summary="Get a DSR")
-    async def get_dsr(self, dsr_id: str):
-        """Return a single DSR by ID with active_sales_count."""
+    async def get_dsr(self, request, dsr_id: str):
+        """Return a single DSR by ID with active_sales_count.
+        
+        Only returns DSRs that are assigned to the current dealer.
+        """
+        dealer_username = self._get_dealer_username(request)
+        
+        # Verify DSR is assigned to this dealer
+        is_assigned = await DsrDealerAssignment.objects.filter(
+            dsr_id=dsr_id,
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE
+        ).aexists()
+        
+        if not is_assigned:
+            raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
+        
         try:
             dsr = await DSR.objects.annotate(
                 active_sales_count=Count(
@@ -127,15 +170,28 @@ class DSRController:
         )
 
     @route.post("", response=DSROut, summary="Create a DSR")
-    async def create_dsr(self, payload: CreateDSRIn):
-        """Create a new DSR or Order Collector."""
+    async def create_dsr(self, request, payload: CreateDSRIn):
+        """Create a new DSR or Order Collector.
+        
+        Creates DSR and automatically assigns it to the current dealer.
+        """
+        dealer_username = self._get_dealer_username(request)
+        
         # BUG FIX: Prevent self-referential parent assignment
         # This would create a circular reference that breaks hierarchy
         parent_dsr_name = ""
         parent_dsr_obj = None
         if payload.parent_dsr_id:
             try:
+                # Verify parent DSR is assigned to this dealer
                 parent = await DSR.objects.aget(id=payload.parent_dsr_id)
+                parent_is_assigned = await DsrDealerAssignment.objects.filter(
+                    dsr=parent,
+                    dealer__username=dealer_username,
+                    status=DsrDealerAssignment.STATUS_ACTIVE
+                ).aexists()
+                if not parent_is_assigned:
+                    raise HttpError(400, f"Parent DSR with id '{payload.parent_dsr_id}' is not assigned to you")
                 parent_dsr_name = parent.name
                 parent_dsr_obj = parent
             except DSR.DoesNotExist:
@@ -149,6 +205,17 @@ class DSRController:
             parent_dsr=parent_dsr_obj,
             parent_dsr_name=parent_dsr_name,
         )
+        
+        # Create the dealer assignment
+        from dealer.models import DealerConfig
+        dealer = await DealerConfig.objects.aget(username=dealer_username)
+        await DsrDealerAssignment.objects.acreate(
+            id=f"assign-{dsr.id}",
+            dsr=dsr,
+            dealer=dealer,
+            role=payload.role or "DSR",
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        )
 
         return DSROut(
             id=dsr.id,
@@ -161,8 +228,23 @@ class DSRController:
         )
 
     @route.patch("{dsr_id}", response=DSROut, summary="Update a DSR")
-    async def update_dsr(self, dsr_id: str, payload: UpdateDSRIn):
-        """Partial update on a DSR — name, phone, role, parent reassignment."""
+    async def update_dsr(self, request, dsr_id: str, payload: UpdateDSRIn):
+        """Partial update on a DSR — name, phone, role, parent reassignment.
+        
+        Only allows updates to DSRs assigned to the current dealer.
+        """
+        dealer_username = self._get_dealer_username(request)
+        
+        # Verify DSR is assigned to this dealer
+        is_assigned = await DsrDealerAssignment.objects.filter(
+            dsr_id=dsr_id,
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE
+        ).aexists()
+        
+        if not is_assigned:
+            raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
+        
         try:
             dsr = await DSR.objects.aget(id=dsr_id)
         except DSR.DoesNotExist:
@@ -189,6 +271,14 @@ class DSRController:
                     )
                 try:
                     parent = await DSR.objects.aget(id=parent_id)
+                    # Verify parent DSR is assigned to this dealer
+                    parent_is_assigned = await DsrDealerAssignment.objects.filter(
+                        dsr=parent,
+                        dealer__username=dealer_username,
+                        status=DsrDealerAssignment.STATUS_ACTIVE
+                    ).aexists()
+                    if not parent_is_assigned:
+                        raise HttpError(400, f"Parent DSR with id '{parent_id}' is not assigned to you")
                     update_data["parent_dsr_name"] = parent.name
                     update_data["parent_dsr"] = parent
                 except DSR.DoesNotExist:
@@ -222,15 +312,37 @@ class DSRController:
         )
 
     @route.delete("{dsr_id}", summary="Delete a DSR")
-    async def delete_dsr(self, dsr_id: str):
+    async def delete_dsr(self, request, dsr_id: str):
         """Delete a DSR. Sales linked to this DSR will have dsr set to NULL (SET_NULL).
-        Note: original_dsr on sales will also be set to NULL."""
+        Note: original_dsr on sales will also be set to NULL.
+        
+        Only allows deletion of DSRs assigned to the current dealer.
+        """
+        dealer_username = self._get_dealer_username(request)
+        
+        # Verify DSR is assigned to this dealer
+        assignment = await DsrDealerAssignment.objects.filter(
+            dsr_id=dsr_id,
+            dealer__username=dealer_username
+        ).afirst()
+        
+        if not assignment:
+            raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
+        
         try:
             dsr = await DSR.objects.aget(id=dsr_id)
         except DSR.DoesNotExist:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found")
-        await dsr.adelete()
-        return {"message": f"DSR '{dsr.name}' deleted successfully"}
+        
+        # Delete the assignment first
+        await assignment.adelete()
+        
+        # If DSR has no other assignments, delete the DSR entirely
+        other_assignments = await DsrDealerAssignment.objects.filter(dsr=dsr).aexists()
+        if not other_assignments:
+            await dsr.adelete()
+        
+        return {"message": f"DSR '{dsr.name}' removed from your team successfully"}
 
     # ─── Helpers ────────────────────────────────────────
 

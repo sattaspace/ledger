@@ -2,9 +2,9 @@
  * Dealer Configuration Service
  *
  * Endpoints mapped:
- * GET  /api/dealers              → getAllDealers()
- * GET  /api/dealers/:username    → getDealer(username)
- * POST /api/dealers/update       → updateDealerSettings(data)
+ * GET  /dealers              → getAllDealers()
+ * GET  /dealers/:username    → getDealer(username)
+ * POST /dealers/update       → updateDealerSettings(data)
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -30,24 +30,24 @@ export interface UpdateDealerPayload {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class DealerService {
-  /** GET /api/dealers — Fetch all dealer configurations */
+  /** GET /dealers — Fetch all dealer configurations */
   async getAllDealers(): Promise<ApiResponse<DealerConfig[]>> {
-    return apiClient.get<DealerConfig[]>("/api/dealers");
+    return apiClient.get<DealerConfig[]>("/dealers");
   }
 
-  /** GET /api/dealers/:username — Fetch a single dealer configuration */
+  /** GET /dealers/:username — Fetch a single dealer configuration */
   async getDealer(username: string): Promise<ApiResponse<DealerConfig>> {
-    return apiClient.get<DealerConfig>(`/api/dealers/${username}`);
+    return apiClient.get<DealerConfig>(`/dealers/${username}`);
   }
 
-  /** POST /api/dealers/update — Update dealer currency/locale settings */
+  /** POST /dealers/update — Update dealer currency/locale settings */
   async updateDealerSettings(
     data: UpdateDealerPayload,
   ): Promise<ApiResponse<DealerConfig>> {
-    return apiClient.post<DealerConfig>("/api/dealers/update", data);
+    return apiClient.post<DealerConfig>("/dealers/update", data);
   }
 
-  /** POST /api/dealers — Create a new dealer */
+  /** POST /dealers — Create a new dealer */
   async createDealer(data: {
     username: string;
     fullName: string;
@@ -62,7 +62,7 @@ export class DealerService {
     defaultCurrency: string;
     defaultLocale: string;
   }): Promise<ApiResponse<DealerConfig>> {
-    return apiClient.post<DealerConfig>("/api/dealers", data);
+    return apiClient.post<DealerConfig>("/dealers", data);
   }
 }
 

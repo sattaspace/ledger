@@ -13,21 +13,21 @@ const email = ref('');
 const password = ref('');
 const showPassword = ref(false);
 
+// Convert Error object to message string for display
+const errorMessage = computed(() => error.value?.message || null);
+
 const isValid = computed(() => {
   return email.value.length > 0 && password.value.length >= 6;
 });
 
 async function handleSubmit() {
   if (!isValid.value || isLoading.value) return;
-  
+
   clearError();
-  
+
   try {
-    await login({
-      email: email.value,
-      password: password.value,
-    });
-    
+    await login(email.value, password.value);
+
     emit('success');
   } catch {
     // Error is handled by useAuth
@@ -35,7 +35,7 @@ async function handleSubmit() {
 }
 
 function handleEmailInput() {
-  clearError();
+  if (clearError) clearError();
 }
 </script>
 
@@ -43,10 +43,10 @@ function handleEmailInput() {
   <form @submit.prevent="handleSubmit" class="space-y-5">
     <!-- Error Alert -->
     <div
-      v-if="error"
+      v-if="errorMessage"
       class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm"
     >
-      {{ error }}
+      {{ errorMessage }}
     </div>
     
     <!-- Email Field -->
@@ -93,18 +93,7 @@ function handleEmailInput() {
         </button>
       </div>
     </div>
-    
-    <!-- Forgot Password -->
-    <div class="flex justify-end">
-      <a
-        href="#"
-        class="text-sm text-blue-600 hover:text-blue-800 font-medium"
-        @click.prevent="$emit('forgot-password')"
-      >
-        Forgot password?
-      </a>
-    </div>
-    
+
     <!-- Submit Button -->
     <button
       type="submit"

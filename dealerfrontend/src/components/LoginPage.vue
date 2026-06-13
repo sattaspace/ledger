@@ -2,13 +2,24 @@
 import { ref } from 'vue';
 import { Store, TrendingUp, Shield, Zap } from 'lucide-vue-next';
 import LoginForm from './LoginForm.vue';
-import { sattabaseUrls } from '../lib/constants';
+import { redirectToBase } from '../lib/auth';
 
 const emit = defineEmits<{
   (e: 'login'): void;
+  (e: 'showDsrLogin'): void;
 }>();
 
 const showForgotPassword = ref(false);
+
+// Redirect to SattaBase for account creation
+function handleCreateAccount() {
+  redirectToBase('/auth/register');
+}
+
+// Redirect to SattaBase for password reset
+function handleForgotPassword() {
+  redirectToBase('/auth/forgot-password');
+}
 </script>
 
 <template>
@@ -76,20 +87,29 @@ const showForgotPassword = ref(false);
           <div class="mt-6 text-center space-y-2">
             <p class="text-sm text-slate-500">
               Don't have an account?
-              <a 
-                :href="sattabaseUrls.signup" 
+              <button 
+                @click="handleCreateAccount"
                 class="text-blue-600 hover:text-blue-800 font-semibold"
               >
                 Create account
-              </a>
+              </button>
             </p>
             <p class="text-sm">
-              <a 
-                :href="sattabaseUrls.forgotPassword" 
+              <button 
+                @click="handleForgotPassword"
                 class="text-slate-400 hover:text-slate-600"
               >
                 Forgot password?
-              </a>
+              </button>
+            </p>
+            <p class="text-sm text-slate-500 pt-2 border-t border-slate-100 mt-3">
+              Are you a DSR (Sales Representative)?
+              <button 
+                @click="$emit('showDsrLogin')"
+                class="text-emerald-600 hover:text-emerald-700 font-semibold"
+              >
+                Login here
+              </button>
             </p>
           </div>
         </div>
@@ -111,12 +131,12 @@ const showForgotPassword = ref(false);
             Password resets are handled securely through SattaBase.
           </p>
           
-          <a
-            :href="sattabaseUrls.forgotPassword"
+          <button
+            @click="handleForgotPassword"
             class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-center transition-colors"
           >
             Go to Password Reset
-          </a>
+          </button>
           
           <p class="mt-4 text-sm text-slate-400 text-center">
             You will be redirected to the SattaBase secure password reset page.

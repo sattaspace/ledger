@@ -12,9 +12,14 @@ export default defineConfig({
   integrations: [vue()],
   vite: {
     plugins: [tailwindcss()],
+    // resolve: {
+    //   alias: {
+    //     "@": path.resolve(__dirname, "./src"),
+    //   },
+    // },
   },
   server: {
     port: 4323,
-    host: '0.0.0.0'
-  }
+    host: "0.0.0.0",
+  },
 });

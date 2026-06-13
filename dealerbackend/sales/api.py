@@ -11,8 +11,13 @@ Route registration order matters ACROSS all HTTP methods:
   1. Literal sub-paths first (POST, GET, etc.)
   2. Parameterized paths last
 
+MULTI-TENANCY:
+  All endpoints are scoped to the dealer context extracted from JWT.
+  - Dealers see only their own data
+  - DSRs/Collectors see data from their assigned dealer (via X-Dealer-Context header)
+
 Endpoints:
-  GET    /api/sales                   → list all sales
+  GET    /api/sales                   → list all sales (dealer-scoped)
   POST   /api/sales                   → create a single sale
   POST   /api/sales/bulk              → create multiple sales at once
   GET    /api/sales/{id}              → get a single sale
@@ -43,7 +48,8 @@ from ninja_extra import api_controller, route
 from ninja.errors import HttpError
 
 from dealercore.async_db import aatomic, async_aggregate, async_exists
-
+from common.dealer_context import get_dealer_context
+from dealer.models import DealerConfig
 from inventory.models import Product
 from dsr.models import DSR
 from sales.models import SaleRecord, CreditPayment, SaleReturn
@@ -66,8 +72,8 @@ class SalesController:
     MAX_PAGE_LIMIT = 1000
 
     @route.get("", response=list[SaleRecordOut], summary="List all sales")
-    async def list_sales(self, limit: int = 100, offset: int = 0):
-        """Return all sales ordered by date descending.
+    async def list_sales(self, request, limit: int = 100, offset: int = 0):
+        """Return all sales for the current dealer context ordered by date descending.
         
         Query Parameters:
             limit: Max records to return (default: 100, max: 1000)
@@ -80,24 +86,30 @@ class SalesController:
             raise HttpError(400, "Limit must be at least 1.")
         if offset < 0:
             raise HttpError(400, "Offset cannot be negative.")
-        return await self._list_sales_qs(limit, offset)
+        dealer_username = await get_dealer_context(request)
+        return await self._list_sales_qs(dealer_username, limit, offset)
 
     # ─── Literal POST sub-paths MUST come before {sale_id} parameterized route ──
 
     @route.post("", response=SaleRecordOut, summary="Create a sale")
-    async def create_sale(self, payload: CreateSaleIn):
+    async def create_sale(self, request, payload: CreateSaleIn):
         """Create a single sale. Decreases product stock, handles cash/credit logic.
-        Sets original_dsr = dsr at creation time (immutable thereafter)."""
+        Sets original_dsr = dsr at creation time (immutable thereafter).
+        
+        The sale is automatically associated with the current dealer context.
+        """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
-            return await self._process_single_sale(payload)
+            return await self._process_single_sale(request, payload, dealer_username)
 
     @route.post("bulk", response=list[SaleRecordOut], summary="Create bulk sales")
-    async def create_bulk_sales(self, payload: BulkSaleIn):
+    async def create_bulk_sales(self, request, payload: BulkSaleIn):
         """Create multiple sales in one transaction. Shares vehicle_number and dsr_id.
         
-        BUG FIX: Explicitly set original_dsr to match dsr at creation time to ensure
-        proper sales attribution even if collection is later reassigned.
+        All sales are automatically associated with the current dealer context.
         """
+        dealer_username = await get_dealer_context(request)
+        
         # Validate due_date required for credit sales at bulk level
         for idx, row in enumerate(payload.rows):
             if row.payment_type == SaleRecord.PAYMENT_CREDIT and not row.due_date:
@@ -122,30 +134,38 @@ class SalesController:
                     amount_paid=row.amount_paid,
                     due_date=row.due_date,
                 )
-                sale = await self._process_single_sale(sale_data, is_bulk=True)
+                sale = await self._process_single_sale(request, sale_data, dealer_username, is_bulk=True)
                 results.append(sale)
             return results
 
     @route.get("{sale_id}", response=SaleRecordOut, summary="Get a sale")
-    async def get_sale(self, sale_id: str):
-        """Return a single sale by ID with its embedded payments and returns."""
+    async def get_sale(self, request, sale_id: str):
+        """Return a single sale by ID with its embedded payments and returns (dealer-scoped)."""
+        dealer_username = await get_dealer_context(request)
         try:
-            sale = await SaleRecord.objects.prefetch_related("payments", "returns").aget(id=sale_id)
+            sale = await SaleRecord.objects.prefetch_related("payments", "returns").aget(
+                id=sale_id,
+                dealer_id=dealer_username
+            )
         except SaleRecord.DoesNotExist:
             raise HttpError(404, f"Sale with id '{sale_id}' not found")
         return await self._serialize_sale(sale)
 
     @route.post("{sale_id}/collect", response=SaleRecordOut, summary="Collect payment")
-    async def collect_payment(self, sale_id: str, payload: CollectPaymentIn):
+    async def collect_payment(self, request, sale_id: str, payload: CollectPaymentIn):
         """Collect a payment against a credit sale. Updates amount_paid and status.
 
         Uses select_for_update() on the sale row to prevent concurrent
         collection requests from causing incorrect amount_paid totals.
         Collection status is recalculated against net_amount (after returns).
         """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
-                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(id=sale_id)
+                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(
+                    id=sale_id,
+                    dealer_id=dealer_username
+                )
             except SaleRecord.DoesNotExist:
                 raise HttpError(404, f"Sale with id '{sale_id}' not found")
 
@@ -155,7 +175,7 @@ class SalesController:
                 raise HttpError(400, "Cannot collect payment on a written-off sale")
 
             await CreditPayment.objects.acreate(
-                id=await self._generate_id("pay"),
+                id=await self._generate_id("pay", dealer_username),
                 sale=sale,
                 amount=payload.amount,
                 date=datetime.now(),
@@ -177,8 +197,8 @@ class SalesController:
     @route.post(
         "{sale_id}/close-with-due", response=SaleRecordOut, summary="Close sale with due"
     )
-    async def close_sale_with_due(self, sale_id: str):
-        """Write off a sale as bad debt. Sets is_closed_with_due flag.
+    async def close_sale_with_due(self, request, sale_id: str):
+        """Write off a sale as bad debt. Sets is_closed_with_due flag (dealer-scoped).
 
         COMPLETE CIRCLE:
         - Sets is_closed_with_due = True
@@ -194,9 +214,13 @@ class SalesController:
         Uses select_for_update() to prevent race conditions with concurrent
         collection requests on the same sale.
         """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
-                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(id=sale_id)
+                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(
+                    id=sale_id,
+                    dealer_id=dealer_username
+                )
             except SaleRecord.DoesNotExist:
                 raise HttpError(404, f"Sale with id '{sale_id}' not found")
 
@@ -211,8 +235,8 @@ class SalesController:
             return await self._serialize_sale(sale)
 
     @route.post("{sale_id}/return", response=SaleRecordOut, summary="Process a sale return")
-    async def process_return(self, sale_id: str, payload: CreateReturnIn):
-        """Process a product return from a sale.
+    async def process_return(self, request, sale_id: str, payload: CreateReturnIn):
+        """Process a product return from a sale (dealer-scoped).
 
         COMPLETE CIRCLE:
         1. Increments product stock (inventory corrected)
@@ -228,9 +252,13 @@ class SalesController:
 
         Uses aatomic() + select_for_update() for safe concurrent access.
         """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
-                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(id=sale_id)
+                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(
+                    id=sale_id,
+                    dealer_id=dealer_username
+                )
             except SaleRecord.DoesNotExist:
                 raise HttpError(404, f"Sale with id '{sale_id}' not found")
 
@@ -251,9 +279,12 @@ class SalesController:
             if payload.quantity <= 0:
                 raise HttpError(400, "Return quantity must be positive")
 
-            # Increment product stock via F() expression
+            # Increment product stock via F() expression (dealer-scoped)
             try:
-                product = await Product.objects.select_for_update().aget(id=sale.product_id)
+                product = await Product.objects.select_for_update().aget(
+                    id=sale.product_id,
+                    dealer_id=dealer_username
+                )
             except Product.DoesNotExist:
                 raise HttpError(404, f"Product with id '{sale.product_id}' not found")
 
@@ -265,7 +296,7 @@ class SalesController:
 
             # Create SaleReturn record
             await SaleReturn.objects.acreate(
-                id=await self._generate_id("ret"),
+                id=await self._generate_id("ret", dealer_username),
                 sale=sale,
                 product_name=sale.product_name,
                 quantity=payload.quantity,
@@ -293,8 +324,8 @@ class SalesController:
             return await self._serialize_sale(sale)
 
     @route.post("{sale_id}/void", response=SaleRecordOut, summary="Void a sale")
-    async def void_sale(self, sale_id: str, force: bool = False):
-        """Void a sale — complete reversal of the entire transaction.
+    async def void_sale(self, request, sale_id: str, force: bool = False):
+        """Void a sale — complete reversal of the entire transaction (dealer-scoped).
 
         BUSINESS RULE — VOID PROTECTION:
         If a sale has had payment transactions (amount_paid > 0 or has
@@ -324,9 +355,13 @@ class SalesController:
         This is a one-way operation — voided sales cannot be un-voided.
         Uses aatomic() + select_for_update() for safe concurrent access.
         """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
-                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(id=sale_id)
+                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(
+                    id=sale_id,
+                    dealer_id=dealer_username
+                )
             except SaleRecord.DoesNotExist:
                 raise HttpError(404, f"Sale with id '{sale_id}' not found")
 
@@ -352,7 +387,10 @@ class SalesController:
 
             if qty_to_restore > 0:
                 try:
-                    product = await Product.objects.select_for_update().aget(id=sale.product_id)
+                    product = await Product.objects.select_for_update().aget(
+                        id=sale.product_id,
+                        dealer_id=dealer_username
+                    )
                 except Product.DoesNotExist:
                     raise HttpError(404, f"Product with id '{sale.product_id}' not found")
 
@@ -367,8 +405,8 @@ class SalesController:
             return await self._serialize_sale(sale)
 
     @route.post("{sale_id}/edit", response=SaleRecordOut, summary="Edit sale fields + DSR reassignment")
-    async def edit_sale(self, sale_id: str, payload: EditSaleIn):
-        """Edit non-financial fields and reassign collection DSR on a sale.
+    async def edit_sale(self, request, sale_id: str, payload: EditSaleIn):
+        """Edit non-financial fields and reassign collection DSR on a sale (dealer-scoped).
 
         Only customer_name, customer_phone, due_date, vehicle_number, and dsr_id
         can be changed. Financial fields require voiding and re-creating.
@@ -381,9 +419,13 @@ class SalesController:
           the new collector sees it in their active list, but sales
           attribution reports still credit the original DSR.
         """
+        dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
-                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(id=sale_id)
+                sale = await SaleRecord.objects.select_for_update().prefetch_related("payments", "returns").aget(
+                    id=sale_id,
+                    dealer_id=dealer_username
+                )
             except SaleRecord.DoesNotExist:
                 raise HttpError(404, f"Sale with id '{sale_id}' not found")
 
@@ -420,15 +462,17 @@ class SalesController:
 
     # ─── Helpers ────────────────────────────────────────
 
-    async def _list_sales_qs(self, limit: int = 100, offset: int = 0) -> list[SaleRecordOut]:
-        """List all sales with serialized payments and returns."""
+    async def _list_sales_qs(self, dealer_username: str, limit: int = 100, offset: int = 0) -> list[SaleRecordOut]:
+        """List all sales with serialized payments and returns (dealer-scoped)."""
         results = []
-        async for sale in SaleRecord.objects.select_related("dsr").prefetch_related("payments", "returns").all()[offset:offset+limit]:
+        async for sale in SaleRecord.objects.select_related("dsr").prefetch_related(
+            "payments", "returns"
+        ).filter(dealer_id=dealer_username)[offset:offset+limit]:
             results.append(await self._serialize_sale(sale))
         return results
 
     async def _process_single_sale(
-        self, payload: CreateSaleIn, is_bulk: bool = False
+        self, request, payload: CreateSaleIn, dealer_username: str, is_bulk: bool = False
     ) -> SaleRecordOut:
         """Core sale creation logic — shared between single and bulk endpoints.
 
@@ -440,10 +484,9 @@ class SalesController:
         At creation, original_dsr = dsr (who made the sale = who collects).
         The original_dsr is immutable after creation. The dsr can be
         reassigned later via the edit endpoint for collection handoff.
-
-        BUG FIX: For bulk sales, explicitly ensure original_dsr is set to
-        prevent ambiguity in sales attribution reports.
         """
+        dealer = await DealerConfig.objects.aget(username=dealer_username)
+        
         # Validate due_date required for credit sales
         if payload.payment_type == SaleRecord.PAYMENT_CREDIT and not payload.due_date:
             customer_info = f" for {payload.customer_name}" if payload.customer_name else ""
@@ -454,7 +497,10 @@ class SalesController:
             )
         
         try:
-            product = await Product.objects.select_for_update().aget(id=payload.product_id)
+            product = await Product.objects.select_for_update().aget(
+                id=payload.product_id,
+                dealer_id=dealer_username
+            )
         except Product.DoesNotExist:
             raise HttpError(404, f"Product with id '{payload.product_id}' not found")
 
@@ -480,7 +526,7 @@ class SalesController:
         total_amount = payload.quantity * product.selling_price
         amount_paid = payload.amount_paid or Decimal("0")
 
-        # BUG FIX: Validate amount_paid does not exceed total_amount for credit sales
+        # Validate amount_paid does not exceed total_amount for credit sales
         if payload.payment_type == SaleRecord.PAYMENT_CREDIT:
             if amount_paid > total_amount:
                 raise HttpError(
@@ -505,12 +551,11 @@ class SalesController:
         is_vehicle = payload.is_vehicle or False
         vehicle_number = payload.vehicle_number or ""
 
-        # BUG FIX: For bulk sales, explicitly resolve and set original_dsr to current dsr
+        # For bulk sales, explicitly resolve and set original_dsr to current dsr
         # at creation time to ensure sales attribution is preserved correctly
         sale_original_dsr = dsr_obj
         sale_original_dsr_name = dsr_name
         if is_bulk and dsr_obj:
-            # Refresh to ensure we have the object for bulk sales
             try:
                 sale_original_dsr = await DSR.objects.aget(id=dsr_obj.id)
                 sale_original_dsr_name = sale_original_dsr.name
@@ -519,7 +564,7 @@ class SalesController:
                 sale_original_dsr_name = dsr_name
 
         sale = await SaleRecord.objects.acreate(
-            id=await self._generate_id("sale"),
+            id=await self._generate_id("sale", dealer_username),
             product=product,
             product_name=product.name,
             quantity=payload.quantity,
@@ -539,6 +584,7 @@ class SalesController:
             collection_status=collection_status,
             due_date=due_date,
             date=datetime.now(),
+            dealer=dealer,
         )
 
         return await self._serialize_sale(sale)
@@ -611,15 +657,18 @@ class SalesController:
             ],
         )
 
-    async def _generate_id(self, prefix: str) -> str:
+    async def _generate_id(self, prefix: str, dealer_username: str) -> str:
         """Generate a unique string ID: {prefix}-{n}.
+        
+        Uses dealer-scoped queries to ensure ID uniqueness per dealer.
         Uses a retry loop with existence check to handle race conditions
-        under concurrent requests."""
+        under concurrent requests.
+        """
         max_retries = 5
         for attempt in range(max_retries):
             if prefix == "sale":
                 result = await async_aggregate(
-                    SaleRecord.objects.filter(id__startswith=prefix),
+                    SaleRecord.objects.filter(id__startswith=prefix, dealer_id=dealer_username),
                     _max=Max("id"),
                 )
             elif prefix == "pay":
@@ -648,10 +697,10 @@ class SalesController:
             num += attempt
             candidate_id = f"{prefix}-{num}"
 
-            # Check if candidate already exists
+            # Check if candidate already exists (dealer-scoped for sale)
             if prefix == "sale":
                 exists = await async_exists(
-                    SaleRecord.objects.filter(id=candidate_id),
+                    SaleRecord.objects.filter(id=candidate_id, dealer_id=dealer_username),
                 )
             elif prefix == "pay":
                 exists = await async_exists(

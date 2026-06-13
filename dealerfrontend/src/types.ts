@@ -95,6 +95,41 @@ export interface DSR {
   parentDsrName?: string;
 }
 
+// ─── Invitation Types ────────────────────────────────────────────────
+
+export interface DsrInvitation {
+  id: string;
+  email: string;
+  role: "DSR" | "Collector";
+  status: "pending" | "accepted" | "expired" | "revoked";
+  expiresAt: string;
+  createdAt: string;
+  message: string;
+  parentDsrId?: string;
+  parentDsrName?: string;
+  inviteUrl?: string;
+}
+
+export interface CreateInvitationPayload {
+  email: string;
+  role?: "DSR" | "Collector";
+  parentDsrId?: string;
+  message?: string;
+}
+
+export interface DsrAssignment {
+  id: string;
+  dsrId: string;
+  dsrName: string;
+  dealerUsername: string;
+  dealerName: string;
+  role: "DSR" | "Collector";
+  isActive: boolean;
+  assignedAt: string;
+  parentDsrId?: string;
+  parentDsrName?: string;
+}
+
 export interface Supplier {
   id: string;
   name: string;

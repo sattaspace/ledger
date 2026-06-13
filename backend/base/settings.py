@@ -89,6 +89,8 @@ CORS_ALLOWED_ORIGINS = env.list(
         "http://localhost:8086",
         "http://127.0.0.1:4321",
         "http://127.0.0.1:8086",
+        "http://127.0.0.1:4323",
+        "http://localhost:4323",
     ],
 )
 
@@ -122,6 +124,8 @@ CSRF_TRUSTED_ORIGINS = env.list(
         "http://localhost:8086",
         "http://127.0.0.1:4321",
         "http://127.0.0.1:8086",
+        "http://127.0.0.1:4323",
+        "http://localhost:4323",
     ],
 )
 

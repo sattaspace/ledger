@@ -22,15 +22,17 @@ import {
   Plus,
   Printer,
   Download,
-  UserCheck,
   Edit,
   Trash2,
-  Users
+  Users,
+  Mail
 } from 'lucide-vue-next';
 import type { DSR, Product, SaleRecord } from '../types';
 import { BaseChart, ChartCard } from './charts';
 import type { ChartData, ChartOptions } from 'chart.js';
 import type { SummaryData } from '../services/api/reports.service';
+import AddRepModal from './AddRepModal.vue';
+import InvitationList from './InvitationList.vue';
 
 
 
@@ -55,15 +57,8 @@ const emit = defineEmits<{
   (e: 'refreshData'): void;
 }>();
 
-// Form toggles & attributes
-const showDsrForm = ref(false);
-const dsrName = ref('');
-const dsrPhone = ref('');
-const repRole = ref<'DSR' | 'Order Collector'>('DSR');
-const parentDsrId = ref('');
-const dsrError = ref('');
-const dsrSuccess = ref('');
-const dsrSubmitting = ref(false);
+// Add Rep modal state (unified invite + direct)
+const showAddRepModal = ref(false);
 
 // DSR Edit/Delete state
 const showEditDsrForm = ref(false);
@@ -76,6 +71,9 @@ const editDsrError = ref('');
 const editDsrSuccess = ref('');
 const editDsrSubmitting = ref(false);
 const deleteConfirmDsr = ref<DSR | null>(null);
+
+// Invitation list toggle
+const showInvitationList = ref(false);
 
 // Window helpers for template access
 const printPage = () => window.print();
@@ -386,38 +384,6 @@ const currentCustomersList = computed(() => {
 });
 
 const totalCustomerPages = computed(() => Math.ceil(filteredCustomers.value.length / customersPerPage));
-
-// Add DSR submission logic
-const handleAddDsrSubmit = async () => {
-  dsrError.value = '';
-  dsrSuccess.value = '';
-
-  if (!dsrName.value || !dsrPhone.value) {
-    dsrError.value = 'Both name and phone are required!';
-    return;
-  }
-
-  dsrSubmitting.value = true;
-  try {
-    await props.onAddDsr!({
-      name: dsrName.value,
-      phone: dsrPhone.value,
-      role: repRole.value,
-      parentDsrId: repRole.value === 'Order Collector' ? parentDsrId.value : undefined
-    });
-    
-    dsrName.value = '';
-    dsrPhone.value = '';
-    repRole.value = 'DSR';
-    parentDsrId.value = '';
-    showDsrForm.value = false;
-    emit('refreshData');
-  } catch (err: any) {
-    dsrError.value = err.message || 'Error adding representative.';
-  } finally {
-    dsrSubmitting.value = false;
-  }
-};
 
 // ─── DSR Edit/Delete Handlers ──────────────────────────────────────────
 const handleStartEditDsr = (dsr: DSR) => {
@@ -881,13 +847,33 @@ const revenueTrendOptions = computed(() => ({
         </div>
 
         <div class="flex flex-wrap gap-2">
+          <!-- Unified Add Rep Button -->
           <button 
-            id="rep-btn-toggle-rep"
-            @click="showDsrForm = !showDsrForm"
-            class="py-2.5 px-4 bg-white text-slate-700 border border-slate-200 rounded-lg flex items-center gap-2 hover:bg-slate-50 transition cursor-pointer font-semibold text-sm shadow-sm"
+            id="btn-add-rep"
+            @click="showAddRepModal = true"
+            class="py-2.5 px-4 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg flex items-center gap-2 hover:from-violet-700 hover:to-purple-700 transition cursor-pointer font-semibold text-sm shadow-sm"
           >
-            <UserPlus class="h-4 w-4 text-violet-600" />
+            <UserPlus class="h-4 w-4" />
             <span>Add Rep</span>
+          </button>
+
+          <!-- Toggle Invitation List -->
+          <button 
+            v-if="!showInvitationList"
+            @click="showInvitationList = true"
+            class="py-2.5 px-4 bg-white text-slate-600 border border-slate-200 rounded-lg flex items-center gap-2 hover:bg-slate-50 transition cursor-pointer font-semibold text-sm shadow-sm"
+            title="View pending invitations"
+          >
+            <Mail class="h-4 w-4 text-slate-500" />
+            <span>Invitations</span>
+          </button>
+          <button 
+            v-else
+            @click="showInvitationList = false"
+            class="py-2.5 px-4 bg-violet-100 text-violet-700 border border-violet-200 rounded-lg flex items-center gap-2 hover:bg-violet-50 transition cursor-pointer font-semibold text-sm"
+          >
+            <X class="h-4 w-4" />
+            <span>Hide</span>
           </button>
 
           <button 
@@ -933,63 +919,6 @@ const revenueTrendOptions = computed(() => ({
           </button>
         </div>
       </div>
-
-      <!-- ADD REP FORM -->
-      <form v-if="showDsrForm" @submit.prevent="handleAddDsrSubmit" class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5 animate-fadeIn text-left">
-        <div class="flex justify-between items-center pb-3 border-b border-slate-100">
-          <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
-            <User class="h-5 w-5 text-violet-600" />
-            <span>Add Sales Representative</span>
-          </h3>
-          <button type="button" @click="showDsrForm = false" class="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded-lg hover:bg-slate-100 transition">
-            <X class="h-5 w-5" />
-          </button>
-        </div>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="space-y-2">
-            <label class="text-sm font-semibold text-slate-700 block">Name *</label>
-            <input type="text" placeholder="e.g. Rajesh Kumar" v-model="dsrName" class="w-full text-sm py-3 px-4 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500 bg-white text-slate-800" />
-          </div>
-
-          <div class="space-y-2">
-            <label class="text-sm font-semibold text-slate-700 block">Phone *</label>
-            <input type="text" placeholder="e.g. +91 91122 33445" v-model="dsrPhone" class="w-full text-sm py-3 px-4 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500 font-mono" />
-          </div>
-
-          <div class="space-y-2">
-            <label class="text-sm font-semibold text-slate-700 block">Role *</label>
-            <div class="flex rounded-lg border border-slate-200 p-1 bg-slate-100">
-              <button type="button" @click="repRole = 'DSR'" :class="['flex-1 text-sm font-semibold rounded-md cursor-pointer py-2.5 transition text-center', repRole === 'DSR' ? 'bg-white text-slate-800 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-700']">DSR Rep</button>
-              <button type="button" @click="repRole = 'Order Collector'" :class="['flex-1 text-sm font-semibold rounded-md cursor-pointer py-2.5 transition text-center', repRole === 'Order Collector' ? 'bg-white text-slate-800 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-700']">Order Collector</button>
-            </div>
-          </div>
-
-          <div class="space-y-2" v-if="repRole === 'Order Collector'">
-            <label class="text-sm font-semibold text-slate-700 block">Supervisor DSR *</label>
-            <select v-model="parentDsrId" class="w-full text-sm py-3 px-4 border border-slate-200 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-500">
-              <option value="">-- Directly Under Dealer --</option>
-              <option v-for="d in dsrs.filter(d => !d.role || d.role === 'DSR')" :key="d.id" :value="d.id">
-                {{ d.name }} (DSR Supervisor)
-              </option>
-            </select>
-          </div>
-          <div v-else class="p-4 bg-slate-50 border border-slate-100 rounded-xl text-xs text-slate-400 flex items-center gap-2">
-            <UserCheck class="h-4 w-4 shrink-0" />
-            DSRs report directly to the Dealer Administration
-          </div>
-        </div>
-
-        <div class="flex justify-end gap-3 pt-3 border-t border-slate-100 items-center">
-          <p v-if="dsrError" class="text-sm text-rose-600 mr-auto font-semibold">{{ dsrError }}</p>
-          <p v-if="dsrSuccess" class="text-sm text-emerald-600 mr-auto font-semibold">{{ dsrSuccess }}</p>
-          
-          <button type="button" @click="showDsrForm = false" class="py-2.5 px-4 border border-slate-300 rounded-lg text-sm cursor-pointer hover:bg-slate-50 font-semibold">Cancel</button>
-          <button type="submit" :disabled="dsrSubmitting" class="py-2.5 px-5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-40 shadow-sm transition">
-            {{ dsrSubmitting ? 'Saving...' : 'Add Representative' }}
-          </button>
-        </div>
-      </form>
 
       <!-- Edit DSR Form -->
       <div v-if="showEditDsrForm && editingDsr" class="bg-white p-6 rounded-xl border border-blue-200 shadow-sm space-y-5 animate-fadeIn text-left">
@@ -1962,6 +1891,19 @@ const revenueTrendOptions = computed(() => ({
         </div>
       </ChartCard>
     </aside>
+
+    <!-- ========== ADD REP MODAL ========== -->
+    <AddRepModal
+      :is-open="showAddRepModal"
+      :dsrs="dsrs"
+      @close="showAddRepModal = false"
+      @added="emit('refreshData')"
+    />
+
+    <!-- ========== INVITATION LIST (Toggle) ========== -->
+    <div v-if="showInvitationList" class="mt-4">
+      <InvitationList @refresh="emit('refreshData')" />
+    </div>
   </div>
 </template>
 

@@ -21,6 +21,10 @@ RETURN FINANCIAL MODEL:
   - `balance_due = net_amount - amount_paid` (property)
   - Collection status is recalculated against `net_amount` after each return
   - This ensures returns properly reduce the outstanding obligation
+
+Multi-Tenancy:
+  - All sales records belong to a specific dealer for tenant isolation.
+  - The dealer field enables proper revenue attribution and data isolation.
 """
 
 from django.db import models
@@ -28,7 +32,10 @@ from django.db import models
 
 class SaleRecord(models.Model):
     """A single sales transaction. Contains both cash and credit sales.
-    `payments` are accessed via reverse relation from CreditPayment."""
+    `payments` are accessed via reverse relation from CreditPayment.
+    
+    Dealer-scoped: Each sale belongs to exactly one dealer for proper
+    revenue attribution and tenant isolation."""
 
     PAYMENT_CASH = "Cash"
     PAYMENT_CREDIT = "Credit"
@@ -74,6 +81,12 @@ class SaleRecord(models.Model):
         db_column="dsr_id",
     )
     dsr_name = models.CharField(max_length=255, blank=True, default="")
+    dsr_status = models.CharField(
+        max_length=20, 
+        blank=True, 
+        default="active",
+        help_text="Status of DSR at time of sale/removal: 'active', 'removed', 'left'"
+    )
 
     # Original DSR — who MADE the sale (immutable after creation)
     # This preserves the sales attribution even when collection is reassigned
@@ -86,6 +99,20 @@ class SaleRecord(models.Model):
         db_column="original_dsr_id",
     )
     original_dsr_name = models.CharField(max_length=255, blank=True, default="")
+    original_dsr_status = models.CharField(
+        max_length=20, 
+        blank=True, 
+        default="active",
+        help_text="Status of original DSR: 'active', 'removed', 'left'"
+    )
+
+    # Dealer association for multi-tenancy
+    dealer = models.ForeignKey(
+        'dealer.DealerConfig',
+        on_delete=models.CASCADE,
+        related_name='sales',
+        db_column='dealer_username',
+    )
 
     # Financials
     selling_price = models.DecimalField(max_digits=12, decimal_places=2)
@@ -129,6 +156,9 @@ class SaleRecord(models.Model):
             models.Index(fields=["date"]),
             # For product performance reports
             models.Index(fields=["product", "is_voided", "is_closed_with_due"]),
+            # For dealer-scoped queries (most common)
+            models.Index(fields=["dealer", "-date"]),
+            models.Index(fields=["dealer", "collection_status"]),
         ]
 
     def __str__(self):

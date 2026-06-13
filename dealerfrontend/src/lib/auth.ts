@@ -1,357 +1,241 @@
 /**
- * DEALERCORE v3.0 — Authentication Library
+ * Auth utilities — authentication functions for the SattaBase sister domain.
  *
- * Handles all authentication operations with dealerbackend.
- * Manages JWT tokens, session persistence, and auto-refresh.
+ * Sister domains only have LOGIN and LOGOUT screens. Everything else
+ * (register, forgot password, reset, verify, profile, billing) redirects
+ * to the SattaBase base domain.
+ *
+ * The Token Pass-Through (authorization code) flow enables seamless SSO:
+ *   1. User clicks "Manage Subscription" on sister domain
+ *   2. Sister domain calls POST /auth/authorize → gets one-time code
+ *   3. Sister domain redirects to base domain's callback with ?code=XXX
+ *   4. Base domain exchanges code for tokens, stores them, redirects to target page
  */
 
-import { ref, computed, readonly } from 'vue';
+import { apiClient, authHelpers, clearTokens } from "./api";
+import type {
+  ApiError,
+  AuthMeResponse,
+  TokenPair,
+  AuthorizeResponse,
+} from "./types";
+import config from "../../sattabase.config";
 
-// ─── Configuration ─────────────────────────────────────────────────────────
-
-const API_BASE_URL = import.meta.env.PUBLIC_API_BASE_URL || 'http://localhost:8088/api';
-const ACCESS_TOKEN_KEY = 'dealercore_access_token';
-const USER_KEY = 'dealercore_user';
-
-// ─── Types ─────────────────────────────────────────────────────────────────
-
-export interface User {
-  id: number;
-  email: string;
-  first_name: string;
-  last_name: string;
-  is_active: boolean;
-  subscription?: {
-    status: string;
-    plan_name: string;
-    current_period_end?: string;
-  };
-  access_map?: Record<string, any>;
-}
-
-export interface AuthState {
-  isAuthenticated: boolean;
-  isLoading: boolean;
-  user: User | null;
-  error: string | null;
-}
-
-export interface LoginCredentials {
-  email: string;
-  password: string;
-}
-
-export interface LoginResponse {
-  access: string;
-  user: User;
-  message: string;
-}
-
-// ─── Reactive State ────────────────────────────────────────────────────────
-
-const isLoading = ref(false);
-const user = ref<User | null>(null);
-const error = ref<string | null>(null);
-
-export const authState = readonly({
-  isAuthenticated: computed(() => !!user.value),
-  isLoading: readonly(isLoading),
-  user: readonly(user),
-  error: readonly(error),
-});
-
-// ─── Token Management ──────────────────────────────────────────────────────
+// ─── Login ───────────────────────────────────────────────────────────────────
 
 /**
- * Get access token from memory/storage
+ * Login — POST /auth/login → store tokens
+ *
+ * @param email - User email address
+ * @param password - User password
+ * @param remember - If true, tokens persist in localStorage (30 days).
+ *                   If false/omitted, tokens use sessionStorage (tab-only).
  */
-export function getAccessToken(): string | null {
-  // Try memory first (window level for view transitions)
-  if (typeof window !== 'undefined' && (window as any).__dealercore_auth?.accessToken) {
-    return (window as any).__dealercore_auth.accessToken;
-  }
-  
-  // Fall back to sessionStorage
-  try {
-    return sessionStorage.getItem(ACCESS_TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Store access token in memory and sessionStorage
- */
-export function setAccessToken(token: string): void {
-  // Store in window for view transitions
-  if (typeof window !== 'undefined') {
-    if (!(window as any).__dealercore_auth) {
-      (window as any).__dealercore_auth = {};
-    }
-    (window as any).__dealercore_auth.accessToken = token;
-    
-    // Also store in sessionStorage
-    try {
-      sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
-    } catch {
-      // Ignore storage errors
-    }
-  }
-}
-
-/**
- * Clear access token from memory and storage
- */
-export function clearAccessToken(): void {
-  if (typeof window !== 'undefined') {
-    if ((window as any).__dealercore_auth) {
-      delete (window as any).__dealercore_auth.accessToken;
-    }
-    
-    try {
-      sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-      sessionStorage.removeItem(USER_KEY);
-    } catch {
-      // Ignore storage errors
-    }
-  }
-}
-
-/**
- * Store user data
- */
-export function setUser(userData: User): void {
-  user.value = userData;
-  
-  try {
-    sessionStorage.setItem(USER_KEY, JSON.stringify(userData));
-  } catch {
-    // Ignore storage errors
-  }
-}
-
-/**
- * Clear user data
- */
-export function clearUser(): void {
-  user.value = null;
-  clearAccessToken();
-}
-
-// ─── API Client ────────────────────────────────────────────────────────────
-
-/**
- * Make authenticated API request
- */
-async function apiRequest<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`;
-  
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  
-  // Add auth header if we have a token
-  const token = getAccessToken();
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: 'include', // Include cookies for refresh token
+export async function login(
+  email: string,
+  password: string,
+  remember = false,
+): Promise<TokenPair> {
+  const data = await apiClient.post<TokenPair>("/auth/login", {
+    email,
+    password,
+    remember,
   });
-  
-  const data = await response.json();
-  
-  if (!response.ok) {
-    // Handle 401 - try refresh if we have a token
-    if (response.status === 401 && token) {
-      const refreshed = await refreshToken();
-      if (refreshed) {
-        // Retry the request
-        return apiRequest(endpoint, options);
-      }
-    }
-    
-    throw new Error(data.detail || data.message || 'Request failed');
-  }
-  
+  authHelpers.setTokens(data.access, data.refresh, remember);
   return data;
 }
 
-// ─── Authentication Functions ──────────────────────────────────────────────
+// ─── Logout ──────────────────────────────────────────────────────────────────
 
 /**
- * Login with email and password
- */
-export async function login(credentials: LoginCredentials): Promise<LoginResponse> {
-  isLoading.value = true;
-  error.value = null;
-  
-  try {
-    const response = await fetch(`${API_BASE_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include', // Accept httpOnly cookie
-      body: JSON.stringify(credentials),
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.detail || 'Login failed');
-    }
-    
-    // Store access token
-    setAccessToken(data.access);
-    
-    // Store user
-    setUser(data.user);
-    
-    return data;
-  } catch (err: any) {
-    error.value = err.message || 'Login failed';
-    throw err;
-  } finally {
-    isLoading.value = false;
-  }
-}
-
-/**
- * Logout user
+ * Logout — blacklist refresh token + clear local tokens
+ *
+ * Blacklists the refresh token server-side before clearing local state.
+ * If blacklisting fails (network error, etc.) we still clear locally.
  */
 export async function logout(): Promise<void> {
-  isLoading.value = true;
-  
   try {
-    await fetch(`${API_BASE_URL}/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-  } catch {
-    // Ignore errors, we want to clear local state anyway
-  } finally {
-    clearUser();
-    isLoading.value = false;
-  }
-}
-
-/**
- * Refresh access token using refresh cookie
- */
-export async function refreshToken(): Promise<boolean> {
-  const currentToken = getAccessToken();
-  if (!currentToken) return false;
-  
-  try {
-    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include', // Send httpOnly cookie
-    });
-    
-    if (!response.ok) {
-      // Refresh failed - clear auth
-      clearUser();
-      return false;
+    const refreshToken = authHelpers.getRefreshToken();
+    if (refreshToken) {
+      await apiClient.post("/auth/token/blacklist", { refresh: refreshToken });
     }
-    
-    const data = await response.json();
-    setAccessToken(data.access);
-    
-    return true;
   } catch {
-    return false;
+    // Continue with local cleanup even if blacklist fails
+  }
+  try {
+    await apiClient.post("/users/me/logout");
+  } catch {
+    // Even if the API call fails, clear local tokens
+  }
+  authHelpers.clearTokens();
+  if (typeof window !== "undefined") {
+    // Reload to root - the App.vue will show LoginPage when not authenticated
+    window.location.href = "/";
   }
 }
 
+// ─── Get Auth Me ─────────────────────────────────────────────────────────────
+
 /**
- * Get current user info
+ * Get current user profile with domain-scoped subscription and access map.
+ *
+ * Calls GET /billing/auth/me with the X-Service-Domain header
+ * (injected by api.ts). Returns user + subscription + access data
+ * scoped to this sister domain's product.
  */
-export async function getMe(): Promise<User> {
-  const data = await apiRequest<User>('/auth/me');
-  setUser(data);
+export async function getAuthMe(): Promise<AuthMeResponse> {
+  return apiClient.get<AuthMeResponse>("/billing/auth/me");
+}
+
+// ─── Authorization Code (SSO) ────────────────────────────────────────────────
+
+/**
+ * Generate a one-time authorization code for SSO redirect to base domain.
+ *
+ * The sister domain calls this after the user is authenticated, then redirects
+ * the user to the base domain's callback URL with the code. The base domain
+ * exchanges the code for tokens, establishing a seamless cross-domain session.
+ *
+ * POST /auth/authorize → returns { code, expires_in }
+ */
+export async function generateAuthCode(): Promise<AuthorizeResponse> {
+  return apiClient.post<AuthorizeResponse>("/auth/authorize");
+}
+
+/**
+ * Exchange an authorization code for JWT tokens.
+ *
+ * Used by the BASE domain's callback page (not the sister domain directly).
+ * Included here for completeness and for potential future use if a sister
+ * domain receives a code from another domain.
+ *
+ * POST /auth/token/exchange → returns { access, refresh }
+ */
+export async function exchangeAuthCode(code: string): Promise<TokenPair> {
+  const data = await apiClient.post<TokenPair>("/auth/token/exchange", {
+    code,
+  });
+  authHelpers.setTokens(data.access, data.refresh);
   return data;
 }
 
+// ─── Redirect to Base Domain ─────────────────────────────────────────────────
+
 /**
- * Check if user is authenticated
+ * Construct a base domain URL and redirect the browser.
+ *
+ * Used for all flows that the sister domain doesn't handle:
+ *   - Register: redirectToBase('/auth/register')
+ *   - Forgot password: redirectToBase('/auth/forgot-password')
+ *   - Reset password: redirectToBase('/auth/reset-password')
+ *   - Verify email: redirectToBase('/auth/verify-email')
+ *   - Profile: redirectToBase('/dashboard/profile')
+ *   - Billing: redirectToBase('/dashboard/billing')
+ *
+ * @param path - The path on the base domain (e.g. '/auth/register')
+ * @param returnUrl - Optional return URL. If provided, appends ?return_url=
+ *                    so the base domain can redirect back after the action.
  */
-export function isAuthenticated(): boolean {
-  return !!getAccessToken();
+export function redirectToBase(path: string, returnUrl?: string): void {
+  let url = `${config.baseDomainUrl}${path}`;
+  const effectiveReturnUrl =
+    returnUrl || (typeof window !== "undefined" ? window.location.href : "");
+  if (effectiveReturnUrl) {
+    const sep = url.includes("?") ? "&" : "?";
+    url = `${url}${sep}return_url=${encodeURIComponent(effectiveReturnUrl)}`;
+  }
+  if (typeof window !== "undefined") {
+    window.location.href = url;
+  }
 }
 
 /**
- * Initialize auth state from storage
+ * Generate an auth code and redirect to the base domain with it.
+ *
+ * This is the SSO flow: the sister domain generates a one-time code
+ * from its JWT, then redirects to the base domain's callback page.
+ * The base domain exchanges the code for its own tokens.
+ *
+ * @param targetPath - Where on the base domain to redirect after code exchange
+ *                     (e.g. '/dashboard/billing')
  */
-export function initAuth(): void {
+export async function redirectToBaseWithAuthCode(
+  targetPath: string,
+): Promise<void> {
   try {
-    const token = sessionStorage.getItem(ACCESS_TOKEN_KEY);
-    const userData = sessionStorage.getItem(USER_KEY);
-    
-    if (token && userData) {
-      setAccessToken(token);
-      user.value = JSON.parse(userData);
+    const { code } = await generateAuthCode();
+    const callbackUrl = `${config.baseDomainUrl}/auth/callback`;
+    const params = new URLSearchParams({
+      code,
+      return_to: targetPath,
+    });
+    if (typeof window !== "undefined") {
+      window.location.href = `${callbackUrl}?${params.toString()}`;
     }
-  } catch {
-    // Ignore storage errors
+  } catch (err) {
+    // If auth code generation fails, fall back to simple redirect
+    console.error("Failed to generate auth code:", err);
+    redirectToBase(targetPath);
   }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 /**
- * Generate SSO authorization code for SattaBase
+ * Check if user is authenticated (has a token).
  */
-export async function generateAuthCode(): Promise<string> {
-  const data = await apiRequest<{ code: string; expires_in: number }>('/auth/sso/authorize');
-  return data.code;
+export function checkAuth(): boolean {
+  return authHelpers.isAuthenticated();
 }
 
-// ─── Auto-refresh Setup ─────────────────────────────────────────────────────
-
-let refreshInterval: ReturnType<typeof setInterval> | null = null;
-
 /**
- * Start auto-refresh timer (call every 5 minutes)
+ * Redirect to login if not authenticated.
  */
-export function startAutoRefresh(): void {
-  if (refreshInterval) return;
-  
-  refreshInterval = setInterval(() => {
-    if (isAuthenticated()) {
-      refreshToken().catch(() => {
-        // Ignore errors, handled by interceptor
-      });
+export function requireAuth(): boolean {
+  if (!checkAuth()) {
+    if (typeof window !== "undefined") {
+      // Reload to root - the App.vue will show LoginPage when not authenticated
+      window.location.href = "/";
     }
-  }, 5 * 60 * 1000); // 5 minutes
+    return false;
+  }
+  return true;
 }
 
 /**
- * Stop auto-refresh timer
+ * Check for existing session on base domain and establish one here.
+ *
+ * This enables cross-domain session sharing: if the user is logged in
+ * on the base domain (SattaBase), they can get a session on this sister
+ * domain without re-entering credentials.
+ *
+ * Call this on the login page if the user has no local session.
+ * It redirects to base domain's /auth/authorize-sister endpoint which
+ * will redirect back with an auth code if authenticated.
  */
-export function stopAutoRefresh(): void {
-  if (refreshInterval) {
-    clearInterval(refreshInterval);
-    refreshInterval = null;
-  }
-}
+export function checkBaseDomainSession(): void {
+  if (typeof window === "undefined") return;
 
-// ─── Session Expiry Detection ───────────────────────────────────────────────
+  // Don't redirect if we already have a token
+  if (checkAuth()) return;
+
+  // Redirect to base domain's sister auth check
+  // Base domain will redirect back with auth code if session exists
+  const callbackUrl = `${config.thisDomainUrl}/auth/callback`;
+  const targetUrl = `${config.baseDomainUrl}/auth/sso-check`;
+
+  window.location.href = `${targetUrl}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
+}
 
 /**
- * Handle session expired
+ * Format API error message for display.
  */
-export function handleSessionExpired(): void {
-  clearUser();
-  
-  // Emit event for UI to handle
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('auth:session-expired'));
+export function getErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) {
+    return (error as ApiError).message || "An unexpected error occurred.";
   }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "An unexpected error occurred. Please try again.";
 }
-
-// Initialize on module load
-initAuth();

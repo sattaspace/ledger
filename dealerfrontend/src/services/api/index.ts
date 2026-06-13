@@ -7,11 +7,24 @@
  *
  * This is the ONLY place components should import API services from.
  * Never import fetch() directly in components.
+ *
+ * NOTE: This file exports the dealer backend API client.
+ * For SattaBase auth/billing API, use `apiClient` from `lib/api.ts`.
  */
 
+// Re-export from dealer apiClient (for dealer backend business data)
 export { apiClient, ApiError } from "../apiClient";
 export type { ApiResponse, RequestConfig } from "../apiClient";
 
+// Re-export SattaBase API client (for auth/billing)
+export {
+  apiClient as sattabaseClient,
+  dealerApi,
+  authHelpers,
+} from "../../lib/api";
+export type { ApiError as SattabaseApiError } from "../../lib/types";
+
+// Services
 export { inventoryService, InventoryService } from "./inventory.service";
 export type {
   AddProductPayload,

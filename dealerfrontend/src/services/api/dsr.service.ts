@@ -2,11 +2,11 @@
  * DSR (Dealer Sales Representative) Service
  *
  * Endpoints mapped:
- * GET    /api/dsrs        → getAllDsrs()
- * GET    /api/dsrs/:id    → getDsr(id)
- * POST   /api/dsrs        → createDsr(data)
- * PATCH  /api/dsrs/:id    → updateDsr(id, data)
- * DELETE /api/dsrs/:id    → deleteDsr(id)
+ * GET    /dsrs        → getAllDsrs()
+ * GET    /dsrs/:id    → getDsr(id)
+ * POST   /dsrs        → createDsr(data)
+ * PATCH  /dsrs/:id    → updateDsr(id, data)
+ * DELETE /dsrs/:id    → deleteDsr(id)
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -35,32 +35,32 @@ export interface DeleteResponse {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class DsrService {
-  /** GET /api/dsrs — Fetch all DSRs */
+  /** GET /dsrs — Fetch all DSRs */
   async getAllDsrs(): Promise<ApiResponse<DSR[]>> {
-    return apiClient.get<DSR[]>("/api/dsrs");
+    return apiClient.get<DSR[]>("/dsrs");
   }
 
-  /** GET /api/dsrs/:id — Fetch a single DSR */
+  /** GET /dsrs/:id — Fetch a single DSR */
   async getDsr(id: string): Promise<ApiResponse<DSR>> {
-    return apiClient.get<DSR>(`/api/dsrs/${id}`);
+    return apiClient.get<DSR>(`/dsrs/${id}`);
   }
 
-  /** POST /api/dsrs — Create a new DSR */
+  /** POST /dsrs — Create a new DSR */
   async createDsr(data: CreateDsrPayload): Promise<ApiResponse<DSR>> {
-    return apiClient.post<DSR>("/api/dsrs", data);
+    return apiClient.post<DSR>("/dsrs", data);
   }
 
-  /** PATCH /api/dsrs/:id — Update a DSR */
+  /** PATCH /dsrs/:id — Update a DSR */
   async updateDsr(
     id: string,
     data: UpdateDsrPayload,
   ): Promise<ApiResponse<DSR>> {
-    return apiClient.patch<DSR>(`/api/dsrs/${id}`, data);
+    return apiClient.patch<DSR>(`/dsrs/${id}`, data);
   }
 
-  /** DELETE /api/dsrs/:id — Delete a DSR */
+  /** DELETE /dsrs/:id — Delete a DSR */
   async deleteDsr(id: string): Promise<ApiResponse<DeleteResponse>> {
-    return apiClient.delete<DeleteResponse>(`/api/dsrs/${id}`);
+    return apiClient.delete<DeleteResponse>(`/dsrs/${id}`);
   }
 }
 

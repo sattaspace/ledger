@@ -2,11 +2,11 @@
  * Supplier Service
  *
  * Endpoints mapped:
- * GET    /api/suppliers         → getAllSuppliers()
- * GET    /api/suppliers/:id     → getSupplier(id)
- * POST   /api/suppliers         → createSupplier(data)
- * PATCH  /api/suppliers/:id     → updateSupplier(id, data)
- * DELETE /api/suppliers/:id     → deleteSupplier(id)
+ * GET    /suppliers         → getAllSuppliers()
+ * GET    /suppliers/:id     → getSupplier(id)
+ * POST   /suppliers         → createSupplier(data)
+ * PATCH  /suppliers/:id     → updateSupplier(id, data)
+ * DELETE /suppliers/:id     → deleteSupplier(id)
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -33,34 +33,34 @@ export interface DeleteResponse {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class SupplierService {
-  /** GET /api/suppliers — Fetch all suppliers */
+  /** GET /suppliers — Fetch all suppliers */
   async getAllSuppliers(): Promise<ApiResponse<Supplier[]>> {
-    return apiClient.get<Supplier[]>("/api/suppliers");
+    return apiClient.get<Supplier[]>("/suppliers");
   }
 
-  /** GET /api/suppliers/:id — Fetch a single supplier */
+  /** GET /suppliers/:id — Fetch a single supplier */
   async getSupplier(id: string): Promise<ApiResponse<Supplier>> {
-    return apiClient.get<Supplier>(`/api/suppliers/${id}`);
+    return apiClient.get<Supplier>(`/suppliers/${id}`);
   }
 
-  /** POST /api/suppliers — Create a new supplier */
+  /** POST /suppliers — Create a new supplier */
   async createSupplier(
     data: CreateSupplierPayload,
   ): Promise<ApiResponse<Supplier>> {
-    return apiClient.post<Supplier>("/api/suppliers", data);
+    return apiClient.post<Supplier>("/suppliers", data);
   }
 
-  /** PATCH /api/suppliers/:id — Update a supplier */
+  /** PATCH /suppliers/:id — Update a supplier */
   async updateSupplier(
     id: string,
     data: UpdateSupplierPayload,
   ): Promise<ApiResponse<Supplier>> {
-    return apiClient.patch<Supplier>(`/api/suppliers/${id}`, data);
+    return apiClient.patch<Supplier>(`/suppliers/${id}`, data);
   }
 
-  /** DELETE /api/suppliers/:id — Delete a supplier */
+  /** DELETE /suppliers/:id — Delete a supplier */
   async deleteSupplier(id: string): Promise<ApiResponse<DeleteResponse>> {
-    return apiClient.delete<DeleteResponse>(`/api/suppliers/${id}`);
+    return apiClient.delete<DeleteResponse>(`/suppliers/${id}`);
   }
 }
 

@@ -2,12 +2,12 @@
  * Sales Service — Sales, Collections, Bulk Dispatch
  *
  * Endpoints mapped:
- * GET    /api/sales                       → getAllSales()
- * GET    /api/sales/:id                    → getSale(id)
- * POST   /api/sales                        → createSale(data)
- * POST   /api/sales/bulk                   → createBulkSales(data)
- * POST   /api/sales/:id/collect            → collectPayment(id, data)
- * POST   /api/sales/:id/close-with-due     → closeSaleWithDue(id)
+ * GET    /sales                       → getAllSales()
+ * GET    /sales/:id                    → getSale(id)
+ * POST   /sales                        → createSale(data)
+ * POST   /sales/bulk                   → createBulkSales(data)
+ * POST   /sales/:id/collect            → collectPayment(id, data)
+ * POST   /sales/:id/close-with-due     → closeSaleWithDue(id)
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -65,66 +65,66 @@ export interface EditSalePayload {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class SalesService {
-  /** GET /api/sales — Fetch all sales */
+  /** GET /sales — Fetch all sales */
   async getAllSales(): Promise<ApiResponse<SaleRecord[]>> {
-    return apiClient.get<SaleRecord[]>("/api/sales");
+    return apiClient.get<SaleRecord[]>("/sales");
   }
 
-  /** GET /api/sales/:id — Fetch a single sale */
+  /** GET /sales/:id — Fetch a single sale */
   async getSale(id: string): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.get<SaleRecord>(`/api/sales/${id}`);
+    return apiClient.get<SaleRecord>(`/sales/${id}`);
   }
 
-  /** POST /api/sales — Create a single sale */
+  /** POST /sales — Create a single sale */
   async createSale(data: CreateSalePayload): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.post<SaleRecord>("/api/sales", data);
+    return apiClient.post<SaleRecord>("/sales", data);
   }
 
-  /** POST /api/sales/bulk — Create multiple sales (vehicle dispatch) */
+  /** POST /sales/bulk — Create multiple sales (vehicle dispatch) */
   async createBulkSales(
     data: BulkSalePayload,
   ): Promise<ApiResponse<SaleRecord[]>> {
-    return apiClient.post<SaleRecord[]>("/api/sales/bulk", data);
+    return apiClient.post<SaleRecord[]>("/sales/bulk", data);
   }
 
-  /** POST /api/sales/:id/collect — Collect partial payment on a sale */
+  /** POST /sales/:id/collect — Collect partial payment on a sale */
   async collectPayment(
     saleId: string,
     data: CollectPaymentPayload,
   ): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.post<SaleRecord>(`/api/sales/${saleId}/collect`, data);
+    return apiClient.post<SaleRecord>(`/sales/${saleId}/collect`, data);
   }
 
-  /** POST /api/sales/:id/close-with-due — Write off outstanding balance */
+  /** POST /sales/:id/close-with-due — Write off outstanding balance */
   async closeSaleWithDue(saleId: string): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.post<SaleRecord>(`/api/sales/${saleId}/close-with-due`);
+    return apiClient.post<SaleRecord>(`/sales/${saleId}/close-with-due`);
   }
 
-  /** POST /api/sales/:id/return — Return items from a sale */
+  /** POST /sales/:id/return — Return items from a sale */
   async returnSaleItem(
     saleId: string,
     data: ReturnSaleItemPayload,
   ): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.post<SaleRecord>(`/api/sales/${saleId}/return`, data);
+    return apiClient.post<SaleRecord>(`/sales/${saleId}/return`, data);
   }
 
-  /** POST /api/sales/:id/void — Void a sale (restore stock)
+  /** POST /sales/:id/void — Void a sale (restore stock)
    *  @param force - Override void protection for sales with transactions */
   async voidSale(
     saleId: string,
     force: boolean = false,
   ): Promise<ApiResponse<SaleRecord>> {
     return apiClient.post<SaleRecord>(
-      `/api/sales/${saleId}/void${force ? "?force=true" : ""}`,
+      `/sales/${saleId}/void${force ? "?force=true" : ""}`,
     );
   }
 
-  /** POST /api/sales/:id/edit — Edit sale details */
+  /** POST /sales/:id/edit — Edit sale details */
   async editSale(
     saleId: string,
     data: EditSalePayload,
   ): Promise<ApiResponse<SaleRecord>> {
-    return apiClient.post<SaleRecord>(`/api/sales/${saleId}/edit`, data);
+    return apiClient.post<SaleRecord>(`/sales/${saleId}/edit`, data);
   }
 }
 

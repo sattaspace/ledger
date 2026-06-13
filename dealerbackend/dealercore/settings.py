@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "supplier",
     "dealer",
     "reports",
+    "users",
 ]
 SILENCED_SYSTEM_CHECKS = ["security.W019"]
 
@@ -86,13 +87,14 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
     "x-service-domain",
     "x-api-key",
+    "x-dealer-username",  # Multi-tenancy header for DSR context
 ]
 CORS_EXPOSE_HEADERS = [
     "x-api-key",
     "x-service-domain",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
     "SL_CORS_ALLOWED_ORIGINS",
@@ -103,6 +105,7 @@ CORS_ALLOWED_ORIGINS = env.list(
         "http://127.0.0.1:8088",
         "http://localhost:4321",
         "http://127.0.0.1:4321",
+        "http://localhost:4323"
     ],
 )
 
@@ -115,6 +118,7 @@ CSRF_TRUSTED_ORIGINS = env.list(
         "http://127.0.0.1:8087",
         "http://127.0.0.1:8000",
         "http://127.0.0.1:4321",
+        "http://localhost:4323"
     ],
 )
 
@@ -192,3 +196,54 @@ MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Custom User Model for DealerBackend
+# DSRs and dealer staff have separate accounts from SattaBase users
+AUTH_USER_MODEL = 'users.DsrUser'
+
+# =============================================================================
+# SATTABASE INTEGRATION SETTINGS
+# =============================================================================
+# Configuration for connecting to SattaBase central authentication system.
+# The frontend calls SattaBase directly for auth; these settings are for
+# server-to-server calls (e.g., token validation, webhook processing).
+
+# SattaBase Backend API URL
+SATTABASE_API_URL = os.getenv("SB_API_BASE_URL", "http://localhost:8086/api/v1")
+
+# Service Domain identifier - must match ServiceDomain in SattaBase
+SATTABASE_SERVICE_DOMAIN = os.getenv("SB_SERVICE_DOMAIN", "localhost:4323")
+
+# API Key for server-to-server calls (from SattaBase admin)
+SATTABASE_API_KEY = os.getenv("SB_API_KEY", "")
+
+# SattaBase Frontend URL (for redirects, email links)
+SATTABASE_FRONTEND_URL = os.getenv("SB_FRONTEND_URL", "http://localhost:4321")
+
+# JWT Configuration (must match SattaBase)
+# Access token lifetime for token validation
+JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=60)
+
+
+
+# =============================================================================
+# DSR AUTHENTICATION SETTINGS
+# =============================================================================
+# Settings for DSR login and JWT token generation
+
+# JWT settings for DSR authentication
+NINJA_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'USER_AUTHENTICATION_RULE': 'ninja_jwt.authentication.default_user_authentication_rule',
+}
+
+# Invitation settings
+DSR_INVITATION_EXPIRY_DAYS = 7
+DSR_PASSWORD_RESET_EXPIRY_HOURS = 24
+

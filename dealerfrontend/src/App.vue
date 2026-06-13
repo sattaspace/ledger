@@ -25,7 +25,25 @@ import type { DatabaseSchema, Product, SaleRecord, RestockRecord, DSR, Supplier,
 // ─── Shared Utilities ──────────────────────────────────────────────────────
 import { useFormatters } from './composables/useFormatters';
 import { useAuth } from './composables/useAuth';
+import { useAccess } from './composables/useAccess';
+import { useDealerContext } from './composables/useDealerContext';
 import './styles/utilities.css';
+
+// ─── Authentication (must be before onMounted) ──────────────────────────────
+const { isAuthenticated, logout, user, access } = useAuth();
+
+// ─── Dealer Context (multi-tenancy) ──────────────────────────────────────────────
+const { 
+  selectedDealer: activeDealer, 
+  dealers, 
+  selectDealer: setDealerContext,
+  initDealerContext 
+} = useDealerContext();
+
+// Check if user is a dealer (from auth response)
+const isDealerUser = computed(() => {
+  return access.value?.is_dealer === true || access.value?.role === 'dealer';
+});
 
 import Overview from './components/Overview.vue';
 import Inventory from './components/Inventory.vue';
@@ -37,6 +55,15 @@ import BadDebt from './components/BadDebt.vue';
 import LoginPage from './components/LoginPage.vue';
 import SessionGuard from './components/SessionGuard.vue';
 import ManageBillingButton from './components/ManageBillingButton.vue';
+import PermissionGuard from './components/PermissionGuard.vue';
+import DealerSelector from './components/DealerSelector.vue';
+
+// ─── DSR Authentication Components ──────────────────────────────────────
+import DsrLoginPage from './components/DsrLoginPage.vue';
+import DsrSelfRegisterPage from './components/DsrSelfRegisterPage.vue';
+import DsrRegisterPage from './components/DsrRegisterPage.vue';
+import DsrDashboard from './components/DsrDashboard.vue';
+import dsrAuthService from './services/api/dsrAuth.service';
 
 // ─── Centralized API Services ──────────────────────────────────────────
 // All API communication flows through these service singletons.
@@ -67,6 +94,12 @@ const CURRENCY_LOCALES: Record<string, string> = {
 const activeTab = ref('overview');
 const menuOpen = ref(false);
 
+// ─── DSR Authentication State ───────────────────────────────────────────────
+// View mode: 'dealer' (default dealer login) | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'
+const authView = ref<'dealer' | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'>('dealer');
+const dsrInviteToken = ref<string | null>(null);
+const isDsrAuthenticated = computed(() => dsrAuthService.isAuthenticated());
+
 // Database Core States
 const products = ref<Product[]>([]);
 const sales = ref<SaleRecord[]>([]);
@@ -79,9 +112,7 @@ const summary = ref<SummaryData | null>(null);
 const brands = ref<Brand[]>([]);
 const categories = ref<Category[]>([]);
 
-// Dealer / Settings State
-const dealers = ref<DealerConfig[]>([]);
-const activeDealer = ref<DealerConfig | null>(null);
+// Dealer / Settings State (settings modal fields)
 const showSettingsModal = ref(false);
 const settingsSelectedCurrency = ref('INR');
 const settingsSelectedLocale = ref('en-IN');
@@ -111,21 +142,53 @@ const aiResponse = ref('');
 const isAiLoading = ref(false);
 
 const loadDatabase = async () => {
+  console.log('%c[APP] loadDatabase START', 'color: #3b82f6; font-weight: bold; font-size: 14px;', {
+    isAuthenticated: isAuthenticated.value,
+    user: user.value,
+    isDealerUser: isDealerUser.value
+  });
+
   try {
+    // Initialize dealer context first (auto-selects dealer based on user_id)
+    console.log('%c[APP] Initializing dealer context...', 'color: #3b82f6;');
+    await initDealerContext(user.value, isDealerUser.value);
+    console.log('%c[APP] Dealer context initialized', 'color: #3b82f6;', {
+      activeDealer: activeDealer.value,
+      dealersCount: dealers.value.length
+    });
+    
     // All API calls go through centralized services — NOT raw fetch()
-    const [pRes, sRes, dRes, supRes, sumRes, dealRes, restRes, brandRes, catRes] = await Promise.all([
+    console.log('%c[APP] Starting parallel API calls...', 'color: #3b82f6;');
+    const [pRes, sRes, dRes, supRes, sumRes, restRes, brandRes, catRes] = await Promise.all([
       inventoryService.getAllProducts(),
       salesService.getAllSales(),
       dsrService.getAllDsrs(),
       supplierService.getAllSuppliers(),
       reportsService.getSummary(),
-      dealerService.getAllDealers(),
       inventoryService.getAllRestocks(),
       inventoryService.getBrands(),
       inventoryService.getCategories(),
     ]);
 
+    console.log('%c[APP] API responses received', 'color: #3b82f6; font-weight: bold', {
+      products: { ok: pRes.ok, count: pRes.data?.length || 0 },
+      sales: { ok: sRes.ok, count: sRes.data?.length || 0 },
+      dsrs: { ok: dRes.ok, count: dRes.data?.length || 0 },
+      suppliers: { ok: supRes.ok, count: supRes.data?.length || 0 },
+      summary: { ok: sumRes.ok, data: sumRes.data },
+      restocks: { ok: restRes.ok, count: restRes.data?.length || 0 },
+      brands: { ok: brandRes.ok, count: brandRes.data?.length || 0 },
+      categories: { ok: catRes.ok, count: catRes.data?.length || 0 }
+    });
+
     if (!pRes.ok || !sRes.ok || !dRes.ok || !supRes.ok || !sumRes.ok) {
+      console.error('%c[APP] Some API resources failed to load!', 'color: #ef4444; font-weight: bold', {
+        products: pRes.ok,
+        sales: sRes.ok,
+        dsrs: dRes.ok,
+        suppliers: supRes.ok,
+        summary: sumRes.ok
+      });
       throw new Error('Some API resources failed to load.');
     }
 
@@ -135,6 +198,14 @@ const loadDatabase = async () => {
     suppliers.value = supRes.data;
     summary.value = sumRes.data;
 
+    console.log('%c[APP] State updated', 'color: #10b981; font-weight: bold', {
+      products: products.value.length,
+      sales: sales.value.length,
+      dsrs: dsrs.value.length,
+      suppliers: suppliers.value.length,
+      summary: summary.value
+    });
+
     if (restRes.ok) {
       restocksList.value = restRes.data;
     }
@@ -142,29 +213,27 @@ const loadDatabase = async () => {
     if (brandRes.ok) brands.value = brandRes.data;
     if (catRes.ok) categories.value = catRes.data;
 
-    if (dealRes.ok) {
-      const dealersData = dealRes.data;
-      dealers.value = dealersData;
-      const storedUser = localStorage.getItem('dealercore_active_username') || 'sanjay';
-      const active = dealersData.find((d: any) => d.username === storedUser) || dealersData[0];
-      if (active) {
-        activeDealer.value = active;
-        settingsSelectedCurrency.value = active.defaultCurrency;
-        settingsSelectedLocale.value = active.defaultLocale;
-        settingsBusinessName.value = active.businessName || '';
-        settingsGstNumber.value = active.gstNumber || '';
-        settingsPhoneNumber.value = active.phoneNumber || '';
-        settingsEmail.value = active.email || '';
-        settingsCommunicationNumber.value = active.communicationNumber || '';
-        settingsGoogleMapUrl.value = active.googleMapUrl || '';
-        settingsAddress.value = active.address || '';
-      }
+    // Update settings from the selected dealer (from useDealerContext)
+    if (activeDealer.value) {
+      settingsSelectedCurrency.value = activeDealer.value.defaultCurrency;
+      settingsSelectedLocale.value = activeDealer.value.defaultLocale;
+      settingsBusinessName.value = activeDealer.value.businessName || '';
+      settingsGstNumber.value = activeDealer.value.gstNumber || '';
+      settingsPhoneNumber.value = activeDealer.value.phoneNumber || '';
+      settingsEmail.value = activeDealer.value.email || '';
+      settingsCommunicationNumber.value = activeDealer.value.communicationNumber || '';
+      settingsGoogleMapUrl.value = activeDealer.value.googleMapUrl || '';
+      settingsAddress.value = activeDealer.value.address || '';
     }
   } catch (err: any) {
-    console.error(err);
+    console.error('%c[APP] loadDatabase ERROR', 'color: #ef4444; font-weight: bold; font-size: 14px;', err);
     triggerErrorToast('Trouble loading system database. Please refresh the page.');
   } finally {
     loading.value = false;
+    console.log('%c[APP] loadDatabase COMPLETE - loading set to false', 'color: #10b981; font-weight: bold;', {
+      loading: loading.value,
+      hasData: products.value.length > 0 || sales.value.length > 0 || dsrs.value.length > 0
+    });
   }
 };
 
@@ -174,18 +243,47 @@ const loadAll = async () => {
 };
 
 onMounted(async () => {
-  await loadAll();
+  console.log('%c[APP] onMounted triggered', 'color: #6366f1; font-weight: bold; font-size: 14px;', {
+    isAuthenticated: isAuthenticated.value,
+    user: user.value,
+    access: access.value
+  });
+  
+  // Only load data if authenticated - prevents API calls before login
+  if (isAuthenticated.value) {
+    console.log('%c[APP] User authenticated - calling loadAll()', 'color: #10b981;');
+    await loadAll();
+  } else {
+    console.log('%c[APP] User NOT authenticated - skipping loadAll()', 'color: #f59e0b;');
+  }
+});
+
+// Watch for authentication state changes - load data when user becomes authenticated
+// This handles the case where onMounted runs before auth fetch completes
+watch(isAuthenticated, async (newValue, oldValue) => {
+  console.log('%c[APP] isAuthenticated changed', 'color: #8b5cf6; font-weight: bold;', {
+    oldValue,
+    newValue,
+    hasLoadedData: products.value.length > 0 || sales.value.length > 0
+  });
+  
+  // Only load if:
+  // 1. Just became authenticated (oldValue was false, newValue is true)
+  // 2. Haven't loaded data yet
+  if (newValue && !oldValue && products.value.length === 0) {
+    console.log('%c[APP] Auth state changed to authenticated - calling loadAll()', 'color: #10b981; font-weight: bold;');
+    await loadAll();
+  }
 });
 
 // Full state synchronization fetcher — uses centralized API services
 const fetchFullDetails = async () => {
   try {
-    const [sumRes, pRes, sRes, dRes, dealRes, restRes, brandRes, catRes, supRes] = await Promise.all([
+    const [sumRes, pRes, sRes, dRes, restRes, brandRes, catRes, supRes] = await Promise.all([
       reportsService.getSummary(),
       inventoryService.getAllProducts(),
       salesService.getAllSales(),
       dsrService.getAllDsrs(),
-      dealerService.getAllDealers(),
       inventoryService.getAllRestocks(),
       inventoryService.getBrands(),
       inventoryService.getCategories(),
@@ -201,14 +299,17 @@ const fetchFullDetails = async () => {
     if (catRes.ok) categories.value = catRes.data;
     if (supRes.ok) suppliers.value = supRes.data;
 
-    if (dealRes.ok) {
-      const dealersData = dealRes.data;
-      dealers.value = dealersData;
-      const storedUser = localStorage.getItem('dealercore_active_username') || 'sanjay';
-      const active = dealersData.find((d: any) => d.username === storedUser) || dealersData[0];
-      if (active) {
-        activeDealer.value = active;
-      }
+    // Update settings from the selected dealer (from useDealerContext)
+    if (activeDealer.value) {
+      settingsSelectedCurrency.value = activeDealer.value.defaultCurrency;
+      settingsSelectedLocale.value = activeDealer.value.defaultLocale;
+      settingsBusinessName.value = activeDealer.value.businessName || '';
+      settingsGstNumber.value = activeDealer.value.gstNumber || '';
+      settingsPhoneNumber.value = activeDealer.value.phoneNumber || '';
+      settingsEmail.value = activeDealer.value.email || '';
+      settingsCommunicationNumber.value = activeDealer.value.communicationNumber || '';
+      settingsGoogleMapUrl.value = activeDealer.value.googleMapUrl || '';
+      settingsAddress.value = activeDealer.value.address || '';
     }
   } catch (err) {
     console.error(err);
@@ -217,6 +318,12 @@ const fetchFullDetails = async () => {
 };
 
 const handleAddProduct = async (pData: any) => {
+  // Enforce max_products limit
+  if (maxProducts.value > 0 && products.value.length >= maxProducts.value) {
+    triggerErrorToast(`Product limit reached (${maxProducts.value} items). Upgrade your plan to add more products.`);
+    throw new Error(`Product limit reached (${maxProducts.value} items)`);
+  }
+  
   try {
     const res = await inventoryService.addProduct(pData);
     await fetchFullDetails();
@@ -301,6 +408,12 @@ const handleCloseWithDue = async (saleId: string) => {
 };
 
 const handleAddDsr = async (dData: any) => {
+  // Enforce max_dsrs limit
+  if (maxDsrs.value > 0 && dsrs.value.length >= maxDsrs.value) {
+    triggerErrorToast(`DSR limit reached (${maxDsrs.value} representatives). Upgrade your plan to add more.`);
+    throw new Error(`DSR limit reached (${maxDsrs.value} representatives)`);
+  }
+  
   try {
     const res = await dsrService.createDsr(dData);
     await fetchFullDetails();
@@ -347,6 +460,12 @@ const handleDeleteProduct = async (productId: string) => {
 };
 
 const handleAddSupplier = async (sData: any) => {
+  // Enforce max_suppliers limit
+  if (maxSuppliers.value > 0 && suppliers.value.length >= maxSuppliers.value) {
+    triggerErrorToast(`Supplier limit reached (${maxSuppliers.value} suppliers). Upgrade your plan to add more.`);
+    throw new Error(`Supplier limit reached (${maxSuppliers.value} suppliers)`);
+  }
+  
   try {
     const res = await supplierService.createSupplier(sData);
     await fetchFullDetails();
@@ -396,8 +515,8 @@ const handleAskGemini = async () => {
 };
 
 const handleSelectDealer = async (dealer: DealerConfig) => {
-  localStorage.setItem('dealercore_active_username', dealer.username);
-  activeDealer.value = dealer;
+  // Use the composable's selectDealer function which handles localStorage
+  setDealerContext(dealer);
   settingsSelectedCurrency.value = dealer.defaultCurrency;
   settingsSelectedLocale.value = dealer.defaultLocale;
   settingsBusinessName.value = dealer.businessName || '';
@@ -554,13 +673,11 @@ const handleNavigate = (tabId: string) => {
   fetchFullDetails();
 };
 
-// ─── Authentication ──────────────────────────────────────────────────────
-const { isAuthenticated, logout } = useAuth();
+// ─── Authentication Handlers ──────────────────────────────────────────────
 
-const handleLoginSuccess = () => {
-  // Reload page to properly initialize authenticated state
-  // This ensures all data is fresh and components mount correctly
-  window.location.reload();
+const handleLoginSuccess = async () => {
+  // Load data after successful login
+  await loadAll();
 };
 
 const handleLogout = async () => {
@@ -573,8 +690,30 @@ const handleLogout = async () => {
   summary.value = null;
 };
 
-const handleSessionRestored = () => {
-  fetchFullDetails();
+// ─── DSR Authentication Handlers ──────────────────────────────────────────────
+const handleDsrLoginSuccess = async () => {
+  // DSR logged in successfully, show dashboard
+  authView.value = 'dsr-dashboard';
+};
+
+const handleDsrLogout = async () => {
+  // Clear DSR auth data
+  dsrAuthService.clearAuth();
+  // Reset to dealer login view
+  authView.value = 'dealer';
+};
+
+const handleDsrEnterPortal = async () => {
+  // DSR wants to enter dealer portal
+  // For now, they can view the dealer's data through the existing dealer portal
+  // The dealer context is already set through DSR's selected_dealer
+  await loadAll();
+  // Note: This is a simplified approach. In production, you'd need to 
+  // set up proper authentication context for DSRs in the dealer portal
+};
+
+const handleSessionRestored = async () => {
+  await loadAll();
 };
 
 const formatCurrency = (amt: number) => {
@@ -587,22 +726,70 @@ const formatCurrency = (amt: number) => {
   }).format(amt);
 };
 
-const navItems = [
-  { id: 'overview', name: 'Dashboard', icon: '📦' },
-  { id: 'inventory', name: 'Inventory/Restock', icon: '🏢' },
-  { id: 'suppliers', name: 'Suppliers', icon: '🏪' },
-  { id: 'sales', name: 'Sales Entry', icon: '🧾' },
-  { id: 'collections', name: 'Pending Collections', icon: '⏳' },
-  { id: 'bad-debt', name: 'Bad Debt', icon: '⚠️' },
-  { id: 'reports', name: 'Financial Reports', icon: '📊' }
+// ─── Access Control ──────────────────────────────────────────────────────
+const { hasAccess, getLimit } = useAccess();
+
+// Navigation items with access keys for permission filtering
+const allNavItems = [
+  { id: 'overview', name: 'Dashboard', icon: '📦', accessKey: 'dashboard' },
+  { id: 'inventory', name: 'Inventory/Restock', icon: '🏢', accessKey: 'inventory' },
+  { id: 'suppliers', name: 'Suppliers', icon: '🏪', accessKey: 'suppliers' },
+  { id: 'sales', name: 'Sales Entry', icon: '🧾', accessKey: 'sales' },
+  { id: 'collections', name: 'Pending Collections', icon: '⏳', accessKey: 'collections' },
+  { id: 'bad-debt', name: 'Bad Debt', icon: '⚠️', accessKey: 'bad_debt' },
+  { id: 'reports', name: 'Financial Reports', icon: '📊', accessKey: 'reports' }
 ];
+
+// Filter nav items based on user's access permissions
+const navItems = computed(() => {
+  return allNavItems.filter(item => hasAccess(item.accessKey).value);
+});
+
+// Access limits for enforcement
+const maxProducts = getLimit('max_products', 0); // 0 = unlimited
+const maxDsrs = getLimit('max_dsrs', 0);
+const maxSuppliers = getLimit('max_suppliers', 0);
 </script>
 
 <template>
-  <!-- Login Page - shown when not authenticated -->
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DSR AUTHENTICATION VIEWS
+       ═══════════════════════════════════════════════════════════════════════ -->
+  
+  <!-- DSR Dashboard - shown when DSR is authenticated -->
+  <DsrDashboard 
+    v-if="!isAuthenticated && isDsrAuthenticated && authView === 'dsr-dashboard'"
+    @logout="handleDsrLogout"
+    @enterDealerPortal="handleDsrEnterPortal"
+  />
+  
+  <!-- DSR Login Page -->
+  <DsrLoginPage 
+    v-else-if="!isAuthenticated && authView === 'dsr-login'"
+    @login="handleDsrLoginSuccess"
+    @showDealerLogin="authView = 'dealer'"
+    @showDsrRegister="authView = 'dsr-register'"
+  />
+  
+  <!-- DSR Self-Registration Page -->
+  <DsrSelfRegisterPage 
+    v-else-if="!isAuthenticated && authView === 'dsr-register'"
+    @registered="handleDsrLoginSuccess"
+    @showDsrLogin="authView = 'dsr-login'"
+  />
+  
+  <!-- DSR Registration via Invitation Token -->
+  <DsrRegisterPage 
+    v-else-if="!isAuthenticated && authView === 'dsr-register-invite' && dsrInviteToken"
+    :token="dsrInviteToken"
+    @registered="handleDsrLoginSuccess"
+  />
+  
+  <!-- Dealer Login Page - shown when not authenticated -->
   <LoginPage 
-    v-if="!isAuthenticated" 
+    v-else-if="!isAuthenticated" 
     @login="handleLoginSuccess"
+    @showDsrLogin="authView = 'dsr-login'"
   />
   
   <!-- Main App - shown when authenticated -->
@@ -627,6 +814,11 @@ const navItems = [
           <h1 class="brand-name">DEALERCORE</h1>
           <span class="brand-version">v3.0</span>
         </div>
+      </div>
+
+      <!-- Dealer Context Selector (for multi-dealer DSRs) -->
+      <div class="sidebar-dealer-selector">
+        <DealerSelector @dealer-changed="fetchFullDetails" />
       </div>
 
       <!-- Navigation -->
@@ -669,15 +861,15 @@ const navItems = [
         >
           <div class="avatar-ring">
             <div class="avatar-inner">
-              {{ activeDealer?.fullName ? activeDealer.fullName.split(' ').map((n: string) => n[0] || '').join('') : 'JS' }}
+              {{ activeDealer?.fullName ? activeDealer.fullName.split(' ').map((n: string) => n[0] || '').join('') : 'SS' }}
             </div>
           </div>
           <div class="sidebar-user-info">
             <p class="sidebar-user-name">
-              {{ activeDealer ? activeDealer.fullName : 'Sanjay Sharma' }}
+              {{ activeDealer?.fullName || 'Loading...' }}
             </p>
             <p class="sidebar-user-role">
-              {{ activeDealer ? activeDealer.role : 'Senior Dealer Admin' }}
+              {{ activeDealer?.role || 'Dealer' }}
             </p>
           </div>
         </button>
@@ -874,95 +1066,109 @@ const navItems = [
 
         <!-- Content Area -->
         <div v-else class="content-area">
-          <Overview 
-            v-if="activeTab === 'overview'" 
-            :summary="summary"
-            :sales="sales"
-            :formatCurrency="formatCurrency"
-            @navigate="handleNavigate"
-            @quickAction="handleQuickAction"
-          />
+          <PermissionGuard feature="dashboard">
+            <Overview 
+              v-if="activeTab === 'overview'" 
+              :summary="summary"
+              :sales="sales"
+              :formatCurrency="formatCurrency"
+              @navigate="handleNavigate"
+              @quickAction="handleQuickAction"
+            />
+          </PermissionGuard>
 
-          <Inventory 
-            v-else-if="activeTab === 'inventory'" 
-            :products="products"
-            :suppliers="suppliers"
-            :restocks="restocksList"
-            :dsrs="dsrs"
-            :quickActionProduct="quickActionProduct"
-            :formatCurrency="formatCurrency"
-            :onAddProduct="handleAddProduct"
-            :onRestock="handleRestockLogged"
-            :onEditProduct="handleEditProduct"
-            :onDeleteProduct="handleDeleteProduct"
-            :brands="brands"
-            :categories="categories"
-            :onAddBrand="handleAddBrand"
-            :onDeleteBrand="handleDeleteBrand"
-            :onAddCategory="handleAddCategory"
-            :onDeleteCategory="handleDeleteCategory"
-            @refreshData="fetchFullDetails"
-            @clearQuickActionProduct="quickActionProduct = null"
-          />
+          <PermissionGuard feature="inventory">
+            <Inventory 
+              v-if="activeTab === 'inventory'" 
+              :products="products"
+              :suppliers="suppliers"
+              :restocks="restocksList"
+              :dsrs="dsrs"
+              :quickActionProduct="quickActionProduct"
+              :formatCurrency="formatCurrency"
+              :onAddProduct="handleAddProduct"
+              :onRestock="handleRestockLogged"
+              :onEditProduct="handleEditProduct"
+              :onDeleteProduct="handleDeleteProduct"
+              :brands="brands"
+              :categories="categories"
+              :onAddBrand="handleAddBrand"
+              :onDeleteBrand="handleDeleteBrand"
+              :onAddCategory="handleAddCategory"
+              :onDeleteCategory="handleDeleteCategory"
+              @refreshData="fetchFullDetails"
+              @clearQuickActionProduct="quickActionProduct = null"
+            />
+          </PermissionGuard>
 
-          <Suppliers 
-            v-else-if="activeTab === 'suppliers'" 
-            :suppliers="suppliers"
-            :categories="categories"
-            :formatCurrency="formatCurrency"
-            :onAddSupplier="handleAddSupplier"
-            :onEditSupplier="handleEditSupplier"
-            :onDeleteSupplier="handleDeleteSupplier"
-            @refreshData="fetchFullDetails"
-          />
+          <PermissionGuard feature="suppliers">
+            <Suppliers 
+              v-if="activeTab === 'suppliers'" 
+              :suppliers="suppliers"
+              :categories="categories"
+              :formatCurrency="formatCurrency"
+              :onAddSupplier="handleAddSupplier"
+              :onEditSupplier="handleEditSupplier"
+              :onDeleteSupplier="handleDeleteSupplier"
+              @refreshData="fetchFullDetails"
+            />
+          </PermissionGuard>
 
-          <Sales 
-            v-else-if="activeTab === 'sales'" 
-            :products="products"
-            :sales="sales"
-            :dsrs="dsrs"
-            :quickActionType="quickActionType"
-            :formatCurrency="formatCurrency"
-            :onAddSale="handleAddSale"
-            :onAddBulkSales="handleAddBulkSales"
-            :onVoidSale="handleVoidSale"
-            :onEditSale="handleEditSale"
-            :onReturnItem="handleReturnSaleItem"
-            @refreshData="fetchFullDetails"
-            @clearQuickActionType="quickActionType = null"
-          />
+          <PermissionGuard feature="sales">
+            <Sales 
+              v-if="activeTab === 'sales'" 
+              :products="products"
+              :sales="sales"
+              :dsrs="dsrs"
+              :quickActionType="quickActionType"
+              :formatCurrency="formatCurrency"
+              :onAddSale="handleAddSale"
+              :onAddBulkSales="handleAddBulkSales"
+              :onVoidSale="handleVoidSale"
+              :onEditSale="handleEditSale"
+              :onReturnItem="handleReturnSaleItem"
+              @refreshData="fetchFullDetails"
+              @clearQuickActionType="quickActionType = null"
+            />
+          </PermissionGuard>
 
-          <Collections 
-            v-else-if="activeTab === 'collections'" 
-            :sales="sales"
-            :formatCurrency="formatCurrency"
-            :onCollectPayment="handleCollectPayment"
-            :onCloseWithDue="handleCloseWithDue"
-            @refreshData="fetchFullDetails"
-          />
+          <PermissionGuard feature="collections">
+            <Collections 
+              v-if="activeTab === 'collections'" 
+              :sales="sales"
+              :formatCurrency="formatCurrency"
+              :onCollectPayment="handleCollectPayment"
+              :onCloseWithDue="handleCloseWithDue"
+              @refreshData="fetchFullDetails"
+            />
+          </PermissionGuard>
 
-          <BadDebt 
-            v-else-if="activeTab === 'bad-debt'" 
-            :sales="sales"
-            :formatCurrency="formatCurrency"
-            @refreshData="fetchFullDetails"
-          />
+          <PermissionGuard feature="bad_debt">
+            <BadDebt 
+              v-if="activeTab === 'bad-debt'" 
+              :sales="sales"
+              :formatCurrency="formatCurrency"
+              @refreshData="fetchFullDetails"
+            />
+          </PermissionGuard>
 
-          <Reports 
-            v-else-if="activeTab === 'reports'" 
-            :summary="summary"
-            :dsrs="dsrs"
-            :sales="sales"
-            :products="products"
-            :aiResponse="aiResponse"
-            :isAiLoading="isAiLoading"
-            :formatCurrency="formatCurrency"
-            :onAddDsr="handleAddDsr"
-            :onEditDsr="handleEditDsr"
-            :onDeleteDsr="handleDeleteDsr"
-            @askGemini="handleAskGemini"
-            @refreshData="fetchFullDetails"
-          />
+          <PermissionGuard feature="reports">
+            <Reports 
+              v-if="activeTab === 'reports'" 
+              :summary="summary"
+              :dsrs="dsrs"
+              :sales="sales"
+              :products="products"
+              :aiResponse="aiResponse"
+              :isAiLoading="isAiLoading"
+              :formatCurrency="formatCurrency"
+              :onAddDsr="handleAddDsr"
+              :onEditDsr="handleEditDsr"
+              :onDeleteDsr="handleDeleteDsr"
+              @askGemini="handleAskGemini"
+              @refreshData="fetchFullDetails"
+            />
+          </PermissionGuard>
         </div>
       </div>
 
@@ -1274,7 +1480,12 @@ const navItems = [
   color: rgba(245, 158, 11, 0.7);
   background: rgba(255,255,255,0.08);
   padding: 2px 6px;
-  border-radius: 4px;
+}
+
+/* Dealer Selector in Sidebar */
+.sidebar-dealer-selector {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
 /* Sidebar Navigation */

@@ -2,11 +2,11 @@
  * Reports Service — Summary Stats, Due Reports & AI Reconciliation
  *
  * Endpoints mapped:
- * GET  /api/reports/summary              → getSummary()
- * GET  /api/reports/customer-due         → getCustomerDue()
- * GET  /api/reports/vehicle-due          → getVehicleDue()
- * GET  /api/reports/dsr-due              → getDsrDue()
- * POST /api/reports/ai-reconciliation    → getAiReconciliation()
+ * GET  /reports/summary              → getSummary()
+ * GET  /reports/customer-due         → getCustomerDue()
+ * GET  /reports/vehicle-due          → getVehicleDue()
+ * GET  /reports/dsr-due              → getDsrDue()
+ * POST /reports/ai-reconciliation    → getAiReconciliation()
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -69,46 +69,46 @@ export interface AiReconciliationResponse {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class ReportsService {
-  /** GET /api/reports/summary — Fetch computed summary statistics */
+  /** GET /reports/summary — Fetch computed summary statistics */
   async getSummary(dealerUsername?: string): Promise<ApiResponse<SummaryData>> {
     const endpoint = dealerUsername
-      ? `/api/reports/summary?dealer_username=${encodeURIComponent(dealerUsername)}`
-      : "/api/reports/summary";
+      ? `/reports/summary?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/reports/summary";
     return apiClient.get<SummaryData>(endpoint);
   }
 
-  /** GET /api/reports/customer-due — Customer-wise due report (for print) */
+  /** GET /reports/customer-due — Customer-wise due report (for print) */
   async getCustomerDue(
     dealerUsername?: string,
   ): Promise<ApiResponse<DueReport>> {
     const endpoint = dealerUsername
-      ? `/api/reports/customer-due?dealer_username=${encodeURIComponent(dealerUsername)}`
-      : "/api/reports/customer-due";
+      ? `/reports/customer-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/reports/customer-due";
     return apiClient.get<DueReport>(endpoint);
   }
 
-  /** GET /api/reports/vehicle-due — Vehicle-wise due report (for print) */
+  /** GET /reports/vehicle-due — Vehicle-wise due report (for print) */
   async getVehicleDue(
     dealerUsername?: string,
   ): Promise<ApiResponse<DueReport>> {
     const endpoint = dealerUsername
-      ? `/api/reports/vehicle-due?dealer_username=${encodeURIComponent(dealerUsername)}`
-      : "/api/reports/vehicle-due";
+      ? `/reports/vehicle-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/reports/vehicle-due";
     return apiClient.get<DueReport>(endpoint);
   }
 
-  /** GET /api/reports/dsr-due — DSR/Collector-wise due report (for print) */
+  /** GET /reports/dsr-due — DSR/Collector-wise due report (for print) */
   async getDsrDue(dealerUsername?: string): Promise<ApiResponse<DueReport>> {
     const endpoint = dealerUsername
-      ? `/api/reports/dsr-due?dealer_username=${encodeURIComponent(dealerUsername)}`
-      : "/api/reports/dsr-due";
+      ? `/reports/dsr-due?dealer_username=${encodeURIComponent(dealerUsername)}`
+      : "/reports/dsr-due";
     return apiClient.get<DueReport>(endpoint);
   }
 
-  /** POST /api/reports/ai-reconciliation — Trigger AI reconciliation analysis */
+  /** POST /reports/ai-reconciliation — Trigger AI reconciliation analysis */
   async getAiReconciliation(): Promise<ApiResponse<AiReconciliationResponse>> {
     return apiClient.post<AiReconciliationResponse>(
-      "/api/reports/ai-reconciliation",
+      "/reports/ai-reconciliation",
     );
   }
 }

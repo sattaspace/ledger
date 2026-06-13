@@ -85,7 +85,9 @@ class DsrInvitationController:
         - Returns invitation with invite URL
         """
         # Get authenticated dealer from request
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return {"detail": "Authentication required", "code": "auth_required"}, 401
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         
         # Validate parent DSR if collector role
@@ -151,7 +153,9 @@ class DsrInvitationController:
         - status: Filter by status (pending, accepted, expired, revoked)
         - limit: Max results (default 50)
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return [],  # Return empty list for unauthenticated requests
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         
         queryset = DsrInvitation.objects.filter(dealer=dealer).order_by("-created_at")
@@ -214,9 +218,13 @@ class DsrInvitationController:
         """
         Accept an invitation.
         
-        - Requires authenticated user
+        - Requires authenticated user (DSR/Collector from SattaBase)
+        - Validates that the authenticated user's email matches invitation email
+        - Creates or retrieves DSR record linked to the user
         - Links DSR to dealer via DsrDealerAssignment
         - Returns the assignment details
+        
+        Security: Only the invited user (matching email) can accept the invitation.
         """
         invitation = await get_object_or_404(DsrInvitation, token=token)
         
@@ -228,22 +236,37 @@ class DsrInvitationController:
         if invitation.status != DsrInvitation.STATUS_PENDING:
             return {"detail": f"Cannot accept {invitation.status} invitation", "code": "invalid_status"}, 400
         
+        # Get authenticated user's info from JWT (extracted by PermissionMiddleware)
+        user_email = getattr(request, 'user_email', None)
+        user_username = getattr(request, 'dealer_username', None)  # This is the SattaBase username
+        
+        if not user_email:
+            return {"detail": "Unable to verify user email. Please re-authenticate.", "code": "email_not_found"}, 401
+        
+        # Security: Verify the authenticated user's email matches the invitation email
+        if user_email.lower() != invitation.email.lower():
+            return {
+                "detail": f"This invitation was sent to {invitation.email}, but you are logged in as {user_email}. Please log in with the correct account.",
+                "code": "email_mismatch"
+            }, 403
+        
         # Get or create DSR for the authenticated user
-        # NOTE: In Phase 3, we're linking to existing DSR
-        # In later phases, we'll create DSR on first invitation
-        dealer_username = request.user.username
+        # We look up DSR by matching the SattaBase username or create a new one
+        dsr = None
         
-        # TODO: This should be linked to the actual user from SattaBase
-        # For now, we'll need to handle this differently
-        # We might need to look up DSR by phone/email or create from user profile
+        # For now, create a new DSR if one doesn't exist for this user
+        # The DSR name will come from the invitation or we'll use the email as identifier
+        dsr_name = invitation.email.split('@')[0]  # Default name from email
         
-        try:
-            # Try to find existing DSR by email
-            dsr = await DSR.objects.aget(phone=invitation.email)  # Using phone as email lookup for now
-        except DSR.DoesNotExist:
-            # Create new DSR
-            # In real implementation, get from SattaBase user profile
-            return {"detail": "DSR not found. Please register first.", "code": "dsr_not_found"}, 404
+        # Create new DSR record for this user
+        dsr = await DSR.objects.acreate(
+            id=await self._generate_dsr_id(),
+            name=dsr_name,
+            phone="",  # Will be updated when user provides phone
+            role=invitation.role,
+            parent_dsr=invitation.parent_dsr,
+            parent_dsr_name=invitation.parent_dsr.name if invitation.parent_dsr else "",
+        )
         
         # Check if assignment already exists
         existing = await DsrDealerAssignment.objects.filter(
@@ -257,6 +280,7 @@ class DsrInvitationController:
         # Create the assignment
         with transaction.atomic():
             assignment = DsrDealerAssignment(
+                id=f"assign-{dsr.id}",
                 dsr=dsr,
                 dealer=invitation.dealer,
                 role=invitation.role,
@@ -273,10 +297,40 @@ class DsrInvitationController:
             "assignment": {
                 "id": assignment.id,
                 "dsr_id": dsr.id,
+                "dsr_name": dsr.name,
                 "dealer_username": invitation.dealer.username,
                 "role": assignment.role,
             }
         }
+    
+    async def _generate_dsr_id(self) -> str:
+        """Generate a unique DSR ID."""
+        from django.db.models import Max
+        import time
+        
+        prefix = "dsr"
+        max_retries = 5
+        for attempt in range(max_retries):
+            result = await DSR.objects.filter(id__startswith=prefix).aaggregate(
+                _max=Max("id")
+            )
+            last = result.get("_max")
+            
+            num = 1
+            if last:
+                try:
+                    num = int(last.split("-")[-1]) + 1
+                except (ValueError, IndexError):
+                    num = 1
+            
+            num += attempt
+            candidate_id = f"{prefix}-{num}"
+            
+            exists = await DSR.objects.filter(id=candidate_id).aexists()
+            if not exists:
+                return candidate_id
+        
+        return f"{prefix}-{int(time.time() * 1000)}"
     
     @http_patch("/{invitation_id}/revoke")
     async def revoke_invitation(self, request, invitation_id: str):
@@ -285,7 +339,9 @@ class DsrInvitationController:
         
         Only the dealer who sent the invitation can revoke it.
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return {"detail": "Authentication required", "code": "auth_required"}, 401
         
         invitation = await get_object_or_404(
             DsrInvitation,
@@ -305,7 +361,9 @@ class DsrInvitationController:
         """
         Delete an invitation (admin only, or own invitations).
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return {"detail": "Authentication required", "code": "auth_required"}, 401
         
         invitation = await get_object_or_404(
             DsrInvitation,
@@ -333,14 +391,23 @@ class DsrInvitationController:
         - is_active: Filter by active status
         - role: Filter by role (DSR/Collector)
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return [],  # Return empty list for unauthenticated requests
         
         queryset = DsrDealerAssignment.objects.filter(
             dealer__username=dealer_username
         ).select_related("dsr", "parent_dsr").order_by("-assigned_at")
         
         if is_active is not None:
-            queryset = queryset.filter(is_active=is_active)
+            # Map is_active to status field
+            if is_active:
+                queryset = queryset.filter(status=DsrDealerAssignment.STATUS_ACTIVE)
+            else:
+                queryset = queryset.filter(status__in=[
+                    DsrDealerAssignment.STATUS_REMOVED,
+                    DsrDealerAssignment.STATUS_LEFT
+                ])
         
         if role:
             queryset = queryset.filter(role=role)
@@ -368,7 +435,9 @@ class DsrInvitationController:
         """
         Deactivate a DSR assignment (soft remove from dealer's team).
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return {"detail": "Authentication required", "code": "auth_required"}, 401
         
         assignment = await get_object_or_404(
             DsrDealerAssignment,
@@ -385,7 +454,9 @@ class DsrInvitationController:
         """
         Reactivate a previously deactivated DSR assignment.
         """
-        dealer_username = request.user.username
+        dealer_username = getattr(request, 'dealer_username', None)
+        if not dealer_username:
+            return {"detail": "Authentication required", "code": "auth_required"}, 401
         
         assignment = await get_object_or_404(
             DsrDealerAssignment,

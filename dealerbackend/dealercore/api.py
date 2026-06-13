@@ -30,7 +30,9 @@ api = NinjaExtraAPI(
 from inventory.api import InventoryController
 from sales.api import SalesController
 from dsr.api import DSRController
-from dsr.invitation_api import DsrInvitationController
+from dsr.invitation_api import DsrInvitationController as LegacyDsrInvitationController
+from dsr.auth_api import DsrAuthController, DsrInvitationController, DsrAssignmentController
+from dsr.dealer_dsr_api import DealerDsrController
 from supplier.api import SupplierController
 from dealer.api import DealerController
 from reports.api import ReportsController
@@ -39,14 +41,27 @@ from common.sso_controller import SSOController
 from common.access_controller import AccessController
 
 api.register_controllers(
+    # Core Modules
     InventoryController,
     SalesController,
     DSRController,
     SupplierController,
     DealerController,
     ReportsController,
-    AuthController,  # Authentication endpoints
-    DsrInvitationController,  # DSR invitation endpoints
+    
+    # Authentication
+    AuthController,  # Dealer authentication (via SattaBase)
+    DsrAuthController,  # DSR authentication (direct login)
+    
+    # DSR Invitation & Assignment System
+    DsrInvitationController,  # DSR-side invitation management (accept/reject)
+    DsrAssignmentController,  # DSR-side assignment management (leave dealer)
+    DealerDsrController,  # Dealer-side DSR management (invite/remove)
+    
+    # Legacy (for backward compatibility)
+    LegacyDsrInvitationController,  # Old invitation endpoints
+    
+    # SSO & Access
     SSOController,  # SSO endpoints
     AccessController,  # Access control endpoints
 )

@@ -1,6 +1,20 @@
 <script setup lang="ts">
+/**
+ * Session Guard Component
+ *
+ * Wraps protected routes and ensures user is authenticated.
+ * Also handles billing return detection for automatic profile refresh.
+ *
+ * Usage:
+ * ```vue
+ * <SessionGuard require-auth @auth-required="handleLogout" @session-restored="handleRestore">
+ *   <ProtectedContent />
+ * </SessionGuard>
+ * ```
+ */
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useAuth } from '../composables/useAuth';
+import { useBillingRedirect } from '../composables/useBillingRedirect';
 
 const props = defineProps<{
   requireAuth?: boolean;
@@ -12,11 +26,15 @@ const emit = defineEmits<{
 }>();
 
 const { isAuthenticated, refreshUser } = useAuth();
+const { checkBillingRedirect, isBillingReturn, billingSuccess } = useBillingRedirect();
 const isChecking = ref(true);
 const hasChecked = ref(false);
 
 // Check auth status on mount
 onMounted(async () => {
+  // Check for billing return first
+  checkBillingRedirect();
+
   if (props.requireAuth && !isAuthenticated.value) {
     // Try to restore session
     try {
@@ -26,10 +44,10 @@ onMounted(async () => {
       emit('auth-required');
     }
   }
-  
+
   isChecking.value = false;
   hasChecked.value = true;
-  
+
   // Listen for session expiry events
   window.addEventListener('auth:session-expired', handleSessionExpired);
 });

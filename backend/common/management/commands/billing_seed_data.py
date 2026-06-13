@@ -1443,6 +1443,359 @@ SEED_DATA = [
             },
         ],
     },
+    # -------------------------------------------------------------------------
+    # DealerCore
+    # -------------------------------------------------------------------------
+    {
+        "product": {
+            "name": "DealerCore",
+            "slug": "dealercore",
+            "description": (
+                "Dealership management system — inventory tracking, sales entry, "
+                "DSR management, supplier management, collections, and financial reporting."
+            ),
+            "home_url": "https://dealer.sattaspace.com",
+        },
+        "domains": [
+            {
+                "domain": "dealer.sattaspace.com",
+                "is_primary": True,
+            },
+            {
+                "domain": "localhost:4323",
+                "is_primary": False,
+            },
+        ],
+        "plans": [
+            {
+                "name": "Free",
+                "slug": "free",
+                "description": "Basic dealership management for small operations.",
+                "price_cents": 0,
+                "currency": "USD",
+                "billing_cycle": BillingCycle.MONTHLY,
+                "trial_days": 0,
+                "sort_order": 0,
+                "is_featured": False,
+                "features": {
+                    "inventory": "Basic",
+                    "sales": True,
+                    "dsrs": 1,
+                    "reports": False,
+                },
+                "access_entries": [
+                    {
+                        "key": "dashboard",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Access to main dashboard",
+                    },
+                    {
+                        "key": "inventory",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Manage inventory",
+                    },
+                    {
+                        "key": "sales",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Create and manage sales",
+                    },
+                    {
+                        "key": "collections",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "View and manage collections",
+                    },
+                    {
+                        "key": "reports",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Financial reports",
+                    },
+                    {
+                        "key": "suppliers",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Supplier management",
+                    },
+                    {
+                        "key": "bad_debt",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Bad debt management",
+                    },
+                    {
+                        "key": "max_products",
+                        "value": "50",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum products in inventory",
+                    },
+                    {
+                        "key": "max_dsrs",
+                        "value": "1",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum DSR users",
+                    },
+                    {
+                        "key": "max_suppliers",
+                        "value": "3",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum suppliers",
+                    },
+                    {
+                        "key": "export_pdf",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Export reports as PDF",
+                    },
+                    {
+                        "key": "api_access",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "REST API access",
+                    },
+                    {
+                        "key": "ai_insights",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "AI-powered reconciliation and insights",
+                    },
+                    {
+                        "key": "data_retention_days",
+                        "value": "30",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Historical data retention in days",
+                    },
+                ],
+            },
+            {
+                "name": "Standard",
+                "slug": "standard",
+                "description": "Full dealership management for growing businesses.",
+                "price_cents": 2900,  # $29/month
+                "currency": "USD",
+                "billing_cycle": BillingCycle.MONTHLY,
+                "trial_days": 14,
+                "sort_order": 1,
+                "is_featured": True,
+                "features": {
+                    "inventory": "Advanced",
+                    "sales": True,
+                    "dsrs": 5,
+                    "reports": True,
+                },
+                "access_entries": [
+                    {
+                        "key": "dashboard",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Access to main dashboard",
+                    },
+                    {
+                        "key": "inventory",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Manage inventory",
+                    },
+                    {
+                        "key": "sales",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Create and manage sales",
+                    },
+                    {
+                        "key": "collections",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "View and manage collections",
+                    },
+                    {
+                        "key": "reports",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Financial reports",
+                    },
+                    {
+                        "key": "suppliers",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Supplier management",
+                    },
+                    {
+                        "key": "bad_debt",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Bad debt management",
+                    },
+                    {
+                        "key": "max_products",
+                        "value": "500",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum products in inventory",
+                    },
+                    {
+                        "key": "max_dsrs",
+                        "value": "5",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum DSR users",
+                    },
+                    {
+                        "key": "max_suppliers",
+                        "value": "20",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Maximum suppliers",
+                    },
+                    {
+                        "key": "export_pdf",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Export reports as PDF",
+                    },
+                    {
+                        "key": "api_access",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "REST API access",
+                    },
+                    {
+                        "key": "ai_insights",
+                        "value": "false",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "AI-powered reconciliation and insights",
+                    },
+                    {
+                        "key": "data_retention_days",
+                        "value": "365",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Historical data retention in days",
+                    },
+                ],
+            },
+            {
+                "name": "Enterprise",
+                "slug": "enterprise",
+                "description": "Enterprise dealership management with unlimited features.",
+                "price_cents": 9900,  # $99/month
+                "currency": "USD",
+                "billing_cycle": BillingCycle.MONTHLY,
+                "trial_days": 30,
+                "sort_order": 2,
+                "is_featured": False,
+                "features": {
+                    "inventory": "Unlimited",
+                    "sales": True,
+                    "dsrs": 0,  # Unlimited
+                    "reports": True,
+                },
+                "access_entries": [
+                    {
+                        "key": "dashboard",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Access to main dashboard",
+                    },
+                    {
+                        "key": "inventory",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Manage inventory",
+                    },
+                    {
+                        "key": "sales",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Create and manage sales",
+                    },
+                    {
+                        "key": "collections",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "View and manage collections",
+                    },
+                    {
+                        "key": "reports",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Financial reports with AI insights",
+                    },
+                    {
+                        "key": "suppliers",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Supplier management",
+                    },
+                    {
+                        "key": "bad_debt",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Bad debt management",
+                    },
+                    {
+                        "key": "max_products",
+                        "value": "0",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Unlimited products (0 = unlimited)",
+                    },
+                    {
+                        "key": "max_dsrs",
+                        "value": "0",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Unlimited DSR users (0 = unlimited)",
+                    },
+                    {
+                        "key": "max_suppliers",
+                        "value": "0",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Unlimited suppliers (0 = unlimited)",
+                    },
+                    {
+                        "key": "export_pdf",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Export reports as PDF",
+                    },
+                    {
+                        "key": "api_access",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "REST API access with higher rate limits",
+                    },
+                    {
+                        "key": "priority_support",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Priority customer support",
+                    },
+                    {
+                        "key": "white_label",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "White-label reports",
+                    },
+                    {
+                        "key": "audit_log",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "Full audit log",
+                    },
+                    {
+                        "key": "ai_insights",
+                        "value": "true",
+                        "value_type": AccessValueType.BOOLEAN,
+                        "description": "AI-powered reconciliation and insights",
+                    },
+                    {
+                        "key": "data_retention_days",
+                        "value": "0",
+                        "value_type": AccessValueType.INTEGER,
+                        "description": "Unlimited data retention (0 = forever)",
+                    },
+                ],
+            },
+        ],
+    },
 ]
 
 

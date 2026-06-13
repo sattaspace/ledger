@@ -3,6 +3,16 @@ DEALERCORE v3.0 — Seed Data Management Command
 =================================================
 Populates the database with realistic dummy data matching the frontend mock layer.
 
+ARCHITECTURE:
+  - ONE DealerConfig: Represents the SattaBase subscriber (the actual dealer)
+  - Multiple DSRs: Employees invited by the dealer
+  - DsrDealerAssignment: Links DSRs to work for the dealer
+  - All business data linked to the dealer's username
+
+Multi-Tenancy:
+  All business data (products, sales, suppliers, etc.) is associated with
+  a specific dealer via the `dealer` FK field for tenant isolation.
+
 Usage:
     python manage.py seed_data                # Seed all tables (safe — skips if data exists)
     python manage.py seed_data --flush        # Wipe existing data, then seed fresh
@@ -24,13 +34,76 @@ TZ = get_current_timezone()
 
 from supplier.models import Supplier
 from inventory.models import Product, RestockRecord, Brand, Category
-from dsr.models import DSR
+from dsr.models import DSR, DsrDealerAssignment
 from dealer.models import DealerConfig
 from sales.models import SaleRecord, CreditPayment
 
 
 # ═══════════════════════════════════════════════════════
-#  SEED DATA — exact replica of frontend mock layer
+#  PRIMARY DEALER (SattaBase Subscriber)
+# ═══════════════════════════════════════════════════════
+# This is the ONE dealer who subscribed on SattaBase
+# Their username is the user_id from SattaBase JWT
+# SattaBase does NOT have usernames - it uses user_id (e.g., "1")
+# The DealerConfig.username field stores this user_id as the primary key
+
+PRIMARY_DEALER = {
+    "username": "1",  # Matches SattaBase user_id (subscriber ID from Base system)
+    "full_name": "Haradhan Sharma",
+    "role": "Senior Dealer Admin & Manager",
+    "business_name": "Sri Balaji Enterprises",
+    "address": "Plot No. 45, Sector 12, Industrial Area, Ahmedabad, Gujarat 380015",
+    "phone_number": "9876543210",
+    "email": "info@sribalajienterprises.com",
+    "gst_number": "24AABCS1429B1Z5",
+    "google_map_url": "https://maps.google.com/?q=23.0225,72.5714",
+    "communication_number": "9876543210",
+    "default_currency": "INR",
+    "default_locale": "en-IN",
+}
+
+# ═══════════════════════════════════════════════════════
+#  DSRs (Sales Representatives)
+#  These work FOR the dealer, linked via DsrDealerAssignment
+# ═══════════════════════════════════════════════════════
+
+DSRS = [
+    {
+        "id": "dsr-1",
+        "name": "Rajesh Kumar",
+        "phone": "9876543210",
+        "role": "DSR",
+        "parent_dsr_id": None,
+        "parent_dsr_name": "",
+    },
+    {
+        "id": "dsr-2",
+        "name": "Priya Patel",
+        "phone": "9812345670",
+        "role": "DSR",
+        "parent_dsr_id": None,
+        "parent_dsr_name": "",
+    },
+    {
+        "id": "dsr-3",
+        "name": "Sanjay Sharma",
+        "phone": "9988776655",
+        "role": "DSR",
+        "parent_dsr_id": None,
+        "parent_dsr_name": "",
+    },
+    {
+        "id": "dsr-4",
+        "name": "Michael Chang",
+        "phone": "9123456789",
+        "role": "Order Collector",
+        "parent_dsr_id": "dsr-1",
+        "parent_dsr_name": "Rajesh Kumar",
+    },
+]
+
+# ═══════════════════════════════════════════════════════
+#  BUSINESS DATA (linked to primary dealer)
 # ═══════════════════════════════════════════════════════
 
 BRANDS = [
@@ -127,7 +200,7 @@ RESTOCKS = [
         "cost_price": Decimal("120"),
         "total_cost": Decimal("2400"),
         "date": make_aware(datetime(2026, 5, 10, 10, 0, 0), TZ),
-        "received_by": "Sanjay Sharma (Manager)",
+        "received_by": "Haradhan Sharma (Manager)",
     },
     {
         "id": "restock-2",
@@ -149,7 +222,7 @@ RESTOCKS = [
         "cost_price": Decimal("8"),
         "total_cost": Decimal("280"),
         "date": make_aware(datetime(2026, 5, 8, 9, 0, 0), TZ),
-        "received_by": "Sanjay Sharma (Manager)",
+        "received_by": "Haradhan Sharma (Manager)",
     },
     {
         "id": "restock-4",
@@ -160,7 +233,7 @@ RESTOCKS = [
         "cost_price": Decimal("55"),
         "total_cost": Decimal("165"),
         "date": make_aware(datetime(2026, 5, 9, 11, 0, 0), TZ),
-        "received_by": "Sanjay Sharma (Manager)",
+        "received_by": "Haradhan Sharma (Manager)",
     },
     {
         "id": "restock-5",
@@ -172,79 +245,6 @@ RESTOCKS = [
         "total_cost": Decimal("192"),
         "date": make_aware(datetime(2026, 5, 11, 13, 0, 0), TZ),
         "received_by": "Rajesh Kumar (DSR)",
-    },
-]
-
-DSRS = [
-    {
-        "id": "dsr-1",
-        "name": "Rajesh Kumar",
-        "phone": "9876543210",
-        "role": "DSR",
-        "parent_dsr_id": None,
-        "parent_dsr_name": "",
-    },
-    {
-        "id": "dsr-2",
-        "name": "Amit Patel",
-        "phone": "9812345670",
-        "role": "DSR",
-        "parent_dsr_id": None,
-        "parent_dsr_name": "",
-    },
-    {
-        "id": "dsr-3",
-        "name": "Sarah Jenkins",
-        "phone": "9988776655",
-        "role": "DSR",
-        "parent_dsr_id": None,
-        "parent_dsr_name": "",
-    },
-    {
-        "id": "dsr-4",
-        "name": "Michael Chang",
-        "phone": "9123456789",
-        "role": "Order Collector",
-        "parent_dsr_id": "dsr-1",
-        "parent_dsr_name": "Rajesh Kumar",
-    },
-]
-
-DEALERS = [
-    {
-        "username": "sanjay",
-        "full_name": "Sanjay Sharma",
-        "role": "Senior Dealer Admin & manager",
-        "business_name": "Sri Balaji Enterprises",
-        "address": "Plot No. 45, Sector 12, Industrial Area, Ahmedabad, Gujarat 380015",
-        "phone_number": "9876543210",
-        "email": "info@sribalajienterprises.com",
-        "gst_number": "24AABCS1429B1Z5",
-        "google_map_url": "https://maps.google.com/?q=23.0225,72.5714",
-        "communication_number": "9876543210",
-        "default_currency": "INR",
-        "default_locale": "en-IN",
-    },
-    {
-        "username": "rajesh",
-        "full_name": "Rajesh Kumar",
-        "role": "North Regional Principal",
-        "default_currency": "INR",
-        "default_locale": "en-IN",
-    },
-    {
-        "username": "priya",
-        "full_name": "Priya Patel",
-        "role": "Franchise Partner (Mumbai)",
-        "default_currency": "USD",
-        "default_locale": "en-US",
-    },
-    {
-        "username": "vijay",
-        "full_name": "Vijay Singh",
-        "role": "Bengaluru Fleet Director",
-        "default_currency": "INR",
-        "default_locale": "en-IN",
     },
 ]
 
@@ -308,7 +308,7 @@ SALES = [
         "is_vehicle": False,
         "vehicle_number": "",
         "dsr_id": "dsr-2",
-        "dsr_name": "Amit Patel",
+        "dsr_name": "Priya Patel",
         "selling_price": Decimal("22"),
         "total_amount": Decimal("88"),
         "payment_type": "Credit",
@@ -327,7 +327,7 @@ SALES = [
 # ═══════════════════════════════════════════════════════
 
 class Command(BaseCommand):
-    help = "Seed DEALERCORE database with dummy data"
+    help = "Seed DEALERCORE database with dummy data (multi-tenant)"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -344,22 +344,29 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Flushing existing data..."))
             self._flush_all()
 
-        self.stdout.write(self.style.HTTP_NOT_FOUND("Seeding DEALERCORE v3.0...\n"))
+        self.stdout.write(self.style.HTTP_NOT_FOUND("Seeding DEALERCORE v3.0 (Multi-Tenant)...\n"))
 
         with transaction.atomic():
-            self._seed_brands(verbose)
-            self._seed_categories(verbose)
-            self._seed_suppliers(verbose)
-            self._seed_products(verbose)
-            self._seed_restocks(verbose)
-            self._seed_dsrs(verbose)
-            self._seed_dealers(verbose)
-            self._seed_sales(verbose)
+            # Seed the ONE dealer (SattaBase subscriber)
+            dealer = self._seed_dealer(verbose)
+            
+            # Seed DSRs and their assignments to the dealer
+            self._seed_dsrs(dealer, verbose)
+            
+            # Seed all business data associated with the dealer
+            self._seed_brands(dealer, verbose)
+            self._seed_categories(dealer, verbose)
+            self._seed_suppliers(dealer, verbose)
+            self._seed_products(dealer, verbose)
+            self._seed_restocks(dealer, verbose)
+            self._seed_sales(dealer, verbose)
 
         self.stdout.write(self.style.SUCCESS("\nDone. Database seeded successfully."))
         self.stdout.write(self.style.SUCCESS(
-            "  4 brands, 4 categories, 4 suppliers, 5 products, 5 restocks, "
-            "4 DSRs, 4 dealers, 3 sales"
+            "  1 dealer (subscriber), 4 DSRs, 4 brands, 4 categories, 4 suppliers, 5 products, 5 restocks, 3 sales"
+        ))
+        self.stdout.write(self.style.NOTICE(
+            f"  All business data associated with dealer: {dealer.username}"
         ))
 
     # ─── Flush ──────────────────────────────────────────
@@ -372,99 +379,31 @@ class Command(BaseCommand):
         Product.objects.all().delete()
         Category.objects.all().delete()
         Brand.objects.all().delete()
+        DsrDealerAssignment.objects.all().delete()
         DSR.objects.all().delete()
         DealerConfig.objects.all().delete()
         Supplier.objects.all().delete()
 
     # ─── Seeders (order matters for FK constraints) ────
 
-    def _seed_brands(self, verbose):
-        count = 0
-        for b in BRANDS:
-            obj, created = Brand.objects.get_or_create(
-                id=b["id"],
-                defaults=b,
-            )
-            if created:
-                count += 1
-                if verbose:
-                    self.stdout.write(f"  + Brand: {obj.name}")
-        self.stdout.write(
-            self.style.SUCCESS(f"  Brands:    {count} created")
+    def _seed_dealer(self, verbose):
+        """Seed the ONE dealer configuration (SattaBase subscriber)."""
+        obj, created = DealerConfig.objects.get_or_create(
+            username=PRIMARY_DEALER["username"],
+            defaults=PRIMARY_DEALER,
         )
-
-    def _seed_categories(self, verbose):
-        count = 0
-        for c in CATEGORIES:
-            obj, created = Category.objects.get_or_create(
-                id=c["id"],
-                defaults=c,
-            )
-            if created:
-                count += 1
-                if verbose:
-                    self.stdout.write(f"  + Category: {obj.name}")
+        if created:
+            if verbose:
+                self.stdout.write(f"  + Dealer: {obj.full_name} (@{obj.username})")
         self.stdout.write(
-            self.style.SUCCESS(f"  Categories: {count} created")
+            self.style.SUCCESS(f"  Dealer:   {obj.username} ({obj.full_name})")
         )
+        return obj
 
-    def _seed_suppliers(self, verbose):
+    def _seed_dsrs(self, dealer, verbose):
+        """Seed DSRs and create dealer assignments."""
         count = 0
-        for s in SUPPLIERS:
-            obj, created = Supplier.objects.get_or_create(
-                id=s["id"],
-                defaults=s,
-            )
-            if created:
-                count += 1
-                if verbose:
-                    self.stdout.write(f"  + Supplier: {obj.name}")
-        self.stdout.write(
-            self.style.SUCCESS(f"  Suppliers: {count} created")
-        )
-
-    def _seed_products(self, verbose):
-        count = 0
-        for p in PRODUCTS:
-            obj, created = Product.objects.get_or_create(
-                id=p["id"],
-                defaults=p,
-            )
-            if created:
-                count += 1
-                if verbose:
-                    self.stdout.write(f"  + Product: {obj.name} (stock={obj.stock})")
-        self.stdout.write(
-            self.style.SUCCESS(f"  Products:  {count} created")
-        )
-
-    def _seed_restocks(self, verbose):
-        count = 0
-        for r in RESTOCKS:
-            product = Product.objects.get(id=r["product_id"])
-            obj, created = RestockRecord.objects.get_or_create(
-                id=r["id"],
-                defaults={
-                    **r,
-                    "product": product,
-                },
-            )
-            if created:
-                # Increase product stock to keep stock consistent: stock += restock_quantity
-                product.stock = product.stock + r["quantity"]
-                product.save(update_fields=["stock", "updated_at"])
-                count += 1
-                if verbose:
-                    self.stdout.write(
-                        f"  + Restock: {obj.product_name} x{obj.quantity} "
-                        f"(stock now: {product.stock})"
-                    )
-        self.stdout.write(
-            self.style.SUCCESS(f"  Restocks:  {count} created")
-        )
-
-    def _seed_dsrs(self, verbose):
-        count = 0
+        assignment_count = 0
         for d in DSRS:
             parent = None
             if d["parent_dsr_id"]:
@@ -484,26 +423,133 @@ class Command(BaseCommand):
                 count += 1
                 if verbose:
                     self.stdout.write(f"  + DSR: {obj.name} ({obj.role})")
+            
+            # Create dealer assignment - DSR works FOR the dealer
+            assignment_id = f"{d['id']}-{dealer.username}"
+            assignment, assignment_created = DsrDealerAssignment.objects.get_or_create(
+                id=assignment_id,
+                defaults={
+                    "dsr": obj,
+                    "dealer": dealer,
+                    "role": obj.role,
+                    "is_active": True,
+                    "commission_rate": Decimal("5.00"),
+                },
+            )
+            if assignment_created:
+                assignment_count += 1
+                if verbose:
+                    self.stdout.write(f"    + Assignment: {obj.name} → {dealer.username}")
+        
         self.stdout.write(
-            self.style.SUCCESS(f"  DSRs:      {count} created")
+            self.style.SUCCESS(f"  DSRs:     {count} created, {assignment_count} assignments")
         )
 
-    def _seed_dealers(self, verbose):
+    def _seed_brands(self, dealer, verbose):
+        """Seed brands with dealer association for multi-tenancy."""
         count = 0
-        for d in DEALERS:
-            obj, created = DealerConfig.objects.get_or_create(
-                username=d["username"],
-                defaults=d,
+        for b in BRANDS:
+            obj, created = Brand.objects.get_or_create(
+                id=b["id"],
+                defaults={
+                    **b,
+                    "dealer": dealer,
+                },
             )
             if created:
                 count += 1
                 if verbose:
-                    self.stdout.write(f"  + Dealer: {obj.full_name} (@{obj.username})")
+                    self.stdout.write(f"  + Brand: {obj.name} (dealer={dealer.username})")
         self.stdout.write(
-            self.style.SUCCESS(f"  Dealers:   {count} created")
+            self.style.SUCCESS(f"  Brands:    {count} created")
         )
 
-    def _seed_sales(self, verbose):
+    def _seed_categories(self, dealer, verbose):
+        """Seed categories with dealer association for multi-tenancy."""
+        count = 0
+        for c in CATEGORIES:
+            obj, created = Category.objects.get_or_create(
+                id=c["id"],
+                defaults={
+                    **c,
+                    "dealer": dealer,
+                },
+            )
+            if created:
+                count += 1
+                if verbose:
+                    self.stdout.write(f"  + Category: {obj.name} (dealer={dealer.username})")
+        self.stdout.write(
+            self.style.SUCCESS(f"  Categories: {count} created")
+        )
+
+    def _seed_suppliers(self, dealer, verbose):
+        """Seed suppliers with dealer association for multi-tenancy."""
+        count = 0
+        for s in SUPPLIERS:
+            obj, created = Supplier.objects.get_or_create(
+                id=s["id"],
+                defaults={
+                    **s,
+                    "dealer": dealer,
+                },
+            )
+            if created:
+                count += 1
+                if verbose:
+                    self.stdout.write(f"  + Supplier: {obj.name} (dealer={dealer.username})")
+        self.stdout.write(
+            self.style.SUCCESS(f"  Suppliers: {count} created")
+        )
+
+    def _seed_products(self, dealer, verbose):
+        """Seed products with dealer association for multi-tenancy."""
+        count = 0
+        for p in PRODUCTS:
+            obj, created = Product.objects.get_or_create(
+                id=p["id"],
+                defaults={
+                    **p,
+                    "dealer": dealer,
+                },
+            )
+            if created:
+                count += 1
+                if verbose:
+                    self.stdout.write(f"  + Product: {obj.name} (stock={obj.stock}, dealer={dealer.username})")
+        self.stdout.write(
+            self.style.SUCCESS(f"  Products:  {count} created")
+        )
+
+    def _seed_restocks(self, dealer, verbose):
+        """Seed restock records with dealer association for multi-tenancy."""
+        count = 0
+        for r in RESTOCKS:
+            product = Product.objects.get(id=r["product_id"])
+            obj, created = RestockRecord.objects.get_or_create(
+                id=r["id"],
+                defaults={
+                    **r,
+                    "product": product,
+                    "dealer": dealer,
+                },
+            )
+            if created:
+                # Increase product stock to keep stock consistent: stock += restock_quantity
+                product.stock = product.stock + r["quantity"]
+                product.save(update_fields=["stock", "updated_at"])
+                count += 1
+                if verbose:
+                    self.stdout.write(
+                        f"  + Restock: {obj.product_name} x{obj.quantity} "
+                        f"(stock now: {product.stock}, dealer={dealer.username})"
+                    )
+        self.stdout.write(
+            self.style.SUCCESS(f"  Restocks:  {count} created")
+        )
+
+    def _seed_sales(self, dealer, verbose):
+        """Seed sales records with dealer association for multi-tenancy."""
         count = 0
         for s in SALES:
             product = Product.objects.get(id=s["product_id"])
@@ -531,6 +577,7 @@ class Command(BaseCommand):
                     "due_date": s["due_date"],
                     "date": s["date"],
                     "is_closed_with_due": s["is_closed_with_due"],
+                    "dealer": dealer,
                 },
             )
             if created:
@@ -557,7 +604,7 @@ class Command(BaseCommand):
                     self.stdout.write(
                         f"  + Sale: {obj.customer_name} — {obj.product_name} "
                         f"x{obj.quantity} ({obj.payment_type}) "
-                        f"(stock now: {product.stock})"
+                        f"(stock now: {product.stock}, dealer={dealer.username})"
                     )
         self.stdout.write(
             self.style.SUCCESS(f"  Sales:     {count} created")
