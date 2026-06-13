@@ -602,6 +602,12 @@ class ReportsController:
         Dealer Context:
             Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        # FIX A-1 (Phase A — CRIT-1): server-side enforcement of the
+        # `ai_insights` feature flag. Frontend-only checks were bypassable
+        # via direct API calls.
+        from common.plan_limits import check_feature
+        check_feature(request, "ai_insights")
+
         # Get dealer context from request
         dealer_username = await get_dealer_context(request)
 

@@ -158,12 +158,19 @@ class InventoryController:
     async def add_product(self, request, payload: AddProductIn):
         """Create a new product with stock=0. Auto-generates ID.
         Auto-creates brand/category in registry if not already present.
-        
+
         The product is automatically associated with the current dealer context.
         """
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
-        
+
+        # FIX A-1 (Phase A — CRIT-1): server-side enforcement of
+        # `max_products` plan limit. Previously this check ran only in
+        # the frontend; a user with a valid JWT could bypass it via curl.
+        from common.plan_limits import check_plan_limit
+        current_count = await Product.objects.filter(dealer=dealer).acount()
+        check_plan_limit(request, "max_products", current_count + 1)
+
         # Auto-create brand if not exists (dealer-scoped)
         if payload.brand:
             await Brand.objects.aupdate_or_create(

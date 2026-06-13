@@ -70,11 +70,18 @@ class SupplierController:
     @route.post("", response=SupplierOut, summary="Create a supplier")
     async def create_supplier(self, request, payload: CreateSupplierIn):
         """Create a new supplier. Auto-generates ID.
-        
+
         The supplier is automatically associated with the current dealer context.
         """
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
+
+        # FIX A-1 (Phase A — CRIT-1): server-side enforcement of
+        # `max_suppliers` plan limit.
+        from common.plan_limits import check_plan_limit
+        current_count = await Supplier.objects.filter(dealer=dealer).acount()
+        check_plan_limit(request, "max_suppliers", current_count + 1)
+
         supplier = await Supplier.objects.acreate(
             id=await self._generate_id(dealer_username),
             name=payload.name,

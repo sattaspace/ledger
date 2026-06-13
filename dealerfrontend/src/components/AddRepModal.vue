@@ -377,8 +377,13 @@ watch([dsrEmail, dsrPhone, dsrName, role, parentDsrId, mode], () => {
                 <div>
                   <p class="text-sm font-semibold text-amber-800">Team Limit Reached</p>
                   <p class="text-xs text-amber-600 mt-1">
-                    You've reached the maximum of {{ maxDsrs }} sales representatives.
-                    Upgrade your plan to add more team members.
+                    You have {{ currentDsrCount }} of {{ maxDsrs }} sales representatives.
+                    <span v-if="currentDsrCount > 0">Delete an existing DSR or u</span>
+                    <span v-else>U</span>pgrade your plan to add more team members.
+                  </p>
+                  <!-- Debug info for development -->
+                  <p class="text-xs text-amber-400 mt-2 font-mono">
+                    [Debug] Limit: {{ maxDsrs }}, Current: {{ currentDsrCount }}, Access: {{ access?.max_dsrs ?? 'not set' }}
                   </p>
                 </div>
               </div>

@@ -31,8 +31,12 @@ export interface DsrLoginResponse {
   refresh: string;
   user: DsrUser;
   dealers: DealerChoice[];
-  require_dealer_selection: boolean;
-  awaiting_invitation?: boolean; // True if DSR has no dealer assignments
+  // FIX B-2: previously snake_case. The apiClient auto-converts
+  // response keys to camelCase, so the runtime shape is camelCase.
+  // Declaring snake_case here caused `response.requireDealerSelection`
+  // / `response.awaitingInvitation` to always be undefined.
+  requireDealerSelection: boolean;
+  awaitingInvitation?: boolean; // True if DSR has no dealer assignments
   message?: string;
 }
 
@@ -148,7 +152,7 @@ export const dsrAuthService = {
       hasAccess: !!response.access,
       hasRefresh: !!response.refresh,
       hasUser: !!response.user,
-      awaitingInvitation: response.awaiting_invitation,
+      awaitingInvitation: response.awaitingInvitation,
     });
 
     // Store tokens and user
@@ -163,7 +167,7 @@ export const dsrAuthService = {
 
     // If only one dealer, store it (check dealers array exists first)
     if (
-      !response.require_dealer_selection &&
+      !response.requireDealerSelection &&
       response.dealers &&
       response.dealers.length === 1
     ) {
@@ -204,11 +208,16 @@ export const dsrAuthService = {
   },
 
   /**
-   * Register DSR via invitation token
+   * Register DSR via invitation token.
+   *
+   * FIX B-2: payload now sends `full_name` (matches the backend's
+   * `DsrRegisterInput.full_name` field and the self-register flow's
+   * shape). Previously sent `name`, which the backend stored as `""`,
+   * producing DSR records with blank names.
    */
   async register(
     token: string,
-    name: string,
+    fullName: string,
     phone: string,
     password: string,
   ): Promise<DsrRegisterResponse> {
@@ -216,7 +225,7 @@ export const dsrAuthService = {
       "/dsr/auth/register",
       {
         token,
-        name,
+        full_name: fullName,
         phone,
         password,
       },
@@ -275,10 +284,14 @@ export const dsrAuthService = {
   async getProfile(): Promise<DsrProfileResponse> {
     const accessToken = this.getAccessToken();
 
-    console.log("[DSR AUTH] getProfile - token check:", {
-      hasToken: !!accessToken,
-      tokenPreview: accessToken ? `${accessToken.substring(0, 20)}...` : "null",
-    });
+    // FIX M-8: gate token diagnostics behind DEV. Even a 20-char token
+    // prefix aids attackers using XSS or physical access to devtools.
+    if (import.meta.env.DEV) {
+      console.log("[DSR AUTH] getProfile - token check:", {
+        hasToken: !!accessToken,
+        tokenPreview: accessToken ? `${accessToken.substring(0, 20)}...` : "null",
+      });
+    }
 
     if (!accessToken) {
       throw new Error("No access token available. Please login again.");

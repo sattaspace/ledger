@@ -37,24 +37,53 @@ const accessMap = ref<Record<string, boolean | number | string>>({});
 const isLoadingAccess = ref(false);
 
 /**
- * Update the access map (called by useAuth after fetching /billing/auth/me)
+ * Update the access map (called by useAuth after fetching /billing/auth/me).
+ *
+ * FIX M-15: validate the payload before storing. Without this, an
+ * accidental nested object/array from a backend contract change would
+ * fall through `Boolean(value)` in `hasAccess()` and silently grant
+ * access. We strip down to primitive types only.
+ *
+ * @internal Use only via useAuth. Not part of the useAccess() composable API.
  */
 export function setAccessMap(
   access: Record<string, boolean | number | string>,
 ): void {
-  console.log(
-    "%c[ACCESS] setAccessMap called",
-    "color: #8b5cf6; font-weight: bold",
-    {
-      keys: Object.keys(access),
-      access,
-    },
-  );
-  accessMap.value = access;
+  const sanitized: Record<string, boolean | number | string> = {};
+  let dropped = 0;
+  for (const [key, value] of Object.entries(access || {})) {
+    if (
+      typeof value === "boolean" ||
+      typeof value === "number" ||
+      typeof value === "string"
+    ) {
+      sanitized[key] = value;
+    } else {
+      dropped++;
+    }
+  }
+  if (dropped > 0 && import.meta.env.DEV) {
+    console.warn(
+      `[ACCESS] setAccessMap dropped ${dropped} non-primitive value(s)`,
+    );
+  }
+  if (import.meta.env.DEV) {
+    console.log(
+      "%c[ACCESS] setAccessMap called",
+      "color: #8b5cf6; font-weight: bold",
+      {
+        keys: Object.keys(sanitized),
+        access: sanitized,
+      },
+    );
+  }
+  accessMap.value = sanitized;
 }
 
 /**
- * Clear the access map (called on logout)
+ * Clear the access map (called on logout).
+ *
+ * @internal Use only via useAuth. Not part of the useAccess() composable API.
  */
 export function clearAccessMap(): void {
   accessMap.value = {};
@@ -105,9 +134,22 @@ export function useAccess() {
       const result = (() => {
         if (value === undefined || value === null) return false;
         if (typeof value === "boolean") return value;
-        if (typeof value === "number") return value > 0;
+        if (typeof value === "number") {
+          // FIX L-11: numeric 0 means "unlimited" for limit keys (e.g.
+          // max_products=0 in the billing seed data means "unlimited").
+          // Treat 0 as truthy for limit keys, falsy for feature keys.
+          // Since we don't have an explicit flag-vs-limit distinction
+          // here, default to truthy when key starts with "max_" (a
+          // future refactor could introduce a separate enum for keys).
+          if (value === 0) return key.startsWith("max_");
+          return value > 0;
+        }
         if (typeof value === "string") {
-          return value !== "" && value !== "false" && value !== "0";
+          // FIX L-10: case-insensitive truthy check. Previously "False",
+          // "NO", "disabled" were all truthy. Now any case of false-ish
+          // strings is treated as falsy.
+          const lower = value.trim().toLowerCase();
+          return lower !== "" && lower !== "false" && lower !== "0" && lower !== "no";
         }
         return Boolean(value);
       })();
@@ -159,7 +201,13 @@ export function useAccess() {
       const value = accessMap.value[key];
       if (value === undefined || value === null) return defaultValue;
       const num = Number(value);
-      return isNaN(num) ? defaultValue : num;
+      if (isNaN(num)) return defaultValue;
+      // FIX L-12: clamp to non-negative finite integers. A negative limit
+      // (e.g. -5 from a backend bug) is dangerous — callers like
+      // `if (current >= limit)` would treat any negative as "unlimited"
+      // and the UI would show -5. Floor to defaultValue in that case.
+      if (!isFinite(num) || num < 0) return defaultValue;
+      return Math.floor(num);
     });
   }
 
@@ -174,12 +222,25 @@ export function useAccess() {
   const isAuthenticated = computed(() => !!getAccessToken());
 
   /**
-   * Check if user has dealer-level access
-   * (This is a convenience for dealer-specific UI)
+   * Check if user has dealer-level access.
+   *
+   * FIX B-11: previously used `hasAccess("dashboard") && isAuthenticated` as
+   * a heuristic, which silently granted `isDealer=true` to any DSR whose
+   * plan happened to include `dashboard`. We now read the user's actual
+   * role from the auth profile (set via /billing/auth/me).
+   *
+   * Lazy-imported to avoid a circular import: useAuth.ts already imports
+   * getAccessToken from this file.
    */
   const isDealer = computed(() => {
-    // Check if access map indicates dealer status
-    return hasAccess("dashboard").value && isAuthenticated.value;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const authModule = require("./useAuth");
+      const user = authModule?.user?.value;
+      return user?.role === "dealer" || user?.is_dealer === true;
+    } catch {
+      return false;
+    }
   });
 
   return {
@@ -195,27 +256,18 @@ export function useAccess() {
     getAccess,
     getLimit,
 
-    // State management (for useAuth)
-    setAccessMap,
-    clearAccessMap,
+    // FIX B-6: setAccessMap and clearAccessMap removed from the public
+    // composable API. They are still exported at module scope so useAuth
+    // can call them, but downstream code can no longer accidentally
+    // rewrite the global permission state.
   };
 }
 
 // ─── Convenience Guards ──────────────────────────────────────────────────────
 
-/**
- * Permission guard for components (backward compatibility)
- *
- * @example
- * ```vue
- * <template>
- *   <AccessGuard feature="reports">
- *     <ReportsPanel />
- *   </AccessGuard>
- * </template>
- * ```
- */
-export function canAccessFeature(feature: string): boolean {
-  const { hasAccess } = useAccess();
-  return hasAccess(feature).value;
-}
+// FIX L-9: removed `canAccessFeature()` — it was exported but never
+// imported anywhere in the project (grep -r canAccessFeature returns
+// only this definition). The proper access pattern is:
+//   const { hasAccess } = useAccess();
+//   const canView = hasAccess('reports');
+// or use the <PermissionGuard> component for template-side gating.

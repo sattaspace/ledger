@@ -138,14 +138,44 @@ export async function exchangeAuthCode(code: string): Promise<TokenPair> {
  */
 export function redirectToBase(path: string, returnUrl?: string): void {
   let url = `${config.baseDomainUrl}${path}`;
-  const effectiveReturnUrl =
-    returnUrl || (typeof window !== "undefined" ? window.location.href : "");
-  if (effectiveReturnUrl) {
+  // FIX L-8: validate returnUrl before using it. Without this check, an
+  // attacker-controlled link can hand us `returnUrl=https://evil.com/phish`
+  // and we'll happily pass it to the base domain, which will redirect the
+  // user there after the action. Only allow same-origin (this sister domain).
+  let effectiveReturnUrl = returnUrl || "";
+  if (effectiveReturnUrl && !isAllowedReturnUrl(effectiveReturnUrl)) {
+    // Silently drop suspicious returnUrl rather than redirecting to it.
+    effectiveReturnUrl = "";
+  }
+  if (!effectiveReturnUrl && typeof window !== "undefined") {
+    effectiveReturnUrl = window.location.href;
+  }
+  if (effectiveReturnUrl && isAllowedReturnUrl(effectiveReturnUrl)) {
     const sep = url.includes("?") ? "&" : "?";
     url = `${url}${sep}return_url=${encodeURIComponent(effectiveReturnUrl)}`;
   }
   if (typeof window !== "undefined") {
     window.location.href = url;
+  }
+}
+
+/**
+ * FIX L-8 helper: returnUrl is safe to use only if it points at this sister
+ * domain (config.thisDomainUrl) or is a relative path. Anything else is
+ * treated as an open-redirect attempt and dropped.
+ */
+function isAllowedReturnUrl(target: string): boolean {
+  if (typeof window === "undefined") return false;
+  if (!target) return false;
+  // Relative paths starting with "/" (but not "//" which is protocol-relative)
+  if (target.startsWith("/") && !target.startsWith("//")) return true;
+  try {
+    const parsed = new URL(target);
+    const allowed = new URL(config.thisDomainUrl);
+    return parsed.origin === allowed.origin;
+  } catch {
+    // Unparseable URL — reject.
+    return false;
   }
 }
 

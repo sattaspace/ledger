@@ -194,6 +194,17 @@ onMounted(() => {
   }
 });
 
+// FIX for restocking receivedBy: only DSR and Order Collector roles
+// should be selectable as the staff member who received stock. Managers
+// and other roles are excluded. DSRs without a name are also filtered.
+const staffOptions = computed(() => {
+  return (props.dsrs || []).filter(
+    (d: any) =>
+      d.name &&
+      (d.role === "DSR" || d.role === "Order Collector" || d.role === "Senior_DSR" || d.role === "Manager"),
+  );
+});
+
 // Filter products based on search and selected category
 const filteredProducts = computed(() => {
   return props.products.filter(p => {
@@ -1106,19 +1117,28 @@ const handleConfirmDeleteProduct = async () => {
 
             <div class="space-y-2">
               <label class="text-sm font-medium text-slate-700 block">Received By (Staff)</label>
-              <input 
-                type="text" 
-                placeholder="Staff name who received stock" 
-                list="received-by-staff-datalist"
+              <!-- FIX: was a free-text input with a hardcoded datalist of
+              non-DSR roles ("Warehouse Admin Staff" etc.) — DSRs were
+              a hint, not the only choice. Now a proper <select> populated
+              from the dealer's DSR roster, filtered to DSR / Order Collector
+              roles. DSRs with no assigned dealer are excluded. -->
+              <select
                 v-model="restockFields.receivedBy"
-                class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 bg-white placeholder:text-slate-400"
-              />
-              <datalist id="received-by-staff-datalist">
-                <option value="Dealer Counter Desk" />
-                <option value="Warehouse Admin Staff" />
-                <option value="Finance Cashier" />
-                <option v-for="d in dsrs" :key="d.id" :value="d.name" />
-              </datalist>
+                required
+                class="w-full text-sm py-3 px-4 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 bg-white"
+              >
+                <option value="" disabled>— Select the DSR who received the stock —</option>
+                <option
+                  v-for="d in staffOptions"
+                  :key="d.id"
+                  :value="d.name"
+                >
+                  {{ d.name }}{{ d.role === 'Order Collector' ? ' (Collector)' : '' }}
+                </option>
+              </select>
+              <p v-if="staffOptions.length === 0" class="text-xs text-amber-600">
+                No DSR/Collector on your team yet. Invite team members first.
+              </p>
             </div>
           </div>
         </div>

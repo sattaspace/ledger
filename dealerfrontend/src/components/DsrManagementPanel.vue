@@ -27,7 +27,7 @@ import {
   UserCheck,
   ChevronDown
 } from 'lucide-vue-next';
-import apiClient from '../services/api/apiClient';
+import apiClient from '../services/apiClient';
 
 // Types
 interface DsrAssignment {
@@ -96,20 +96,33 @@ const hasData = computed(() =>
 async function fetchData() {
   isLoading.value = true;
   error.value = '';
-  
+
   try {
+    // FIX snake/camel: apiClient auto-converts backend snake_case keys to
+    // camelCase. Previously read `response.pending_invitations` which was
+    // always undefined after conversion → Pending tab showed 0 even with
+    // real pending invitations.
     const response = await apiClient.get<{
       active: DsrAssignment[];
-      pending_invitations: PendingInvitation[];
+      pendingInvitations: PendingInvitation[];
       removed: RemovedDsr[];
     }>('/dealer/dsr');
-    
+
     activeDsrs.value = response.active || [];
-    pendingInvitations.value = response.pending_invitations || [];
+    pendingInvitations.value = response.pendingInvitations || [];
     removedDsrs.value = response.removed || [];
   } catch (err: any) {
+    // FIX error reporting: apiClient throws `ApiError` with shape
+    // `{ status, message, data }`, NOT Axios's `{ response: { data } }`.
+    // The previous code always fell through to the generic fallback.
     console.error('Failed to fetch DSR data:', err);
-    error.value = err.response?.data?.detail || 'Failed to load DSR data';
+    const status = err?.status ?? err?.response?.status;
+    const detail = err?.data?.detail ?? err?.response?.data?.detail;
+    const msg = err?.message;
+    error.value =
+      detail ||
+      msg ||
+      (status ? `Failed to load DSR data (HTTP ${status})` : 'Failed to load DSR data');
   } finally {
     isLoading.value = false;
   }
@@ -223,6 +236,13 @@ async function revokeInvitation(invitationId: string) {
 onMounted(() => {
   fetchData();
 });
+
+// FIX B-5: expose fetchData so the parent (App.vue) can call it directly
+// after an invite is created. Previously the parent relied on a `@refresh`
+// event from DsrManagementPanel, but that event was emitted only from
+// savePermissions() — adding a new invite via AddRepModal called
+// fetchFullDetails() which refreshed everything EXCEPT the DSR roster.
+defineExpose({ fetchData });
 </script>
 
 <template>
@@ -380,7 +400,10 @@ onMounted(() => {
               <Clock class="h-5 w-5 text-amber-600" />
             </div>
             <div>
-              <p class="font-semibold text-slate-800">{{ inv.dsr_phone }}</p>
+              <!-- FIX M-12: render dsr_email as the primary label since
+              dsr_phone is optional (the invitation flow allows email-only
+              invites). Falls back to phone if email is somehow empty. -->
+              <p class="font-semibold text-slate-800">{{ inv.dsr_email || inv.dsr_phone || 'Unknown' }}</p>
               <div class="flex items-center gap-2 mt-1">
                 <span :class="['px-2 py-0.5 text-xs font-medium rounded-full', getRoleBadgeClass(inv.role)]">
                   {{ formatRole(inv.role) }}

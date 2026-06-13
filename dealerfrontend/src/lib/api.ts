@@ -33,11 +33,18 @@ let _refreshToken: string | null = null;
 
 /**
  * Token persistence strategy:
- *   - Default: sessionStorage — survives full page reloads within the tab,
- *     cleared when tab/window closes. Good balance of convenience + security.
- *   - "Remember me": localStorage — persists across tabs and browser restarts.
- *   - Tokens are kept in-memory for fast access, with storage as the
- *     persistence layer that survives page reloads.
+ *   - Access token: kept IN MEMORY ONLY (`_accessToken`). Never written to
+ *     sessionStorage or localStorage. On page reload, the in-memory copy is
+ *     gone; the client either uses a refresh token from storage to mint a
+ *     new one, or redirects to login. This is the L-6 fix: an XSS payload
+ *     that exfiltrates storage gets the refresh token (long-lived) but NOT
+ *     a working access token it can reuse directly without another request.
+ *   - Refresh token: persisted to sessionStorage by default (cleared when
+ *     the tab/window closes). With "remember me" it goes to localStorage so
+ *     the user stays signed in across browser restarts.
+ *   - The proper hardening (L-6) is to move the refresh token into an
+ *     httpOnly Secure cookie set by SattaBase. That requires SattaBase-side
+ *     changes and is tracked as out of scope in the bug report.
  */
 
 /** Pick the correct storage backend based on "remember me" preference. */
@@ -56,13 +63,13 @@ function tokenStorage(): Storage {
 function initTokens(): void {
   if (typeof window === "undefined") return;
   try {
-    const access =
-      sessionStorage.getItem(TOKEN_KEY_ACCESS) ||
-      localStorage.getItem(TOKEN_KEY_ACCESS);
+    // FIX L-6 (partial): we deliberately do NOT hydrate _accessToken from
+    // either storage. The access token is memory-only. On a fresh page
+    // load, the first API call will trigger refreshAccessToken() if a
+    // refresh token is available, otherwise the user lands on login.
     const refresh =
       sessionStorage.getItem(TOKEN_KEY_REFRESH) ||
       localStorage.getItem(TOKEN_KEY_REFRESH);
-    if (access) _accessToken = access;
     if (refresh) _refreshToken = refresh;
   } catch {
     /* storage unavailable */
@@ -85,7 +92,14 @@ function getRefreshToken(): string | null {
 }
 
 /**
- * Store tokens in memory AND the active storage backend.
+ * Store tokens in memory AND persist the refresh token to storage.
+ *
+ * FIX L-6 (partial): the access token is no longer persisted to
+ * sessionStorage / localStorage. Only the refresh token is stored.
+ * The access token lives in `_accessToken` for the lifetime of the
+ * page; on reload, `initTokens()` does not rehydrate it and the
+ * next API call triggers a refresh via the stored refresh token.
+ *
  * @param remember - true → localStorage (30-day persistence), false → sessionStorage
  */
 export function setTokens(
@@ -99,7 +113,10 @@ export function setTokens(
   if (typeof window === "undefined") return;
   try {
     const storage = remember ? localStorage : sessionStorage;
-    storage.setItem(TOKEN_KEY_ACCESS, access);
+    // Clear any old access tokens that may have been persisted by older
+    // code versions, so a downgrade doesn't leave them lingering.
+    sessionStorage.removeItem(TOKEN_KEY_ACCESS);
+    if (!remember) localStorage.removeItem(TOKEN_KEY_ACCESS);
     storage.setItem(TOKEN_KEY_REFRESH, refresh);
     localStorage.setItem(REMEMBER_KEY, String(remember));
   } catch {
@@ -134,15 +151,21 @@ export function isAuthenticated(): boolean {
 /**
  * Get the selected dealer username from localStorage.
  * Used for multi-tenant API requests.
+ *
+ * FIX L-7: was logging the dealer username to console on every API call.
+ * That leaks tenant context in production. The debug log is now gated
+ * behind `import.meta.env.DEV` so it only runs in dev builds.
  */
 export function getSelectedDealerUsername(): string | null {
   if (typeof window === "undefined") return null;
   try {
     const username = localStorage.getItem(DEALER_CONTEXT_KEY);
-    console.log("%c[API] getSelectedDealerUsername", "color: #8b5cf6;", {
-      key: DEALER_CONTEXT_KEY,
-      username,
-    });
+    if (import.meta.env.DEV) {
+      console.log("%c[API] getSelectedDealerUsername", "color: #8b5cf6;", {
+        key: DEALER_CONTEXT_KEY,
+        username,
+      });
+    }
     return username;
   } catch {
     return null;
@@ -207,6 +230,29 @@ function buildHeaders(
     if (dealerUsername) {
       headers["X-Dealer-Username"] = dealerUsername;
     }
+
+    // FIX A-1 (Phase A — CRIT-1): forward the access map to the backend
+    // so server-side plan limits (max_products, max_dsrs, max_suppliers,
+    // export_pdf, ai_insights, ...) can be enforced. The access map is
+    // populated from /billing/auth/me via useAuth + useAccess.
+    //
+    // Lazy import to avoid a circular dependency: useAccess imports
+    // getAccessToken from this file.
+    try {
+      // Dynamic require keeps the module load order safe.
+      const accessModule = require("../composables/useAccess");
+      const accessMap = accessModule?.access?.value;
+      if (accessMap && typeof accessMap === "object" && Object.keys(accessMap).length > 0) {
+        try {
+          headers["X-Plan-Limits"] = JSON.stringify(accessMap);
+        } catch {
+          // If the map contains non-serializable values (shouldn't
+          // happen — backend sends primitives only) skip silently.
+        }
+      }
+    } catch {
+      // useAccess not available — skip header.
+    }
   }
 
   return headers;
@@ -246,11 +292,17 @@ export async function refreshAccessToken(): Promise<string | null> {
         if (data.refresh) {
           _refreshToken = data.refresh;
         }
-        // Persist refreshed tokens to storage
+        // FIX L-6 (partial): persist only the refresh token. The access
+        // token lives in memory only — see setTokens() for the rationale.
         if (typeof window !== "undefined") {
           try {
             const storage = tokenStorage();
-            storage.setItem(TOKEN_KEY_ACCESS, _accessToken!);
+            sessionStorage.removeItem(TOKEN_KEY_ACCESS);
+            if (storage === localStorage) {
+              // remember_me=true case: clear any previously stored access
+              // token in localStorage as well.
+              localStorage.removeItem(TOKEN_KEY_ACCESS);
+            }
             if (data.refresh)
               storage.setItem(TOKEN_KEY_REFRESH, _refreshToken!);
           } catch {
@@ -335,10 +387,13 @@ async function request<T>(
       retryHeaders["Authorization"] = `Bearer ${newToken}`;
       response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
     } else {
-      // Refresh failed — clear tokens and redirect to login
+      // Refresh failed — clear tokens and redirect to login.
+      // FIX B-10: previously redirected to "/auth/login", but the SPA
+      // login page lives at "/" (no /auth/* routes on this domain).
+      // The redirect landed users on a 404 instead of the login screen.
       clearTokens();
       if (typeof window !== "undefined") {
-        window.location.href = "/auth/login";
+        window.location.href = "/";
       }
       throw createApiError(response, "Session expired. Please sign in again.");
     }

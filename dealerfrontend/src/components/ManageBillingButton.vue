@@ -27,6 +27,24 @@ const error = ref<string | null>(null);
 const showError = ref(false);
 
 /**
+ * FIX M-23: validate that the `return_to` path is a safe relative path on
+ * the base domain before sending it to SattaBase. Currently `targetPath`
+ * is hardcoded, but if a future caller accepts a dynamic path (e.g. via a
+ * prop or query param), an attacker could supply an absolute URL and
+ * turn this into an open redirect.
+ */
+function isSafeReturnPath(p: string): boolean {
+  if (!p) return false;
+  if (!p.startsWith('/') || p.startsWith('//')) return false;
+  try {
+    const parsed = new URL(p, config.baseDomainUrl);
+    return parsed.origin === new URL(config.baseDomainUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Generate auth code and redirect to SattaBase billing
  */
 async function handleBillingRedirect(targetPath: string = '/dashboard/billing'): Promise<void> {
@@ -39,9 +57,11 @@ async function handleBillingRedirect(targetPath: string = '/dashboard/billing'):
 
     // Build callback URL
     const callbackUrl = `${config.baseDomainUrl}/auth/callback`;
+    // Default to /dashboard/billing if the caller supplied an unsafe path.
+    const safeReturnTo = isSafeReturnPath(targetPath) ? targetPath : '/dashboard/billing';
     const params = new URLSearchParams({
       code,
-      return_to: targetPath,
+      return_to: safeReturnTo,
     });
 
     const redirectUrl = `${callbackUrl}?${params.toString()}`;

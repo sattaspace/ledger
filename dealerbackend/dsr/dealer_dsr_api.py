@@ -145,7 +145,17 @@ class DealerDsrController:
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
-        
+
+        # FIX A-1 (Phase A — CRIT-1): server-side enforcement of
+        # `max_dsrs` plan limit. Counts active assignments for this dealer
+        # and refuses to create more if the plan cap is reached.
+        from common.plan_limits import check_plan_limit
+        active_count = await DsrDealerAssignment.objects.filter(
+            dealer=dealer,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).acount()
+        check_plan_limit(request, "max_dsrs", active_count + 1)
+
         # Normalize email
         email = data.dsr_email.lower().strip()
         phone = data.dsr_phone.strip() if data.dsr_phone else ""

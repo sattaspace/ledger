@@ -227,26 +227,37 @@ class ApiClient {
       ...customConfig,
     };
 
-    // Add auth token from SattaBase auth ONLY if no Authorization header was already provided
-    // This allows DSR auth to pass its own token without being overwritten
-    if (!config.headers?.Authorization) {
-      const token = getAccessToken();
-      if (token) {
-        config.headers = {
-          ...config.headers,
-          Authorization: `Bearer ${token}`,
-        };
-      }
-    }
-
-    // Add X-Dealer-Username header for multi-tenancy
-    // This header tells the backend which dealer's data to access
-    const dealerUsername = getSelectedDealerUsername();
-    if (dealerUsername) {
+    // FIX B-12: previously always injected the DEALER JWT (from lib/api,
+    // i.e. SattaBase) into every request handled by apiClient. apiClient
+    // is used for BOTH dealer-business endpoints (where the dealer JWT is
+    // useful for identity) AND DSR-auth endpoints (where the dealer JWT
+    // is wrong — those endpoints expect a DSR-issued JWT or no auth).
+    //
+    // We now skip dealer-JWT injection only for DSR paths
+    // (anything under /dsr/...). Business endpoints continue to receive
+    // the dealer JWT as before.
+    const isDsrPath = endpoint.startsWith("/dsr/");
+    const token = (!config.headers?.Authorization && !isDsrPath)
+      ? getAccessToken()
+      : null;
+    if (token) {
       config.headers = {
         ...config.headers,
-        "X-Dealer-Username": dealerUsername,
+        Authorization: `Bearer ${token}`,
       };
+    }
+
+    // X-Dealer-Username is multi-tenancy for dealer-business endpoints
+    // only. DSR endpoints don't need it (the dealer context is implicit
+    // in the DSR's assignment).
+    if (!isDsrPath) {
+      const dealerUsername = getSelectedDealerUsername();
+      if (dealerUsername) {
+        config.headers = {
+          ...config.headers,
+          "X-Dealer-Username": dealerUsername,
+        };
+      }
     }
 
     // Add body for POST/PUT/PATCH

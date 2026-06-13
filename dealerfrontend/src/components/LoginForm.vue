@@ -12,12 +12,23 @@ const { login, isLoading, error, clearError } = useAuth();
 const email = ref('');
 const password = ref('');
 const showPassword = ref(false);
+// FIX L-13: backend login() already accepts a `remember` parameter that
+// persists the refresh token to localStorage instead of sessionStorage.
+// The frontend just wasn't exposing it. Default to false (session-only)
+// for safer default — users opt in to longer sessions explicitly.
+const rememberMe = ref(false);
 
-// Convert Error object to message string for display
+// FIX M-10: stricter email regex (RFC 5322 simplified). Previously any
+// non-empty email passed validation, allowing "a@b" to be sent.
+// FIX M-3: trim whitespace from email/password before submit so leading/
+// trailing spaces don't produce "user not found" responses.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const errorMessage = computed(() => error.value?.message || null);
 
 const isValid = computed(() => {
-  return email.value.length > 0 && password.value.length >= 6;
+  const trimmedEmail = email.value.trim();
+  return EMAIL_RE.test(trimmedEmail) && password.value.length >= 6;
 });
 
 async function handleSubmit() {
@@ -26,11 +37,10 @@ async function handleSubmit() {
   clearError();
 
   try {
-    await login(email.value, password.value);
-
+    await login(email.value.trim(), password.value, rememberMe.value);
     emit('success');
   } catch {
-    // Error is handled by useAuth
+    password.value = '';
   }
 }
 
@@ -93,6 +103,18 @@ function handleEmailInput() {
         </button>
       </div>
     </div>
+
+    <!-- FIX L-13: Remember-me checkbox. Unchecked = refresh token in
+    sessionStorage (cleared on tab close). Checked = refresh token in
+    localStorage (survives browser restart). -->
+    <label class="flex items-center gap-2 text-sm text-slate-600 select-none cursor-pointer">
+      <input
+        v-model="rememberMe"
+        type="checkbox"
+        class="h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+      />
+      <span>Keep me signed in on this device</span>
+    </label>
 
     <!-- Submit Button -->
     <button

@@ -4,10 +4,12 @@
  * ---------------------------
  * Allows DSRs to register independently (without an invitation).
  * After registration, they can receive invitations from dealers.
+ * 
+ * Uses the isolated dsrClient - NO dependency on dealer auth.
  */
 import { ref, computed } from 'vue';
 import { Store, CheckCircle, UserPlus, AlertCircle } from 'lucide-vue-next';
-import dsrAuthService from '../services/api/dsrAuth.service';
+import { dsrApi } from '../services/dsrClient';
 
 const emit = defineEmits<{
   (e: 'registered'): void;
@@ -52,7 +54,9 @@ async function handleRegister() {
   successMessage.value = '';
   
   try {
-    const response = await dsrAuthService.selfRegister(
+    console.log('[DSR REGISTER] Registering:', email.value);
+    
+    await dsrApi.register(
       email.value,
       fullName.value,
       password.value,
@@ -66,9 +70,8 @@ async function handleRegister() {
       emit('registered');
     }, 1500);
   } catch (error: any) {
-    console.error('Registration failed:', error);
-    // ApiError has data.detail or data.code, or message directly
-    const detail = error?.data?.detail || error?.message || 'Registration failed. Please try again.';
+    console.error('[DSR REGISTER] Registration failed:', error);
+    const detail = error?.message || 'Registration failed. Please try again.';
     const code = error?.data?.code;
     
     // Provide user-friendly messages based on error code

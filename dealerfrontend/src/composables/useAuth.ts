@@ -69,24 +69,32 @@ async function fetchAuthMe(): Promise<User | null> {
   sharedLoading.value = true;
   sharedError.value = null;
 
-  console.log(
-    "%c[AUTH] Fetching /billing/auth/me...",
-    "color: #6366f1; font-weight: bold",
-  );
+  // FIX M-17: gate verbose auth diagnostics behind DEV. The full
+  // /billing/auth/me response includes the user object (email, id),
+  // subscription details, and the entire access map — all PII that
+  // should not leak to production consoles.
+  if (import.meta.env.DEV) {
+    console.log(
+      "%c[AUTH] Fetching /billing/auth/me...",
+      "color: #6366f1; font-weight: bold",
+    );
+  }
 
   try {
     const data = await apiClient.get<AuthMeResponse>("/billing/auth/me");
 
-    console.log(
-      "%c[AUTH] /billing/auth/me response",
-      "color: #10b981; font-weight: bold",
-      {
-        user: data.user,
-        subscription: data.subscription,
-        accessKeys: Object.keys(data.access || {}),
-        access: data.access,
-      },
-    );
+    if (import.meta.env.DEV) {
+      console.log(
+        "%c[AUTH] /billing/auth/me response",
+        "color: #10b981; font-weight: bold",
+        {
+          user: data.user,
+          subscription: data.subscription,
+          accessKeys: Object.keys(data.access || {}),
+          access: data.access,
+        },
+      );
+    }
 
     // The backend returns user + subscription + access scoped to this domain
     sharedUser.value = data.user as unknown as User;
@@ -101,24 +109,25 @@ async function fetchAuthMe(): Promise<User | null> {
 
     sharedInitialized.value = true;
 
-    console.log(
-      "%c[AUTH] Auth state updated",
-      "color: #10b981; font-weight: bold",
-      {
-        userId: sharedUser.value?.id,
-        userEmail: sharedUser.value?.email,
-        isDealer: data.access?.is_dealer,
-        role: data.access?.role,
-      },
-    );
+    if (import.meta.env.DEV) {
+      console.log(
+        "%c[AUTH] Auth state updated",
+        "color: #10b981; font-weight: bold",
+        {
+          userId: sharedUser.value?.id,
+          userEmail: sharedUser.value?.email,
+          isDealer: data.access?.is_dealer,
+          role: data.access?.role,
+        },
+      );
+    }
 
     return sharedUser.value;
   } catch (err) {
-    console.error(
-      "%c[AUTH] fetchAuthMe ERROR",
-      "color: #ef4444; font-weight: bold",
-      err,
-    );
+    // FIX M-17 (cont.): keep the error log in production, but trim to
+    // the message — full Error objects may include response bodies with
+    // PII (emails, subscription ids, etc.).
+    console.error("[AUTH] fetchAuthMe ERROR:", getErrorMessage(err));
     const message = getErrorMessage(err);
     sharedError.value = err instanceof Error ? err : new Error(message);
     return null;

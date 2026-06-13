@@ -7,6 +7,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { Store, CheckCircle, AlertCircle } from 'lucide-vue-next';
 import dsrAuthService from '../services/api/dsrAuth.service';
+import { dealerApi } from '../lib/api';
 
 const props = defineProps<{
   token: string;
@@ -53,24 +54,29 @@ const passwordTooShort = computed(() => {
   return password.value && password.value.length < 8;
 });
 
-// Validate invitation token on mount
+// Validate invitation token on mount.
+// FIX B-4: was using raw fetch(`/api/invitations/...`) which assumed the
+// SPA and the dealerbackend share an origin. In dev (Vite on :5173) and
+// in any cross-origin deployment, this raw fetch hit the wrong host and
+// always returned 404, making the invite-link flow unworkable. We now
+// go through dealerApi so the configured DEALER_API_URL is used.
 onMounted(async () => {
   try {
-    const response = await fetch(`/api/invitations/${props.token}`);
-    const data = await response.json();
-    
-    if (response.ok) {
-      invitationValid.value = true;
-      invitationData.value = {
-        email: data.email,
-        role: data.role,
-        dealer_name: data.dealer?.full_name || 'Unknown Dealer',
-      };
-    } else {
-      errorMessage.value = data.detail || 'Invalid or expired invitation';
-    }
-  } catch (error) {
-    errorMessage.value = 'Failed to validate invitation';
+    const data = await dealerApi.get<{
+      email: string;
+      role: string;
+      dealer?: { full_name?: string };
+    }>(`/invitations/${encodeURIComponent(props.token)}`);
+
+    invitationValid.value = true;
+    invitationData.value = {
+      email: data.email,
+      role: data.role,
+      dealer_name: data.dealer?.full_name || 'Unknown Dealer',
+    };
+  } catch (error: any) {
+    const detail = error?.data?.detail || error?.message || 'Invalid or expired invitation';
+    errorMessage.value = detail;
   } finally {
     isValidating.value = false;
   }
@@ -94,8 +100,17 @@ async function handleRegister() {
     // Emit success event - parent will handle navigation
     emit('registered');
   } catch (error: any) {
-    console.error('Registration failed:', error);
-    errorMessage.value = error?.response?.data?.detail || 'Registration failed. Please try again.';
+    // FIX M-21: read from the ApiError shape produced by dealerApi.
+    // Previously used `error?.response?.data?.detail` (Axios pattern) which
+    // is always undefined for our `ApiError { status, message, data }`,
+    // so the user always saw the generic fallback.
+    if (import.meta.env.DEV) {
+      console.error('Registration failed:', error);
+    }
+    errorMessage.value =
+      error?.data?.detail ||
+      error?.message ||
+      'Registration failed. Please try again.';
   } finally {
     isLoading.value = false;
   }

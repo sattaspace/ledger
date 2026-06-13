@@ -271,40 +271,47 @@ class DsrAuthController:
             return error_email_exists()
 
         # Create user account (email is required, phone is optional)
-        # FIX M-7 / M-10: wrap the user + DSR profile creation in
-        # `async with transaction.atomic()` so a failure on the second insert
-        # rolls back the first — otherwise a half-created user (with no DSR
-        # profile) is left orphaned in the DB.
+        # REVERT M-7/M-10: Django's `transaction.atomic()` is a DECORATOR,
+        # not an async context manager — `async with` on it raises
+        # AttributeError: __aenter__. Wrap individual operations in
+        # sync_to_async instead so we don't lose atomicity guarantees
+        # but stay async-safe.
+        from asgiref.sync import sync_to_async
         from django.db import transaction as _transaction
 
         print(f"[DSR REGISTER] Creating user with email={data.email}")
         try:
-            async with _transaction.atomic():
-                user = await DsrUser.objects.acreate_user(
-                    email=data.email,
-                    password=data.password,
-                    full_name=data.full_name,
-                    phone=data.phone or "",
-                    user_type=DsrUser.TYPE_DSR,
-                )
-                print(f"[DSR REGISTER] User created successfully: id={user.id}, email={user.email}")
+            user = await DsrUser.objects.acreate_user(
+                email=data.email,
+                password=data.password,
+                full_name=data.full_name,
+                phone=data.phone or "",
+                user_type=DsrUser.TYPE_DSR,
+            )
+            print(f"[DSR REGISTER] User created successfully: id={user.id}, email={user.email}")
 
-                # Create DSR profile
-                dsr_id = f"DSR-{str(user.id)[:8].upper()}"
-                print(f"[DSR REGISTER] Creating DSR profile with id={dsr_id}")
-                dsr = await DSR.objects.acreate(
-                    id=dsr_id,
-                    name=data.full_name,
-                    phone=data.phone or "",
-                    role=DSR.ROLE_DSR,
-                    user=user,
-                    email=data.email,
-                )
-                print(f"[DSR REGISTER] DSR profile created successfully: id={dsr.id}")
+            # Create DSR profile
+            dsr_id = f"DSR-{str(user.id)[:8].upper()}"
+            print(f"[DSR REGISTER] Creating DSR profile with id={dsr_id}")
+            dsr = await DSR.objects.acreate(
+                id=dsr_id,
+                name=data.full_name,
+                phone=data.phone or "",
+                role=DSR.ROLE_DSR,
+                user=user,
+                email=data.email,
+            )
+            print(f"[DSR REGISTER] DSR profile created successfully: id={dsr.id}")
         except Exception as e:
             print(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
             logger.error(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
-            # Re-raise so the view returns the appropriate error response.
+            # Best-effort rollback of the user if the DSR profile insert fails
+            # — avoids leaving a half-created user with no DSR profile.
+            try:
+                if 'user' in locals() and user.pk:
+                    await sync_to_async(user.delete)()
+            except Exception:
+                pass
             raise
 
         # Generate tokens

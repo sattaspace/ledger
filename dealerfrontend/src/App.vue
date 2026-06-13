@@ -18,6 +18,7 @@ import {
   Award,
   Users,
   User,
+  UserCircle,
   CreditCard
 } from 'lucide-vue-next';
 import { sattabaseUrls } from './lib/constants';
@@ -30,7 +31,7 @@ import { useDealerContext } from './composables/useDealerContext';
 import './styles/utilities.css';
 
 // ─── Authentication (must be before onMounted) ──────────────────────────────
-const { isAuthenticated, logout, user, access } = useAuth();
+const { isAuthenticated, logout, user, access, initialized: authInitialized, refreshUser } = useAuth();
 
 // ─── Dealer Context (multi-tenancy) ──────────────────────────────────────────────
 const { 
@@ -40,9 +41,14 @@ const {
   initDealerContext 
 } = useDealerContext();
 
-// Check if user is a dealer (from auth response)
+// Check if user is a dealer (from auth response).
+// FIX B-7: previously used `access.value?.is_dealer` / `access.value?.role`.
+// During initial login `access.value` is still {} while /billing/auth/me
+// is in flight, so `isDealerUser` evaluated to false and the wrong dealer
+// was auto-selected. We now read the canonical `user.role` /
+// `user.is_dealer` fields from the auth profile (set by useAuth).
 const isDealerUser = computed(() => {
-  return access.value?.is_dealer === true || access.value?.role === 'dealer';
+  return user.value?.is_dealer === true || user.value?.role === 'dealer';
 });
 
 import Overview from './components/Overview.vue';
@@ -63,6 +69,8 @@ import DsrLoginPage from './components/DsrLoginPage.vue';
 import DsrSelfRegisterPage from './components/DsrSelfRegisterPage.vue';
 import DsrRegisterPage from './components/DsrRegisterPage.vue';
 import DsrDashboard from './components/DsrDashboard.vue';
+import DsrManagementPanel from './components/DsrManagementPanel.vue';
+import AddRepModal from './components/AddRepModal.vue';
 import dsrAuthService from './services/api/dsrAuth.service';
 
 // ─── Centralized API Services ──────────────────────────────────────────
@@ -78,6 +86,7 @@ import {
 } from './services/api';
 import type { SummaryData } from './services/api/reports.service';
 import { ApiError } from './services/apiClient';
+import { authHelpers } from './lib/api';
 
 const CURRENCY_LOCALES: Record<string, string> = {
   INR: 'en-IN',
@@ -98,7 +107,13 @@ const menuOpen = ref(false);
 // View mode: 'dealer' (default dealer login) | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'
 const authView = ref<'dealer' | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'>('dealer');
 const dsrInviteToken = ref<string | null>(null);
-const isDsrAuthenticated = computed(() => dsrAuthService.isAuthenticated());
+
+// Use a reactive ref for DSR auth state that can be updated on login/logout
+// Initialize from localStorage but make it reactive
+const dsrAuthState = ref(!!localStorage.getItem('dsr_access_token'));
+
+// Check DSR auth on mount (in case page was refreshed after DSR login)
+const isDsrAuthenticated = computed(() => dsrAuthState.value);
 
 // Database Core States
 const products = ref<Product[]>([]);
@@ -114,6 +129,10 @@ const categories = ref<Category[]>([]);
 
 // Dealer / Settings State (settings modal fields)
 const showSettingsModal = ref(false);
+const showAddRepModal = ref(false);
+// FIX B-5: ref to DsrManagementPanel so we can call fetchData() directly
+// after a new invite is added. See @added handler below.
+const dsrRosterRef = ref<{ fetchData: () => Promise<void> } | null>(null);
 const settingsSelectedCurrency = ref('INR');
 const settingsSelectedLocale = ref('en-IN');
 const settingsBusinessName = ref('');
@@ -246,9 +265,73 @@ onMounted(async () => {
   console.log('%c[APP] onMounted triggered', 'color: #6366f1; font-weight: bold; font-size: 14px;', {
     isAuthenticated: isAuthenticated.value,
     user: user.value,
-    access: access.value
+    access: access.value,
+    dsrAuthState: dsrAuthState.value
   });
-  
+
+  // FIX A-4 (Phase A — CRIT-4): wait for useAuth() to finish its async
+  // /billing/auth/me fetch before deciding which session to restore.
+  // Without this, a dealer with a stale DSR token in localStorage briefly
+  // sees the DSR dashboard (because isAuthenticated is still false at the
+  // moment onMounted runs) and then gets a flash redirect when /me resolves.
+  const waitForAuthInit = async () => {
+    if (authInitialized.value) return;
+    const deadline = Date.now() + 3000;
+    while (!authInitialized.value && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  // FIX B-9: previously the access token was memory-only but no code
+  // ever re-bootstrapped the session from the stored refresh token, so
+  // every page reload showed the login screen even with a valid refresh
+  // token in sessionStorage. If we have a refresh token but no in-memory
+  // user, call refreshUser() to exchange it for an access token + profile.
+  // authInitialized stays false until this completes.
+  if (!isAuthenticated.value && authHelpers.getRefreshToken()) {
+    try {
+      await refreshUser();
+    } catch {
+      // refreshUser swallows errors internally and returns null; this
+      // catch is just defensive.
+    }
+  }
+
+  await waitForAuthInit();
+
+  // FIX A-3 (Phase A — CRIT-3): parse ?token=... URL to enable invitation
+  // acceptance. Before this fix the invitation link was dead code: the URL
+  // was generated by the dealer but clicking it did nothing because nothing
+  // read window.location.search. We now:
+  //   1. Strip the token from the URL bar via history.replaceState so it
+  //      does not leak via browser history, bookmarks, or referrer.
+  //   2. Route to the dsr-register-invite view with the token captured.
+  //   3. Only apply this if the user is not already authenticated as a dealer
+  //      (dealers should not be redirected into a DSR flow mid-session).
+  const params = new URLSearchParams(window.location.search);
+  const inviteToken = params.get('token');
+  if (inviteToken && !isAuthenticated.value) {
+    dsrInviteToken.value = inviteToken;
+    authView.value = 'dsr-register-invite';
+    // Strip the token from the URL so it doesn't linger in history/referrer.
+    const cleanedUrl = window.location.pathname + window.location.hash;
+    window.history.replaceState({}, document.title, cleanedUrl);
+    return;
+  }
+
+  // Check for existing DSR session (page refresh after DSR login)
+  // Only do this if the dealer-auth check has settled AND the user really
+  // has no dealer session. Prevents the race where isAuthenticated is
+  // briefly false during the /billing/auth/me fetch and we wrongly show
+  // the DSR dashboard.
+  const hasDsrToken = !!localStorage.getItem('dsr_access_token');
+  if (hasDsrToken && !isAuthenticated.value && authInitialized.value) {
+    console.log('%c[APP] Found existing DSR session - restoring DSR dashboard', 'color: #10b981;');
+    dsrAuthState.value = true;
+    authView.value = 'dsr-dashboard';
+    return; // Don't load dealer data
+  }
+
   // Only load data if authenticated - prevents API calls before login
   if (isAuthenticated.value) {
     console.log('%c[APP] User authenticated - calling loadAll()', 'color: #10b981;');
@@ -682,6 +765,11 @@ const handleLoginSuccess = async () => {
 
 const handleLogout = async () => {
   await logout();
+  // FIX M-4 (cross-session bleed): if a DSR session is also active in
+  // this browser (e.g. on a shared workstation), scrub it too. The DSR's
+  // refresh token would otherwise remain valid server-side until expiry.
+  dsrAuthService.clearAuth();
+  dsrAuthState.value = false;
   // Clear any sensitive data
   products.value = [];
   sales.value = [];
@@ -692,28 +780,77 @@ const handleLogout = async () => {
 
 // ─── DSR Authentication Handlers ──────────────────────────────────────────────
 const handleDsrLoginSuccess = async () => {
-  // DSR logged in successfully, show dashboard
+  // DSR logged in successfully, update auth state and show dashboard
+  dsrAuthState.value = true;
   authView.value = 'dsr-dashboard';
 };
 
 const handleDsrLogout = async () => {
-  // Clear DSR auth data
-  dsrAuthService.clearAuth();
+  // FIX B-1: previously called only `dsrAuthService.clearAuth()` which is
+  // client-only. The refresh token remained valid server-side and could
+  // be reused by an attacker. Now call `logout()` first, which hits the
+  // backend logout endpoint (blacklists the refresh token on the server)
+  // and falls back to local cleanup if the request fails.
+  try {
+    await dsrAuthService.logout();
+  } catch (e) {
+    // Logout failures must not block the user from logging out locally.
+    console.warn('[APP] DSR server logout failed, clearing local state anyway:', e);
+    dsrAuthService.clearAuth();
+  }
+  // Update reactive state
+  dsrAuthState.value = false;
   // Reset to dealer login view
   authView.value = 'dealer';
 };
 
-const handleDsrEnterPortal = async () => {
-  // DSR wants to enter dealer portal
-  // For now, they can view the dealer's data through the existing dealer portal
-  // The dealer context is already set through DSR's selected_dealer
-  await loadAll();
-  // Note: This is a simplified approach. In production, you'd need to 
-  // set up proper authentication context for DSRs in the dealer portal
+const handleDsrEnterPortal = async (assignment: any) => {
+  console.log('[APP] DSR entering dealer portal:', assignment);
+
+  if (!assignment?.dealer?.username) {
+    console.error('[APP] No dealer username in assignment');
+    return;
+  }
+
+  try {
+    // Import dsrApi dynamically to avoid circular deps
+    const { dsrApi, setDsrSelectedDealer } = await import('./services/dsrClient');
+
+    // Select the dealer context - this updates tokens and selected dealer
+    const result = await dsrApi.selectDealer(assignment.dealer.username);
+    console.log('[APP] Dealer selected:', result);
+
+    // Set the dealer in our local state
+    setDsrSelectedDealer(result.dealer);
+
+    // FIX L-18: replaced native alert() (which blocks the main thread)
+    // with the existing triggerToast / triggerErrorToast system.
+    const dealerLabel = result.dealer.full_name || result.dealer.business_name || 'dealer';
+    triggerToast(
+      `Connected to ${dealerLabel}. DSR dealer portal features are being developed — you'll soon be able to view inventory, record sales, and collect payments here.`,
+    );
+  } catch (error: any) {
+    console.error('[APP] Failed to enter dealer portal:', error);
+    triggerErrorToast('Failed to connect to dealer portal. Please try again.');
+  }
 };
 
 const handleSessionRestored = async () => {
   await loadAll();
+};
+
+// FIX L-17: surface billing return result to the user. Called by
+// <SessionGuard> when useBillingRedirect detects a return from the
+// SattaBase billing flow. We always run loadAll() first so the new
+// subscription is reflected in the UI before the toast appears.
+const handleBillingReturned = async (success: boolean | null) => {
+  if (success === null) return; // not a billing return
+  await loadAll();
+  if (success) {
+    triggerToast('Billing updated successfully. Your plan changes are now active.');
+  } else {
+    triggerErrorToast('Billing update failed or was cancelled. Your plan is unchanged.');
+  }
 };
 
 const formatCurrency = (amt: number) => {
@@ -732,6 +869,7 @@ const { hasAccess, getLimit } = useAccess();
 // Navigation items with access keys for permission filtering
 const allNavItems = [
   { id: 'overview', name: 'Dashboard', icon: '📦', accessKey: 'dashboard' },
+  { id: 'team', name: 'Team', icon: '👥', accessKey: 'dashboard' },
   { id: 'inventory', name: 'Inventory/Restock', icon: '🏢', accessKey: 'inventory' },
   { id: 'suppliers', name: 'Suppliers', icon: '🏪', accessKey: 'suppliers' },
   { id: 'sales', name: 'Sales Entry', icon: '🧾', accessKey: 'sales' },
@@ -779,10 +917,11 @@ const maxSuppliers = getLimit('max_suppliers', 0);
   />
   
   <!-- DSR Registration via Invitation Token -->
-  <DsrRegisterPage 
+  <DsrRegisterPage
     v-else-if="!isAuthenticated && authView === 'dsr-register-invite' && dsrInviteToken"
     :token="dsrInviteToken"
     @registered="handleDsrLoginSuccess"
+    @showLogin="authView = 'dsr-login'"
   />
   
   <!-- Dealer Login Page - shown when not authenticated -->
@@ -793,11 +932,12 @@ const maxSuppliers = getLimit('max_suppliers', 0);
   />
   
   <!-- Main App - shown when authenticated -->
-  <SessionGuard 
+  <SessionGuard
     v-else
     require-auth
     @auth-required="handleLogout"
     @session-restored="handleSessionRestored"
+    @billing-returned="handleBillingReturned"
   >
   <div class="app-shell">
     
@@ -834,6 +974,7 @@ const maxSuppliers = getLimit('max_suppliers', 0);
           <div v-if="activeTab === item.id" class="nav-glow-pill"></div>
           
           <LayoutDashboard v-if="item.id === 'overview'" class="nav-icon" />
+          <UserCircle v-else-if="item.id === 'team'" class="nav-icon" />
           <Package v-else-if="item.id === 'inventory'" class="nav-icon" />
           <Users v-else-if="item.id === 'suppliers'" class="nav-icon" />
           <ShoppingCart v-else-if="item.id === 'sales'" class="nav-icon" />
@@ -1077,6 +1218,26 @@ const maxSuppliers = getLimit('max_suppliers', 0);
             />
           </PermissionGuard>
 
+          <!-- Team Management Tab -->
+          <PermissionGuard feature="dashboard">
+            <div v-if="activeTab === 'team'" class="p-4 md:p-6 space-y-6">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h2 class="text-2xl font-bold text-slate-800">Team Management</h2>
+                  <p class="text-sm text-slate-500">Manage your sales representatives</p>
+                </div>
+                <button
+                  @click="showAddRepModal = true"
+                  class="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition"
+                >
+                  <UserCircle class="h-5 w-5" />
+                  Add Sales Rep
+                </button>
+              </div>
+              <DsrManagementPanel ref="dsrRosterRef" @refresh="fetchFullDetails" />
+            </div>
+          </PermissionGuard>
+
           <PermissionGuard feature="inventory">
             <Inventory 
               v-if="activeTab === 'inventory'" 
@@ -1195,13 +1356,14 @@ const maxSuppliers = getLimit('max_suppliers', 0);
           :class="['mobile-bottomnav-item', { 'mobile-bottomnav-item--active': activeTab === item.id }]"
         >
           <LayoutDashboard v-if="item.id === 'overview'" class="mobile-bottomnav-icon" />
+          <UserCircle v-else-if="item.id === 'team'" class="mobile-bottomnav-icon" />
           <Package v-else-if="item.id === 'inventory'" class="mobile-bottomnav-icon" />
           <Users v-else-if="item.id === 'suppliers'" class="mobile-bottomnav-icon" />
           <ShoppingCart v-else-if="item.id === 'sales'" class="mobile-bottomnav-icon" />
           <Coins v-else-if="item.id === 'collections'" class="mobile-bottomnav-icon" />
           <AlertTriangle v-else-if="item.id === 'bad-debt'" class="mobile-bottomnav-icon" />
           <FilePieChart v-else-if="item.id === 'reports'" class="mobile-bottomnav-icon" />
-          <span class="mobile-bottomnav-label">{{ item.id === 'overview' ? 'Home' : item.id === 'inventory' ? 'Inventory' : item.id === 'suppliers' ? 'Suppliers' : item.id === 'sales' ? 'Sales' : item.id === 'collections' ? 'Dues' : 'Reports' }}</span>
+          <span class="mobile-bottomnav-label">{{ item.id === 'overview' ? 'Home' : item.id === 'team' ? 'Team' : item.id === 'inventory' ? 'Inventory' : item.id === 'suppliers' ? 'Suppliers' : item.id === 'sales' ? 'Sales' : item.id === 'collections' ? 'Dues' : 'Reports' }}</span>
         </button>
       </nav>
     </div>
@@ -1317,9 +1479,10 @@ const maxSuppliers = getLimit('max_suppliers', 0);
             >
               Cancel
             </button>
-            <button 
-              type="button" 
-              @click="handleUpdateDealerSettings({ username: activeDealer?.username || 'sanjay', defaultCurrency: settingsSelectedCurrency })"
+            <button
+              type="button"
+              :disabled="!activeDealer?.username"
+              @click="activeDealer?.username && handleUpdateDealerSettings({ username: activeDealer.username, defaultCurrency: settingsSelectedCurrency })"
               class="modal-btn modal-btn--primary"
             >
               Apply Settings
@@ -1328,6 +1491,14 @@ const maxSuppliers = getLimit('max_suppliers', 0);
         </div>
       </div>
     </Transition>
+
+    <!-- Add Rep Modal -->
+    <AddRepModal
+      :isOpen="showAddRepModal"
+      :dsrs="dsrs"
+      @close="showAddRepModal = false"
+      @added="showAddRepModal = false; fetchFullDetails(); dsrRosterRef?.fetchData?.();"
+    />
   </div>
   </SessionGuard>
 </template>

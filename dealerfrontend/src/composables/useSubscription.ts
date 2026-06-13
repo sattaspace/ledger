@@ -49,7 +49,13 @@ export function useSubscription() {
         sharedSubscriptions.value = Array.isArray(data) ? data : [];
         sharedInitialized.value = true;
         return sharedSubscriptions.value;
-      } catch {
+      } catch (err) {
+        // FIX M-19: previously swallowed silently. Log at warn (dev only
+        // to avoid console noise in production from intermittent backend
+        // hiccups). Returns [] so callers degrade gracefully.
+        if (import.meta.env.DEV) {
+          console.warn("[SUBSCRIPTION] fetchSubscriptions failed:", err);
+        }
         return [];
       } finally {
         sharedLoading.value = false;

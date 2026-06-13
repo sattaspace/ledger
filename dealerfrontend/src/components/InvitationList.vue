@@ -1,90 +1,221 @@
 <script setup lang="ts">
 /**
- * InvitationList — Component to display and manage pending/accepted invitations.
+ * InvitationList — Dealer-side invitation management.
  *
- * Features:
- * - List all invitations with status indicators
- * - Filter by status
- * - Revoke pending invitations
- * - Delete invitations
- * - Show invite URL for sharing
+ * FIX: previously used `useInvitations` composable which called
+ * `/invitations/list` on the LEGACY `DsrInvitationController`. That
+ * controller used `IsAuthenticated` (Django session auth) which never
+ * runs in this JWT-only system, so the endpoint always returned 403.
+ * As a result the Reports → Invitations toggle showed nothing.
+ *
+ * This rewrite uses the WORKING endpoint `/dealer/dsr` which returns:
+ *   { active, pendingInvitations, removed }
+ * mapped to the same UI. Invite-URL copy is disabled because tokens
+ * are not exposed by this endpoint (would require a backend enhancement
+ * to expose `/dealer/dsr/invitations` with full token data).
  */
 
 import { ref, onMounted, computed } from 'vue';
-import { 
-  Mail, 
-  Clock, 
-  CheckCircle, 
-  XCircle, 
-  Trash2, 
-  Copy, 
+import {
+  Mail,
+  Clock,
+  CheckCircle,
+  XCircle,
+  Trash2,
+  Copy,
   RefreshCw,
   AlertCircle,
-  ChevronDown,
   Filter,
   UserCheck,
-  UserX
+  UserX,
 } from 'lucide-vue-next';
-import { useInvitations } from '../composables/useInvitations';
-import type { DsrInvitation } from '../types';
-
-// ─── Props & Emits ─────────────────────────────────────────────────────────────
+import apiClient from '../services/apiClient';
 
 const emit = defineEmits<{
   (e: 'refresh'): void;
 }>();
 
-// ─── Composables ───────────────────────────────────────────────────────────────
+// ─── State ───────────────────────────────────────────────────────────────────
 
-const {
-  invitations,
-  pendingInvitations,
-  acceptedInvitations,
-  isLoading,
-  error,
-  fetchInvitations,
-  revokeInvitation,
-  deleteInvitation,
-} = useInvitations();
+interface ActiveRow {
+  id: string;
+  dsr_id: string;
+  dsr_name: string;
+  dsr_phone: string;
+  dsr_email: string;
+  role: string;
+  assigned_at: string;
+  has_account: boolean;
+}
 
-// ─── State ─────────────────────────────────────────────────────────────────────
+interface PendingRow {
+  id: string;
+  dsr_email: string;
+  dsr_phone: string;
+  role: string;
+  created_at: string;
+  expires_at: string;
+}
 
-const selectedStatus = ref<'all' | 'pending' | 'accepted' | 'expired' | 'revoked'>('all');
+interface RemovedRow {
+  id: string;
+  dsr_id: string;
+  dsr_name: string;
+  role: string;
+  removed_at: string;
+  removal_reason: string;
+}
+
+type StatusFilter = 'all' | 'pending' | 'accepted' | 'expired' | 'revoked';
+
+const activeDsrs = ref<ActiveRow[]>([]);
+const pendingInvitations = ref<PendingRow[]>([]);
+const removedDsrs = ref<RemovedRow[]>([]);
+const isLoading = ref(false);
+const error = ref<string | null>(null);
+const selectedStatus = ref<StatusFilter>('all');
 const showFilters = ref(false);
-const copiedId = ref<string | null>(null);
 
 // ─── Computed ──────────────────────────────────────────────────────────────────
 
-const filteredInvitations = computed(() => {
-  if (selectedStatus.value === 'all') return invitations.value;
-  return invitations.value.filter((inv) => inv.status === selectedStatus.value);
+// Combine all rows into a single tagged list for the UI. The backend
+// returns 3 buckets; we present them in a single table with a status
+// column. `active` rows are tagged "accepted" (they joined), `pending`
+// rows are "pending", `removed` are "revoked" (dealer removed them).
+const allRows = computed(() => {
+  const out: Array<{
+    id: string;
+    email: string;
+    phone: string;
+    role: string;
+    status: StatusFilter;
+    createdAt: string;
+    extra?: string;
+  }> = [];
+
+  for (const a of activeDsrs.value) {
+    out.push({
+      id: `accepted-${a.dsr_id}`,
+      email: a.dsr_email,
+      phone: a.dsr_phone,
+      role: a.role,
+      status: 'accepted',
+      createdAt: a.assigned_at,
+    });
+  }
+  for (const p of pendingInvitations.value) {
+    out.push({
+      id: `pending-${p.id}`,
+      email: p.dsr_email,
+      phone: p.dsr_phone,
+      role: p.role,
+      status: 'pending',
+      createdAt: p.created_at,
+      extra: p.expires_at,
+    });
+  }
+  for (const r of removedDsrs.value) {
+    out.push({
+      id: `removed-${r.id}`,
+      email: '',
+      phone: '',
+      role: r.role,
+      status: 'revoked',
+      createdAt: r.removed_at,
+      extra: r.removal_reason,
+    });
+  }
+
+  return out.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
 });
 
-const statusCounts = computed(() => ({
-  all: invitations.value.length,
-  pending: pendingInvitations.value.length,
-  accepted: acceptedInvitations.value.length,
-  expired: invitations.value.filter((inv) => inv.status === 'expired').length,
-  revoked: invitations.value.filter((inv) => inv.status === 'revoked').length,
-}));
+const statusCounts = computed(() => {
+  const counts: Record<StatusFilter, number> = {
+    all: allRows.value.length,
+    pending: 0,
+    accepted: 0,
+    expired: 0,
+    revoked: 0,
+  };
+  for (const r of allRows.value) {
+    counts[r.status]++;
+  }
+  return counts;
+});
+
+const filteredRows = computed(() => {
+  if (selectedStatus.value === 'all') return allRows.value;
+  return allRows.value.filter((r) => r.status === selectedStatus.value);
+});
 
 // ─── Methods ───────────────────────────────────────────────────────────────────
 
-onMounted(() => {
-  fetchInvitations();
-});
+async function fetchData() {
+  isLoading.value = true;
+  error.value = null;
+
+  try {
+    // FIX: use /dealer/dsr (the working, dealer-scoped endpoint) instead
+    // of /invitations/list (the legacy broken endpoint).
+    const response = await apiClient.get<{
+      active: ActiveRow[];
+      pendingInvitations: PendingRow[];
+      removed: RemovedRow[];
+    }>('/dealer/dsr');
+
+    activeDsrs.value = response.active || [];
+    pendingInvitations.value = response.pendingInvitations || [];
+    removedDsrs.value = response.removed || [];
+  } catch (err: any) {
+    console.error('Failed to fetch invitation data:', err);
+    error.value = err?.data?.detail || err?.message || 'Failed to load invitations';
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function revokeInvitation(row: any) {
+  if (!row.id.startsWith('pending-')) return;
+  const invitationId = row.id.replace('pending-', '');
+  if (!confirm(`Revoke invitation to ${row.email}?`)) return;
+
+  try {
+    await apiClient.delete(`/dealer/dsr/invitations/${invitationId}`);
+    await fetchData();
+    emit('refresh');
+  } catch (err: any) {
+    error.value = err?.data?.detail || 'Failed to revoke invitation';
+  }
+}
+
+async function removeDsr(row: any) {
+  if (!row.id.startsWith('accepted-')) return;
+  const dsrId = row.id.replace('accepted-', '');
+  if (!confirm(`Remove ${row.email || row.phone} from your team?`)) return;
+
+  try {
+    await apiClient.delete(`/dealer/dsr/assignments/${dsrId}`, {
+      data: { reason: 'Removed via Reports → Invitations' },
+    });
+    await fetchData();
+    emit('refresh');
+  } catch (err: any) {
+    error.value = err?.data?.detail || 'Failed to remove DSR';
+  }
+}
 
 function formatDate(dateStr: string): string {
+  if (!dateStr) return '';
   return new Date(dateStr).toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
   });
 }
 
-function getStatusColor(status: string): string {
+function getStatusColor(status: StatusFilter): string {
   switch (status) {
     case 'pending':
       return 'bg-amber-100 text-amber-700 border-amber-200';
@@ -99,7 +230,7 @@ function getStatusColor(status: string): string {
   }
 }
 
-function getStatusIcon(status: string) {
+function getStatusIcon(status: StatusFilter) {
   switch (status) {
     case 'pending':
       return Clock;
@@ -114,36 +245,18 @@ function getStatusIcon(status: string) {
   }
 }
 
-async function handleRevoke(invitation: DsrInvitation) {
-  if (!confirm(`Revoke invitation to ${invitation.email}?`)) return;
-  await revokeInvitation(invitation.id);
-  emit('refresh');
-}
-
-async function handleDelete(invitation: DsrInvitation) {
-  if (!confirm(`Delete invitation to ${invitation.email}?`)) return;
-  await deleteInvitation(invitation.id);
-  emit('refresh');
-}
-
-async function copyInviteUrl(invitation: DsrInvitation) {
-  if (!invitation.inviteUrl) return;
-  
-  try {
-    await navigator.clipboard.writeText(invitation.inviteUrl);
-    copiedId.value = invitation.id;
-    setTimeout(() => {
-      copiedId.value = null;
-    }, 2000);
-  } catch (err) {
-    console.error('Failed to copy:', err);
+function formatRole(role: string): string {
+  switch (role) {
+    case 'Senior_DSR':
+      return 'Senior DSR';
+    case 'Order Collector':
+      return 'Order Collector';
+    default:
+      return role || 'DSR';
   }
 }
 
-function handleRefresh() {
-  fetchInvitations();
-  emit('refresh');
-}
+onMounted(fetchData);
 </script>
 
 <template>
@@ -157,7 +270,7 @@ function handleRefresh() {
         <div>
           <h3 class="font-bold text-slate-800">Team Invitations</h3>
           <p class="text-xs text-slate-500">
-            {{ pendingInvitations.length }} pending · {{ acceptedInvitations.length }} accepted
+            {{ pendingInvitations.length }} pending · {{ activeDsrs.length }} accepted
           </p>
         </div>
       </div>
@@ -166,13 +279,13 @@ function handleRefresh() {
           @click="showFilters = !showFilters"
           :class="[
             'p-2 rounded-lg transition cursor-pointer',
-            showFilters ? 'bg-violet-100 text-violet-600' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+            showFilters ? 'bg-violet-100 text-violet-600' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50',
           ]"
         >
           <Filter class="h-4 w-4" />
         </button>
         <button
-          @click="handleRefresh"
+          @click="fetchData"
           :disabled="isLoading"
           class="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition cursor-pointer disabled:opacity-50"
         >
@@ -187,12 +300,12 @@ function handleRefresh() {
         <button
           v-for="(count, status) in statusCounts"
           :key="status"
-          @click="selectedStatus = status as any"
+          @click="selectedStatus = status as StatusFilter"
           :class="[
             'px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer',
             selectedStatus === status
               ? 'bg-violet-600 text-white'
-              : 'bg-white text-slate-600 border border-slate-200 hover:border-violet-300'
+              : 'bg-white text-slate-600 border border-slate-200 hover:border-violet-300',
           ]"
         >
           {{ status.charAt(0).toUpperCase() + status.slice(1) }} ({{ count }})
@@ -211,89 +324,76 @@ function handleRefresh() {
 
     <!-- Empty State -->
     <div
-      v-if="!isLoading && filteredInvitations.length === 0"
+      v-if="!isLoading && filteredRows.length === 0"
       class="px-5 py-12 text-center"
     >
       <Mail class="h-12 w-12 text-slate-300 mx-auto mb-3" />
       <p class="text-slate-500 font-medium">No invitations found</p>
       <p class="text-xs text-slate-400 mt-1">
-        {{ selectedStatus === 'all' ? 'Invite team members to get started' : `No ${selectedStatus} invitations` }}
+        {{ selectedStatus === 'all' ? 'Invite team members from the Team tab to get started' : `No ${selectedStatus} invitations` }}
       </p>
     </div>
 
     <!-- List -->
     <div v-else class="divide-y divide-slate-100">
       <div
-        v-for="invitation in filteredInvitations"
-        :key="invitation.id"
+        v-for="row in filteredRows"
+        :key="row.id"
         class="px-5 py-4 hover:bg-slate-50 transition"
       >
         <div class="flex items-start justify-between gap-4">
           <div class="flex items-start gap-3 min-w-0">
-            <!-- Status Icon -->
-            <div :class="['p-2 rounded-lg shrink-0', getStatusColor(invitation.status)]">
-              <component :is="getStatusIcon(invitation.status)" class="h-4 w-4" />
+            <div :class="['p-2 rounded-lg shrink-0', getStatusColor(row.status)]">
+              <component :is="getStatusIcon(row.status)" class="h-4 w-4" />
             </div>
 
-            <!-- Details -->
             <div class="min-w-0">
               <p class="text-sm font-semibold text-slate-800 truncate">
-                {{ invitation.email }}
+                {{ row.email || row.phone || 'Unknown recipient' }}
               </p>
               <div class="flex items-center gap-2 mt-1">
                 <span class="text-xs text-slate-500">
-                  {{ invitation.role === 'DSR' ? 'DSR Rep' : 'Order Collector' }}
+                  {{ formatRole(row.role) }}
                 </span>
                 <span class="text-slate-300">·</span>
                 <span class="text-xs text-slate-500">
-                  {{ formatDate(invitation.createdAt) }}
+                  {{ formatDate(row.createdAt) }}
                 </span>
               </div>
-              <p v-if="invitation.parentDsrName" class="text-xs text-slate-500 mt-1">
-                Reports to: {{ invitation.parentDsrName }}
+              <p v-if="row.extra" class="text-xs text-slate-500 mt-1">
+                <span v-if="row.status === 'pending'">Expires: {{ formatDate(row.extra) }}</span>
+                <span v-else>Reason: {{ row.extra }}</span>
               </p>
             </div>
           </div>
 
-          <!-- Status & Actions -->
           <div class="flex items-center gap-2 shrink-0">
-            <!-- Status Badge -->
             <span
               :class="[
                 'px-2.5 py-1 text-xs font-semibold rounded-full border',
-                getStatusColor(invitation.status)
+                getStatusColor(row.status),
               ]"
             >
-              {{ invitation.status }}
+              {{ row.status }}
             </span>
 
-            <!-- Actions -->
             <div class="flex items-center gap-1">
-              <!-- Copy Invite URL -->
+              <!-- Revoke (pending only) -->
               <button
-                v-if="invitation.status === 'pending' && invitation.inviteUrl"
-                @click="copyInviteUrl(invitation)"
-                class="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition cursor-pointer"
-                title="Copy invite link"
-              >
-                <Copy :class="['h-4 w-4', { 'text-emerald-600': copiedId === invitation.id }]" />
-              </button>
-
-              <!-- Revoke -->
-              <button
-                v-if="invitation.status === 'pending'"
-                @click="handleRevoke(invitation)"
+                v-if="row.status === 'pending'"
+                @click="revokeInvitation(row)"
                 class="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition cursor-pointer"
                 title="Revoke invitation"
               >
                 <UserX class="h-4 w-4" />
               </button>
 
-              <!-- Delete -->
+              <!-- Remove (accepted only) -->
               <button
-                @click="handleDelete(invitation)"
+                v-if="row.status === 'accepted'"
+                @click="removeDsr(row)"
                 class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                title="Delete invitation"
+                title="Remove from team"
               >
                 <Trash2 class="h-4 w-4" />
               </button>
@@ -307,6 +407,14 @@ function handleRefresh() {
     <div v-if="isLoading" class="px-5 py-8 text-center">
       <RefreshCw class="h-6 w-6 text-violet-600 animate-spin mx-auto" />
       <p class="text-sm text-slate-500 mt-2">Loading invitations...</p>
+    </div>
+
+    <!-- Info banner about copy-link limitation -->
+    <div class="px-5 py-3 bg-slate-50 border-t border-slate-100 text-xs text-slate-500">
+      <strong>Note:</strong> Pending invitations cannot be copy-shared from
+      this view — the backend does not currently expose invitation tokens
+      in the list endpoint. The original invite URL is delivered by email
+      when the invitation is created. Re-create the invitation if it was lost.
     </div>
   </div>
 </template>

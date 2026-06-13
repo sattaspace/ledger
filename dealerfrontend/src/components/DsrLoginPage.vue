@@ -4,10 +4,15 @@
  * ---------------
  * Login page for DSRs (Daily Sales Representatives).
  * Separate from dealer login which uses SattaBase.
+ * 
+ * Uses the isolated dsrClient - NO dependency on dealer auth.
  */
 import { ref, computed } from 'vue';
 import { Store, TrendingUp, Shield, Zap, Users } from 'lucide-vue-next';
-import dsrAuthService, { type DealerChoice } from '../services/api/dsrAuth.service';
+import { 
+  dsrApi, 
+  type DealerChoice 
+} from '../services/dsrClient';
 
 const emit = defineEmits<{
   (e: 'login'): void;
@@ -39,45 +44,49 @@ async function handleLogin() {
   errorMessage.value = '';
   
   try {
-    const response = await dsrAuthService.login(email.value, password.value);
+    console.log('[DSR LOGIN PAGE] Attempting login for:', email.value);
+    
+    const response = await dsrApi.login(email.value, password.value);
+    
+    console.log('[DSR LOGIN PAGE] Login response:', {
+      awaitingInvitation: response.awaiting_invitation,
+      requireDealerSelection: response.require_dealer_selection,
+      dealerCount: response.dealers?.length || 0
+    });
     
     // Check if DSR is awaiting invitation (no dealer assignments)
     if (response.awaiting_invitation) {
-      // Still log them in - they can view pending invitations
-      console.log('[DSR LOGIN] Awaiting invitation - no dealer assignments');
-      if (response.message) {
-        // Could show a toast notification here
-        console.log('[DSR LOGIN] Message:', response.message);
-      }
+      console.log('[DSR LOGIN PAGE] Awaiting invitation - no dealer assignments');
       emit('login');
       return;
     }
     
-    if (response.require_dealer_selection) {
+    if (response.require_dealer_selection && response.dealers?.length > 0) {
       // Show dealer selection
-      dealers.value = response.dealers || [];
+      dealers.value = response.dealers;
       showDealerSelection.value = true;
     } else {
       // Auto-selected, emit login success
       emit('login');
     }
   } catch (error: any) {
-    console.error('DSR login failed:', error);
-    // ApiError has data.detail or data.code, or message directly
-    const detail = error?.data?.detail || error?.message || 'Login failed. Please check your credentials.';
+    // FIX M-2: do not surface distinct error codes that would let an
+    // attacker enumerate accounts / states. We always show a single
+    // generic message and rely on the server-side audit logs for
+    // debugging. The raw code is still captured for dev console.
+    const detail = error?.message || error?.data?.detail;
     const code = error?.data?.code;
-    
-    // Provide user-friendly messages based on error code
-    if (code === 'profile_not_found') {
-      errorMessage.value = 'DSR profile not found. Please complete your registration first.';
-    } else if (code === 'invalid_credentials') {
-      errorMessage.value = 'Invalid email or password. Please try again.';
-    } else if (code === 'account_deactivated') {
-      errorMessage.value = 'Your account has been deactivated. Please contact support.';
-    } else if (code === 'no_dealer_assignment') {
-      errorMessage.value = 'You are not assigned to any dealer. Please wait for a dealer invitation.';
-    } else {
-      errorMessage.value = detail;
+    if (import.meta.env.DEV) {
+      console.error('[DSR LOGIN PAGE] Login failed:', error);
+    }
+    // Generic message for users — does not leak whether the email exists,
+    // whether the account is deactivated, or whether the DSR profile
+    // is missing.
+    errorMessage.value = 'Invalid email or password. Please try again.';
+    // If the backend returned a 5xx, surface a slightly more informative
+    // message (without exposing per-account state).
+    if (code === 'server_error' || (detail && /5\d\d/.test(detail))) {
+      errorMessage.value = 'Service temporarily unavailable. Please try again later.';
     }
   } finally {
     isLoading.value = false;
@@ -92,11 +101,11 @@ async function handleSelectDealer() {
   errorMessage.value = '';
   
   try {
-    await dsrAuthService.selectDealer(selectedDealerUsername.value);
+    await dsrApi.selectDealer(selectedDealerUsername.value);
     emit('login');
   } catch (error: any) {
     console.error('Dealer selection failed:', error);
-    errorMessage.value = error?.data?.detail || error?.message || 'Failed to select dealer. Please try again.';
+    errorMessage.value = error?.message || 'Failed to select dealer. Please try again.';
   } finally {
     isSelectingDealer.value = false;
   }
@@ -247,6 +256,7 @@ function goBackToLogin() {
                   placeholder="Enter your email"
                   class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                   required
+                  autocomplete="email"
                 />
               </div>
               
@@ -262,6 +272,7 @@ function goBackToLogin() {
                     placeholder="Enter your password"
                     class="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all pr-12"
                     required
+                    autocomplete="current-password"
                   />
                   <button
                     type="button"

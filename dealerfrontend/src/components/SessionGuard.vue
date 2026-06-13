@@ -23,6 +23,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'auth-required'): void;
   (e: 'session-restored'): void;
+  // FIX L-17: surface billing return result so the parent can show a
+  // success/failure toast. Previously billingSuccess was silently
+  // discarded after useAuth refetched the profile.
+  (e: 'billing-returned', success: boolean | null): void;
 }>();
 
 const { isAuthenticated, refreshUser } = useAuth();
@@ -36,11 +40,15 @@ onMounted(async () => {
   checkBillingRedirect();
 
   if (props.requireAuth && !isAuthenticated.value) {
-    // Try to restore session
-    try {
-      await refreshUser();
+    // Try to restore session.
+    // FIX B-8: previously wrapped refreshUser() in try/catch, but
+    // refreshUser() swallows its own errors and returns null on failure,
+    // so the catch block was dead code — `session-restored` was emitted
+    // even on auth failure. Now check the return value explicitly.
+    const user = await refreshUser();
+    if (user) {
       emit('session-restored');
-    } catch {
+    } else {
       emit('auth-required');
     }
   }
@@ -66,6 +74,14 @@ watch(isAuthenticated, (newVal, oldVal) => {
     // User just logged out or session expired
     emit('auth-required');
   }
+});
+
+// FIX L-17: when useBillingRedirect detects a return from the SattaBase
+// billing flow, surface it as an event the parent can render as a toast.
+// Without this watcher, the user is silently redirected back into the
+// app with no acknowledgement of what just happened.
+watch(billingSuccess, (success) => {
+  if (success !== null) emit('billing-returned', success);
 });
 </script>
 
