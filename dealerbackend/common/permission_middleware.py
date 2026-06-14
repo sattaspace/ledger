@@ -3,11 +3,18 @@ DEALERCORE v3.0 — Permission Middleware
 ----------------------------------------
 Extracts user role from JWT and injects permission context.
 
-IMPORTANT: Dealer detection happens in two stages:
-1. Middleware extracts user_id from JWT (fast, no DB call)
-2. get_dealer_context() checks if user_id matches DealerConfig (async DB)
+Dealer Detection (IMPORTANT):
+1. Extracts user ID from JWT (dealer_id, user_id, username, or sub claim)
+2. First checks JWT's is_dealer claim
+3. If not set, checks DealerConfig table synchronously using the user ID
+4. This happens in middleware so IsDealerOnly permission works correctly
 
-This separation allows the async DB check to work properly in Django async views.
+JWT User ID Priority:
+  dealer_id > user_id > username > sub
+
+The DealerConfig check is required because SattaBase JWT may not include
+the is_dealer claim, but the IsDealerOnly permission check runs BEFORE
+any controller code (including async DealerConfig lookups).
 """
 
 from typing import Optional, Callable
@@ -81,8 +88,10 @@ class PermissionMiddleware:
         (AttributeError, KeyError, etc.) must propagate so they show up in
         logs instead of silently granting anonymous access.
 
-        Note: Dealer detection via DealerConfig is handled asynchronously
-        in get_dealer_context() to work properly with Django async views.
+        Dealer Detection:
+        - First checks JWT's is_dealer claim
+        - If not set, checks DealerConfig table synchronously (username from JWT)
+        - This is required for IsDealerOnly permission to work correctly
         
         Returns: (role, is_dealer, username, email)
         """
@@ -95,6 +104,18 @@ class PermissionMiddleware:
         # Pick the verification key/algorithm
         public_key = getattr(settings, 'SATTABASE_JWT_PUBLIC_KEY', '') or ''
         shared_secret = getattr(settings, 'SATTABASE_JWT_SHARED_SECRET', '') or ''
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Log JWT verification configuration (for debugging)
+        if not public_key and not shared_secret:
+            logger.warning(
+                "[PERMISSION MIDDLEWARE] JWT verification using local SECRET_KEY. "
+                "For production, set SATTABASE_JWT_PUBLIC_KEY or SATTABASE_JWT_SHARED_SECRET "
+                "to match SattaBase JWT signing key."
+            )
+        
         if public_key:
             verify_key = public_key
             algorithms = [getattr(settings, 'SATTABASE_JWT_ALGORITHM', 'RS256') or 'RS256']
@@ -125,8 +146,10 @@ class PermissionMiddleware:
         try:
             payload = jwt.decode(token, verify_key, **decode_kwargs)
         except jwt.ExpiredSignatureError:
+            logger.info("[PERMISSION MIDDLEWARE] JWT expired")
             return None, False, None, None
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logger.info(f"[PERMISSION MIDDLEWARE] JWT invalid: {e}")
             return None, False, None, None
         # Programming errors / unexpected exceptions propagate so they show
         # up in logs instead of silently becoming "anonymous".
@@ -135,9 +158,25 @@ class PermissionMiddleware:
         role_str = payload.get('role', '').lower()
         
         # Extract user identity for dealer context
-        # SattaBase uses user_id (not username)
-        username = payload.get('username') or payload.get('sub') or payload.get('user_id')
+        # SattaBase may use: user_id, dealer_id, sub, or username
+        # Priority: dealer_id > user_id > username > sub
+        dealer_id_from_jwt = (
+            payload.get('dealer_id') or 
+            payload.get('user_id') or 
+            payload.get('username') or 
+            payload.get('sub')
+        )
         email = payload.get('email')
+        
+        # Debug logging for JWT payload
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"[PERMISSION MIDDLEWARE] JWT payload keys: {list(payload.keys())}, "
+            f"dealer_id={payload.get('dealer_id')}, user_id={payload.get('user_id')}, "
+            f"username={payload.get('username')}, sub={payload.get('sub')}, "
+            f"is_dealer={payload.get('is_dealer')}"
+        )
         
         # Check is_dealer flag from JWT (may not be present)
         is_dealer = payload.get('is_dealer', False)
@@ -156,7 +195,33 @@ class PermissionMiddleware:
         if not role and is_dealer:
             role = Role.DEALER
         
-        return role, is_dealer, username, email
+        # FIX: If is_dealer is not set in JWT, check DealerConfig synchronously.
+        # This is required because IsDealerOnly permission check happens BEFORE
+        # the controller runs, so the async DealerConfig lookup in get_dealer_context()
+        # is too late. We must determine dealer status here.
+        # 
+        # NOTE: The variable 'dealer_id_from_jwt' contains the dealer's identifier
+        # from SattaBase (from dealer_id, user_id, username, or sub claim).
+        # DealerConfig.username field stores this same dealer_id value.
+        if not is_dealer and dealer_id_from_jwt:
+            try:
+                from dealer.models import DealerConfig
+                is_dealer = DealerConfig.objects.filter(username=str(dealer_id_from_jwt)).exists()
+                logger.info(
+                    f"[PERMISSION MIDDLEWARE] DealerConfig check: "
+                    f"dealer_id_from_jwt={dealer_id_from_jwt}, is_dealer={is_dealer}"
+                )
+                if is_dealer and not role:
+                    role = Role.DEALER
+            except Exception as e:
+                # Don't fail the request if DealerConfig check fails
+                logger.warning(
+                    f"[PERMISSION MIDDLEWARE] DealerConfig check failed: {e}"
+                )
+                pass
+        
+        # Return the dealer_id (stored in variable named 'username' for backward compatibility)
+        return role, is_dealer, dealer_id_from_jwt, email
 
 
 # NOTE: The legacy DealerOnlyMiddleware, DSRPlusMiddleware, and

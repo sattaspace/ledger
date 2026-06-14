@@ -177,6 +177,7 @@ class DealerDsrController:
         dsr_profile = None
         existing_user = None
         
+        # First try to find by DsrUser.email
         try:
             existing_user = await DsrUser.objects.aget(email__iexact=email)
             # Get DSR profile
@@ -185,6 +186,15 @@ class DealerDsrController:
             pass
         except DSR.DoesNotExist:
             pass
+        
+        # Also check if DSR exists with this email but different user (edge case)
+        if not dsr_profile:
+            try:
+                dsr_profile = await DSR.objects.aget(email__iexact=email)
+                if dsr_profile.user:
+                    existing_user = dsr_profile.user
+            except DSR.DoesNotExist:
+                pass
         
         # Check if already assigned to this dealer
         if dsr_profile:

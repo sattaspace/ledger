@@ -302,6 +302,22 @@ class DsrAuthController:
                 email=data.email,
             )
             print(f"[DSR REGISTER] DSR profile created successfully: id={dsr.id}")
+
+            # FIX: Link any existing pending invitations to this new DSR profile.
+            # When a dealer invites a DSR by email before the DSR has registered,
+            # the invitation is created with dsr_email but dsr=None. Now that the
+            # DSR has registered, we link those invitations so they appear in the
+            # DSR's invitation list.
+            pending_invitations = DsrInvitation.objects.filter(
+                dsr_email__iexact=data.email,
+                status=DsrInvitation.STATUS_PENDING,
+                dsr__isnull=True,  # Only invitations not already linked
+            )
+            linked_count = await pending_invitations.aupdate(dsr=dsr)
+            if linked_count > 0:
+                logger.info(f"[DSR REGISTER] Linked {linked_count} pending invitation(s) to new DSR {dsr.id}")
+                print(f"[DSR REGISTER] Linked {linked_count} pending invitation(s) to new DSR {dsr.id}")
+
         except Exception as e:
             print(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
             logger.error(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
@@ -873,8 +889,12 @@ class DsrInvitationController:
         accepted = []
         rejected = []
 
+        # FIX: Also check for invitations by email where dsr field is not yet set.
+        # This handles the case where a dealer invited the DSR by email before
+        # the DSR registered. The invitation has dsr_email set but dsr=None.
+        from django.db.models import Q
         async for inv in DsrInvitation.objects.filter(
-            dsr=dsr
+            Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True)
         ).select_related("dealer").order_by("-created_at"):
             inv_data = {
                 "id": inv.id,
@@ -930,11 +950,14 @@ class DsrInvitationController:
             return error_profile_not_found()
 
         # Get invitation
+        # FIX: Also check for invitations by email where dsr field is not yet set.
+        # This handles the case where a dealer invited the DSR by email before
+        # the DSR registered.
+        from django.db.models import Q
         try:
             invitation = await DsrInvitation.objects.select_related("dealer").aget(
-                id=invitation_id,
-                dsr=dsr,
-                status=DsrInvitation.STATUS_PENDING,
+                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) &
+                (Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True))
             )
         except DsrInvitation.DoesNotExist:
             return dsr_error_response(
@@ -1010,11 +1033,12 @@ class DsrInvitationController:
             return error_profile_not_found()
 
         # Get invitation
+        # FIX: Also check for invitations by email where dsr field is not yet set.
+        from django.db.models import Q
         try:
             invitation = await DsrInvitation.objects.aget(
-                id=invitation_id,
-                dsr=dsr,
-                status=DsrInvitation.STATUS_PENDING,
+                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) &
+                (Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True))
             )
         except DsrInvitation.DoesNotExist:
             return dsr_error_response(
