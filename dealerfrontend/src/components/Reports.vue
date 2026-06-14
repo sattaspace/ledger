@@ -44,7 +44,6 @@ const props = withDefaults(defineProps<{
   aiResponse?: string;
   isAiLoading?: boolean;
   formatCurrency?: (amt: number) => string;
-  onAddDsr?: (data: any) => Promise<any>;
   onEditDsr?: (dsrId: string, data: any) => Promise<any>;
   onDeleteDsr?: (dsrId: string) => Promise<void>;
 }>(), {

@@ -95,18 +95,24 @@ class PermissionMiddleware:
         
         Returns: (role, is_dealer, username, email)
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info("[PERMISSION MIDDLEWARE] ====== START JWT EXTRACTION ======")
+        
         auth_header = request.headers.get('Authorization', '')
+        logger.info(f"[PERMISSION MIDDLEWARE] Authorization header present: {bool(auth_header)}")
+        
         if not auth_header.startswith('Bearer '):
+            logger.warning("[PERMISSION MIDDLEWARE] No Bearer token found, returning anonymous")
             return None, False, None, None
         
         token = auth_header[7:]  # Remove "Bearer "
+        logger.info(f"[PERMISSION MIDDLEWARE] Token length: {len(token)}, preview: {token[:50]}...")
         
         # Pick the verification key/algorithm
         public_key = getattr(settings, 'SATTABASE_JWT_PUBLIC_KEY', '') or ''
         shared_secret = getattr(settings, 'SATTABASE_JWT_SHARED_SECRET', '') or ''
-        
-        import logging
-        logger = logging.getLogger(__name__)
         
         # Log JWT verification configuration (for debugging)
         if not public_key and not shared_secret:
@@ -115,6 +121,12 @@ class PermissionMiddleware:
                 "For production, set SATTABASE_JWT_PUBLIC_KEY or SATTABASE_JWT_SHARED_SECRET "
                 "to match SattaBase JWT signing key."
             )
+        else:
+            logger.info(
+                f"[PERMISSION MIDDLEWARE] JWT verification configured: "
+                f"public_key={'set' if public_key else 'not set'}, "
+                f"shared_secret={'set' if shared_secret else 'not set'}"
+            )
         
         if public_key:
             verify_key = public_key
@@ -122,12 +134,19 @@ class PermissionMiddleware:
         elif shared_secret:
             verify_key = shared_secret
             algorithms = ['HS256']
+            # Log key details for debugging (show first/last few chars only for security)
+            key_preview = f"{shared_secret[:20]}...{shared_secret[-20:]}" if len(shared_secret) > 40 else shared_secret
+            logger.info(f"[PERMISSION MIDDLEWARE] Using shared_secret for HS256 verification, key preview: {key_preview}")
         else:
             # Fallback to local SECRET_KEY (HS256). In production, set one of
             # the two env vars above; otherwise signature verification is
             # effectively using the local dev key.
             verify_key = settings.SECRET_KEY
             algorithms = ['HS256']
+            logger.warning(
+                f"[PERMISSION MIDDLEWARE] Using local SECRET_KEY for JWT verification (fallback mode). "
+                f"SATTABASE_JWT_SHARED_SECRET not set. Key preview: {settings.SECRET_KEY[:20]}..."
+            )
 
         decode_kwargs = {
             'algorithms': algorithms,
@@ -138,6 +157,9 @@ class PermissionMiddleware:
         }
         issuer = getattr(settings, 'SATTABASE_JWT_ISSUER', '') or ''
         audience = getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or ''
+        
+        logger.info(f"[PERMISSION MIDDLEWARE] JWT decode settings: issuer='{issuer}', audience='{audience}', algorithms={algorithms}")
+        
         if issuer:
             decode_kwargs['issuer'] = issuer
         if audience:
@@ -145,11 +167,22 @@ class PermissionMiddleware:
 
         try:
             payload = jwt.decode(token, verify_key, **decode_kwargs)
+            logger.info(f"[PERMISSION MIDDLEWARE] JWT decoded successfully!")
         except jwt.ExpiredSignatureError:
-            logger.info("[PERMISSION MIDDLEWARE] JWT expired")
+            logger.warning("[PERMISSION MIDDLEWARE] JWT expired")
             return None, False, None, None
         except jwt.InvalidTokenError as e:
-            logger.info(f"[PERMISSION MIDDLEWARE] JWT invalid: {e}")
+            logger.error(f"[PERMISSION MIDDLEWARE] JWT invalid: {e}")
+            # Debug: Try to decode without verification to see the payload
+            try:
+                unverified_payload = jwt.decode(token, options={"verify_signature": False})
+                logger.info(f"[PERMISSION MIDDLEWARE] Token payload (unverified): keys={list(unverified_payload.keys())}")
+                logger.info(f"[PERMISSION MIDDLEWARE] Token claims: user_id={unverified_payload.get('user_id')}, exp={unverified_payload.get('exp')}")
+            except Exception as debug_e:
+                logger.error(f"[PERMISSION MIDDLEWARE] Could not decode token even without verification: {debug_e}")
+            return None, False, None, None
+        except Exception as e:
+            logger.error(f"[PERMISSION MIDDLEWARE] JWT decode unexpected error: {type(e).__name__}: {e}")
             return None, False, None, None
         # Programming errors / unexpected exceptions propagate so they show
         # up in logs instead of silently becoming "anonymous".
@@ -168,18 +201,26 @@ class PermissionMiddleware:
         )
         email = payload.get('email')
         
-        # Debug logging for JWT payload
-        import logging
-        logger = logging.getLogger(__name__)
+        # Debug logging for JWT payload - show all claims and their types
         logger.info(
-            f"[PERMISSION MIDDLEWARE] JWT payload keys: {list(payload.keys())}, "
-            f"dealer_id={payload.get('dealer_id')}, user_id={payload.get('user_id')}, "
-            f"username={payload.get('username')}, sub={payload.get('sub')}, "
-            f"is_dealer={payload.get('is_dealer')}"
+            f"[PERMISSION MIDDLEWARE] JWT payload keys: {list(payload.keys())}"
+        )
+        logger.info(
+            f"[PERMISSION MIDDLEWARE] JWT claims: "
+            f"dealer_id={payload.get('dealer_id')} ({type(payload.get('dealer_id')).__name__}), "
+            f"user_id={payload.get('user_id')} ({type(payload.get('user_id')).__name__}), "
+            f"username={payload.get('username')} ({type(payload.get('username')).__name__}), "
+            f"sub={payload.get('sub')} ({type(payload.get('sub')).__name__}), "
+            f"is_dealer={payload.get('is_dealer')} ({type(payload.get('is_dealer')).__name__}), "
+            f"role={role_str}"
+        )
+        logger.info(
+            f"[PERMISSION MIDDLEWARE] Extracted dealer_id_from_jwt: {dealer_id_from_jwt} ({type(dealer_id_from_jwt).__name__})"
         )
         
         # Check is_dealer flag from JWT (may not be present)
         is_dealer = payload.get('is_dealer', False)
+        logger.info(f"[PERMISSION MIDDLEWARE] is_dealer from JWT claim: {is_dealer}")
         
         # Map to Role enum
         role_map = {
@@ -206,19 +247,40 @@ class PermissionMiddleware:
         if not is_dealer and dealer_id_from_jwt:
             try:
                 from dealer.models import DealerConfig
-                is_dealer = DealerConfig.objects.filter(username=str(dealer_id_from_jwt)).exists()
+                # Convert to string for comparison - DealerConfig.username is a string field
+                lookup_value = str(dealer_id_from_jwt)
                 logger.info(
-                    f"[PERMISSION MIDDLEWARE] DealerConfig check: "
-                    f"dealer_id_from_jwt={dealer_id_from_jwt}, is_dealer={is_dealer}"
+                    f"[PERMISSION MIDDLEWARE] Checking DealerConfig: "
+                    f"looking for username='{lookup_value}'"
+                )
+                
+                # List all DealerConfig usernames for debugging
+                all_usernames = list(DealerConfig.objects.values_list('username', flat=True))
+                logger.info(f"[PERMISSION MIDDLEWARE] All DealerConfig usernames in DB: {all_usernames}")
+                
+                is_dealer = DealerConfig.objects.filter(username=lookup_value).exists()
+                logger.info(
+                    f"[PERMISSION MIDDLEWARE] DealerConfig check result: "
+                    f"username='{lookup_value}', is_dealer={is_dealer}"
                 )
                 if is_dealer and not role:
                     role = Role.DEALER
+                    logger.info(f"[PERMISSION MIDDLEWARE] Set role to DEALER based on DealerConfig check")
             except Exception as e:
                 # Don't fail the request if DealerConfig check fails
-                logger.warning(
-                    f"[PERMISSION MIDDLEWARE] DealerConfig check failed: {e}"
+                logger.error(
+                    f"[PERMISSION MIDDLEWARE] DealerConfig check failed with exception: {type(e).__name__}: {e}",
+                    exc_info=True
                 )
                 pass
+        elif not dealer_id_from_jwt:
+            logger.warning("[PERMISSION MIDDLEWARE] No dealer_id/user_id/username/sub found in JWT - cannot check DealerConfig")
+        
+        # Final result logging
+        logger.info(
+            f"[PERMISSION MIDDLEWARE] ====== FINAL RESULT ====== "
+            f"role={role}, is_dealer={is_dealer}, dealer_id={dealer_id_from_jwt}, email={email}"
+        )
         
         # Return the dealer_id (stored in variable named 'username' for backward compatibility)
         return role, is_dealer, dealer_id_from_jwt, email

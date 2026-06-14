@@ -49,9 +49,6 @@ const emit = defineEmits<{
 
 // ─── State ─────────────────────────────────────────────────────────────────────
 
-// Mode: 'search' (new flow) or 'direct' (legacy)
-const mode = ref<'search' | 'direct'>('search');
-
 // Step in search flow: 'input' | 'searching' | 'found' | 'not_found' | 'inviting' | 'success'
 const searchStep = ref<'input' | 'searching' | 'found' | 'not_found' | 'inviting' | 'success'>('input');
 
@@ -80,9 +77,6 @@ const searchResult = ref<{
 // Registration link (for non-registered DSRs)
 const registrationUrl = ref('');
 const invitationToken = ref('');
-
-// Direct mode fields
-const dsrName = ref('');
 
 // UI state
 const successMessage = ref('');
@@ -133,22 +127,13 @@ const canInvite = computed(() => {
   return true;
 });
 
-const canDirectAdd = computed(() => {
-  if (!dsrName.value.trim()) return false;
-  if (!dsrEmail.value.trim()) return false;
-  if (role.value === 'Order Collector' && !parentDsrId.value) return false;
-  return true;
-});
-
 // ─── Methods ───────────────────────────────────────────────────────────────────
 
 function resetForm() {
-  mode.value = 'search';
   searchStep.value = 'input';
   dsrEmail.value = '';
   dsrPhone.value = '';
   dsrMessage.value = '';
-  dsrName.value = '';
   role.value = 'DSR';
   parentDsrId.value = '';
   searchResult.value = null;
@@ -199,10 +184,7 @@ async function handleSearch() {
       errorMessage.value = 'A pending invitation already exists for this email address.';
     } else if (response.registered) {
       searchStep.value = 'found';
-      // Pre-fill name and phone if found
-      if (response.dsr_name) {
-        dsrName.value = response.dsr_name;
-      }
+      // Pre-fill phone if found
       if (response.dsr_phone) {
         dsrPhone.value = response.dsr_phone;
       }
@@ -276,38 +258,6 @@ async function copyRegistrationLink() {
   }
 }
 
-// Direct add (legacy)
-async function handleDirectAdd() {
-  if (!canDirectAdd.value || !canAddMore.value) return;
-
-  isLoading.value = true;
-  errorMessage.value = '';
-  successMessage.value = '';
-
-  try {
-    const payload = {
-      name: dsrName.value.trim(),
-      email: dsrEmail.value.trim(),
-      phone: dsrPhone.value.trim() || undefined,
-      role: role.value,
-      parent_dsr_id: role.value === 'Order Collector' ? parentDsrId.value : null,
-    };
-
-    await apiClient.post('/dsr/dsrs/', payload);
-    successMessage.value = `${dsrName.value} added successfully!`;
-    emit('added');
-
-    setTimeout(() => {
-      resetForm();
-      emit('close');
-    }, 1500);
-  } catch (err: any) {
-    errorMessage.value = err.response?.data?.detail || 'Failed to add representative';
-  } finally {
-    isLoading.value = false;
-  }
-}
-
 // Reset search to start over
 function resetSearch() {
   searchStep.value = 'input';
@@ -317,14 +267,8 @@ function resetSearch() {
   errorMessage.value = '';
 }
 
-// Reset to search mode
-function goToSearchMode() {
-  resetForm();
-  mode.value = 'search';
-}
-
 // Watch for errors reset
-watch([dsrEmail, dsrPhone, dsrName, role, parentDsrId, mode], () => {
+watch([dsrEmail, dsrPhone, role, parentDsrId], () => {
   if (errorMessage.value) errorMessage.value = '';
 });
 </script>
@@ -406,8 +350,7 @@ watch([dsrEmail, dsrPhone, dsrName, role, parentDsrId, mode], () => {
                 <p class="text-sm text-rose-800">{{ errorMessage }}</p>
               </div>
 
-              <!-- Search Mode -->
-              <template v-if="mode === 'search'">
+              <!-- Invitation Flow (email-first) -->
                 <!-- Step: Input - Enter email to search -->
                 <template v-if="searchStep === 'input'">
                   <div class="text-center py-4">
@@ -697,7 +640,6 @@ watch([dsrEmail, dsrPhone, dsrName, role, parentDsrId, mode], () => {
                     </div>
                   </div>
                 </template>
-              </template>
             </div>
           </div>
         </Transition>

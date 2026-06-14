@@ -37,7 +37,7 @@ from dsr.auth_schemas import (
     MessageOutput,
 )
 from common.dealer_context import get_dealer_context
-from common.permissions import IsJwtAuthenticated, IsDealerOnly
+from common.permissions import IsJwtAuthenticated, IsDealerOnly, IsDsrOrDealer
 from common.tasks import send_dsr_invitation_email, send_dsr_notification_email
 from common.rate_limit import rate_limit
 
@@ -49,17 +49,22 @@ def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
     from the verified JWT. Falls back to the X-Dealer-Username header ONLY if
     the middleware didn't set one. Cross-check the header against the JWT
     derived value to prevent header-spoofing dealer impersonation.
+    
+    For DSRs: Verify DSR is assigned to the dealer before returning.
     """
     jwt_dealer = getattr(request, "dealer_username", None)
     header_dealer = request.headers.get("X-Dealer-Username")
+    is_dealer = getattr(request, "is_dealer", False)
 
     chosen = jwt_dealer or header_dealer
     if not chosen:
         return None
 
     # If both are set they must agree — otherwise someone is trying to spoof.
+    # Only applies to dealers (DSRs use header for selected dealer context)
     if (
-        jwt_dealer
+        is_dealer
+        and jwt_dealer
         and header_dealer
         and jwt_dealer != header_dealer
     ):
@@ -73,27 +78,75 @@ def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
 
 async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
     """Async version of get_dealer_from_request.
-
-    FIX S-3: same change as the sync helper — derive dealer from the verified
-    JWT (via the middleware), not from the raw X-Dealer-Username header.
+    
+    For DSRs: Verify DSR is assigned to the selected dealer before returning.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     jwt_dealer = getattr(request, "dealer_username", None)
     header_dealer = request.headers.get("X-Dealer-Username")
+    is_dealer = getattr(request, "is_dealer", False)
+    user_email = getattr(request, "user_email", None)
 
-    chosen = jwt_dealer or header_dealer
+    logger.info(
+        f"[aget_dealer_from_request] jwt_dealer={jwt_dealer}, "
+        f"header_dealer={header_dealer}, is_dealer={is_dealer}, user_email={user_email}"
+    )
+
+    # Determine which dealer to use
+    # For dealers: use their own dealer context (jwt_dealer)
+    # For DSRs: use the header_dealer (selected dealer context)
+    if is_dealer:
+        chosen = jwt_dealer or header_dealer
+        # If both are set, they must agree (prevent spoofing)
+        if jwt_dealer and header_dealer and jwt_dealer != header_dealer:
+            logger.warning(f"[aget_dealer_from_request] Dealer spoofing attempt: jwt={jwt_dealer} != header={header_dealer}")
+            return None
+    else:
+        # DSR: Use the header dealer (their selected dealer context)
+        chosen = header_dealer
+
     if not chosen:
+        logger.warning("[aget_dealer_from_request] No dealer context found")
         return None
 
-    if (
-        jwt_dealer
-        and header_dealer
-        and jwt_dealer != header_dealer
-    ):
-        return None
+    logger.info(f"[aget_dealer_from_request] Looking up dealer with username={chosen}")
 
     try:
-        return await DealerConfig.objects.aget(username=chosen)
+        dealer = await DealerConfig.objects.aget(username=chosen)
+        logger.info(f"[aget_dealer_from_request] Found dealer: {dealer.username}")
+        
+        # For DSRs, verify assignment to this dealer
+        if not is_dealer and user_email:
+            # Check if this DSR is assigned to the dealer
+            from users.models import DsrUser
+            from dsr.models import DSR
+            
+            try:
+                dsr_user = await DsrUser.objects.aget(email__iexact=user_email)
+                dsr_profile = await DSR.objects.aget(user=dsr_user)
+                
+                is_assigned = await DsrDealerAssignment.objects.filter(
+                    dsr=dsr_profile,
+                    dealer=dealer,
+                    status=DsrDealerAssignment.STATUS_ACTIVE
+                ).aexists()
+                
+                if not is_assigned:
+                    logger.warning(
+                        f"[aget_dealer_from_request] DSR {user_email} not assigned to dealer {chosen}"
+                    )
+                    return None
+                    
+                logger.info(f"[aget_dealer_from_request] DSR {user_email} is assigned to dealer {chosen}")
+            except (DsrUser.DoesNotExist, DSR.DoesNotExist):
+                logger.warning(f"[aget_dealer_from_request] DSR user/profile not found for {user_email}")
+                return None
+        
+        return dealer
     except DealerConfig.DoesNotExist:
+        logger.warning(f"[aget_dealer_from_request] DealerConfig not found for username={chosen}")
         return None
 
 
@@ -104,11 +157,9 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
 @api_controller(
     "/dealer/dsr",
     tags=["Dealer DSR Management"],
-    # FIX S-7: was `permissions=[AllowAny]`. The controller manages dealer-only
-    # data (DSR roster, invitations, assignments), so require both a valid JWT
-    # (any role) AND a dealer identity. Per-endpoint ownership checks happen
-    # inside each method via `aget_dealer_from_request`.
-    permissions=[IsJwtAuthenticated, IsDealerOnly],
+    # Base permission: require valid JWT. Specific endpoints may override.
+    # DSRs can view team members but only dealers can invite/remove/update.
+    permissions=[IsJwtAuthenticated, IsDsrOrDealer],
 )
 class DealerDsrController:
     """
@@ -119,12 +170,18 @@ class DealerDsrController:
     - View all DSR assignments
     - Update DSR permissions
     - Remove DSRs from their team
+    
+    DSRs can:
+    - View DSR list (for forms, dropdowns)
+    - Search for DSRs by email
     """
     
-    @http_post("/invite", response={200: DealerInviteOutput, 400: dict})
+    @http_post("/invite", response={200: DealerInviteOutput, 400: dict, 403: dict})
     async def invite_dsr(self, request: HttpRequest, data: DealerInviteDsrInput):
         """
         Invite a DSR to join the dealer's team.
+        
+        DEALER ONLY: DSRs cannot invite other DSRs.
         
         Email is the primary identifier (required).
         Phone is optional for contact purposes.
@@ -139,6 +196,10 @@ class DealerDsrController:
         - Sends notification email via Celery
         - DSR will see it in their invitation list
         """
+        # Dealer-only check
+        if not getattr(request, 'is_dealer', False):
+            return 403, {"detail": "Only dealers can invite DSRs", "code": "dealer_only"}
+        
         import logging
         logger = logging.getLogger(__name__)
         
@@ -303,7 +364,7 @@ class DealerDsrController:
             "message": "Invitation email sent" if existing_user else "Registration link sent to email",
         }
     
-    @http_get("/invitations", response={200: dict})
+    @http_get("/invitations", response={200: dict, 400: dict})
     async def list_invitations(self, request: HttpRequest):
         """List all invitations sent by the dealer."""
         dealer = await aget_dealer_from_request(request)
@@ -327,9 +388,13 @@ class DealerDsrController:
         
         return {"invitations": invitations}
     
-    @http_delete("/invitations/{invitation_id}", response={200: MessageOutput, 404: dict})
+    @http_delete("/invitations/{invitation_id}", response={200: MessageOutput, 400: dict, 403: dict, 404: dict})
     async def revoke_invitation(self, request: HttpRequest, invitation_id: str):
-        """Revoke a pending invitation."""
+        """Revoke a pending invitation. DEALER ONLY."""
+        # Dealer-only check
+        if not getattr(request, 'is_dealer', False):
+            return 403, {"detail": "Only dealers can revoke invitations", "code": "dealer_only"}
+        
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
@@ -348,7 +413,7 @@ class DealerDsrController:
         
         return {"message": "Invitation revoked"}
     
-    @http_get("", response={200: DealerDsrListOutput})
+    @http_get("", response={200: DealerDsrListOutput, 400: dict})
     async def list_dsrs(self, request: HttpRequest):
         """List all DSRs for the dealer (active, pending invitations, removed)."""
         dealer = await aget_dealer_from_request(request)
@@ -412,9 +477,13 @@ class DealerDsrController:
             "removed": removed,
         }
     
-    @http_put("/assignments/{assignment_id}", response={200: dict, 404: dict})
+    @http_put("/assignments/{assignment_id}", response={200: dict, 400: dict, 403: dict, 404: dict})
     async def update_dsr(self, request: HttpRequest, assignment_id: str, data: UpdateDsrPermissionsInput):
-        """Update DSR permissions/role."""
+        """Update DSR permissions/role. DEALER ONLY."""
+        # Dealer-only check
+        if not getattr(request, 'is_dealer', False):
+            return 403, {"detail": "Only dealers can update DSR permissions", "code": "dealer_only"}
+        
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
@@ -460,14 +529,18 @@ class DealerDsrController:
             "message": "DSR updated successfully",
         }
     
-    @http_delete("/assignments/{assignment_id}", response={200: MessageOutput, 404: dict})
+    @http_delete("/assignments/{assignment_id}", response={200: MessageOutput, 400: dict, 403: dict, 404: dict})
     async def remove_dsr(self, request: HttpRequest, assignment_id: str, data: RemoveDsrInput = None):
         """
-        Remove DSR from dealer's team.
+        Remove DSR from dealer's team. DEALER ONLY.
         
         Transaction records are preserved with DSR name snapshot.
         DSR will be notified of removal.
         """
+        # Dealer-only check
+        if not getattr(request, 'is_dealer', False):
+            return 403, {"detail": "Only dealers can remove DSRs", "code": "dealer_only"}
+        
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
@@ -506,7 +579,7 @@ class DealerDsrController:
         
         return {"message": f"DSR {assignment.dsr.name} removed from team"}
     
-    @http_get("/search", response={200: dict})
+    @http_get("/search", response={200: dict, 400: dict})
     async def search_dsr(self, request: HttpRequest, email: str = ""):
         """
         Search for existing DSR by email.

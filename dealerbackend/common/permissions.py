@@ -236,10 +236,25 @@ class IsJwtAuthenticated(BasePermission):
     """
 
     def has_permission(self, request, controller) -> bool:
-        return (
-            getattr(request, "user_role", None) is not None
-            or getattr(request, "is_dealer", False)
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        user_role = getattr(request, "user_role", None)
+        is_dealer = getattr(request, "is_dealer", False)
+        
+        logger.info(
+            f"[IsJwtAuthenticated] Permission check: "
+            f"user_role={user_role}, is_dealer={is_dealer}, "
+            f"path={request.path}, method={request.method}"
         )
+        
+        result = (
+            user_role is not None
+            or is_dealer
+        )
+        logger.info(f"[IsJwtAuthenticated] Permission result: {'ALLOWED' if result else 'DENIED'}")
+        
+        return result
 
 
 class IsDealerOnly(BasePermission):
@@ -251,7 +266,23 @@ class IsDealerOnly(BasePermission):
     """
 
     def has_permission(self, request, controller) -> bool:
-        return bool(getattr(request, "is_dealer", False))
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        is_dealer = getattr(request, "is_dealer", False)
+        user_role = getattr(request, "user_role", None)
+        dealer_username = getattr(request, "dealer_username", None)
+        
+        logger.info(
+            f"[IsDealerOnly] Permission check: "
+            f"is_dealer={is_dealer}, user_role={user_role}, dealer_username={dealer_username}, "
+            f"path={request.path}, method={request.method}"
+        )
+        
+        result = bool(is_dealer)
+        logger.info(f"[IsDealerOnly] Permission result: {'ALLOWED' if result else 'DENIED'}")
+        
+        return result
 
 
 class IsDsrOrDealer(BasePermission):

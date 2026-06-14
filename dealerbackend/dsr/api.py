@@ -169,63 +169,10 @@ class DSRController:
             parent_dsr_name=dsr.parent_dsr_name,
         )
 
-    @route.post("", response=DSROut, summary="Create a DSR")
-    async def create_dsr(self, request, payload: CreateDSRIn):
-        """Create a new DSR or Order Collector.
-        
-        Creates DSR and automatically assigns it to the current dealer.
-        """
-        dealer_username = self._get_dealer_username(request)
-        
-        # BUG FIX: Prevent self-referential parent assignment
-        # This would create a circular reference that breaks hierarchy
-        parent_dsr_name = ""
-        parent_dsr_obj = None
-        if payload.parent_dsr_id:
-            try:
-                # Verify parent DSR is assigned to this dealer
-                parent = await DSR.objects.aget(id=payload.parent_dsr_id)
-                parent_is_assigned = await DsrDealerAssignment.objects.filter(
-                    dsr=parent,
-                    dealer__username=dealer_username,
-                    status=DsrDealerAssignment.STATUS_ACTIVE
-                ).aexists()
-                if not parent_is_assigned:
-                    raise HttpError(400, f"Parent DSR with id '{payload.parent_dsr_id}' is not assigned to you")
-                parent_dsr_name = parent.name
-                parent_dsr_obj = parent
-            except DSR.DoesNotExist:
-                raise HttpError(400, f"Parent DSR with id '{payload.parent_dsr_id}' not found")
-
-        dsr = await DSR.objects.acreate(
-            id=await self._generate_id(),
-            name=payload.name,
-            phone=payload.phone,
-            role=payload.role or "DSR",
-            parent_dsr=parent_dsr_obj,
-            parent_dsr_name=parent_dsr_name,
-        )
-        
-        # Create the dealer assignment
-        from dealer.models import DealerConfig
-        dealer = await DealerConfig.objects.aget(username=dealer_username)
-        await DsrDealerAssignment.objects.acreate(
-            id=f"assign-{dsr.id}",
-            dsr=dsr,
-            dealer=dealer,
-            role=payload.role or "DSR",
-            status=DsrDealerAssignment.STATUS_ACTIVE,
-        )
-
-        return DSROut(
-            id=dsr.id,
-            name=dsr.name,
-            phone=dsr.phone,
-            active_sales_count=0,
-            role=dsr.role,
-            parent_dsr_id=dsr.parent_dsr_id,
-            parent_dsr_name=dsr.parent_dsr_name,
-        )
+    # NOTE: Manual DSR creation endpoint REMOVED.
+    # DSRs must be invited via /dealer/dsr/invite endpoint (see dealer_dsr_api.py).
+    # This ensures all DSRs are properly linked to DsrUser accounts through the invitation flow.
+    # Legacy DSRs created before this change may still exist but won't have login access.
 
     @route.patch("{dsr_id}", response=DSROut, summary="Update a DSR")
     async def update_dsr(self, request, dsr_id: str, payload: UpdateDSRIn):

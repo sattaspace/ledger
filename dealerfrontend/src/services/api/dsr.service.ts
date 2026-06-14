@@ -4,22 +4,18 @@
  * Endpoints mapped:
  * GET    /dsrs        → getAllDsrs()
  * GET    /dsrs/:id    → getDsr(id)
- * POST   /dsrs        → createDsr(data)
  * PATCH  /dsrs/:id    → updateDsr(id, data)
  * DELETE /dsrs/:id    → deleteDsr(id)
+ *
+ * NOTE: POST /dsrs (createDsr) has been REMOVED.
+ * DSRs must now be invited via /dealer/dsr/invite endpoint.
+ * See AddRepModal.vue for the invitation flow implementation.
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
 import type { DSR } from "../../types";
 
 // ─── Request Types ───────────────────────────────────────────────────────────
-
-export interface CreateDsrPayload {
-  name: string;
-  phone: string;
-  role?: "DSR" | "Order Collector";
-  parentDsrId?: string;
-}
 
 export interface UpdateDsrPayload {
   name?: string;
@@ -43,11 +39,6 @@ export class DsrService {
   /** GET /dsrs/:id — Fetch a single DSR */
   async getDsr(id: string): Promise<ApiResponse<DSR>> {
     return apiClient.get<DSR>(`/dsrs/${id}`);
-  }
-
-  /** POST /dsrs — Create a new DSR */
-  async createDsr(data: CreateDsrPayload): Promise<ApiResponse<DSR>> {
-    return apiClient.post<DSR>("/dsrs", data);
   }
 
   /** PATCH /dsrs/:id — Update a DSR */

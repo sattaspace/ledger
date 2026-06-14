@@ -250,8 +250,9 @@ JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=60)
 SATTABASE_JWT_ALGORITHM = os.getenv("SATTABASE_JWT_ALGORITHM", "RS256")
 SATTABASE_JWT_PUBLIC_KEY = os.getenv("SATTABASE_JWT_PUBLIC_KEY", "")
 SATTABASE_JWT_SHARED_SECRET = os.getenv("SATTABASE_JWT_SHARED_SECRET", "")
-SATTABASE_JWT_ISSUER = os.getenv("SATTABASE_JWT_ISSUER", "sattabase")
-SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "dealercore")
+# Issuer and audience validation - leave empty if SattaBase JWT doesn't include these claims
+SATTABASE_JWT_ISSUER = os.getenv("SATTABASE_JWT_ISSUER", "")
+SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "")
 
 
 

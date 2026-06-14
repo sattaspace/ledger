@@ -490,24 +490,6 @@ const handleCloseWithDue = async (saleId: string) => {
   }
 };
 
-const handleAddDsr = async (dData: any) => {
-  // Enforce max_dsrs limit
-  if (maxDsrs.value > 0 && dsrs.value.length >= maxDsrs.value) {
-    triggerErrorToast(`DSR limit reached (${maxDsrs.value} representatives). Upgrade your plan to add more.`);
-    throw new Error(`DSR limit reached (${maxDsrs.value} representatives)`);
-  }
-  
-  try {
-    const res = await dsrService.createDsr(dData);
-    await fetchFullDetails();
-    triggerToast('DSR Representative registered!');
-    return res.data;
-  } catch (err: any) {
-    triggerErrorToast(err.message || 'Failed to add representative. Please try again.');
-    throw err;
-  }
-};
-
 const handleEditDsr = async (dsrId: string, dData: any) => {
   try {
     const res = await dsrService.updateDsr(dsrId, dData);
@@ -1323,7 +1305,6 @@ const maxSuppliers = getLimit('max_suppliers', 0);
               :aiResponse="aiResponse"
               :isAiLoading="isAiLoading"
               :formatCurrency="formatCurrency"
-              :onAddDsr="handleAddDsr"
               :onEditDsr="handleEditDsr"
               :onDeleteDsr="handleDeleteDsr"
               @askGemini="handleAskGemini"
