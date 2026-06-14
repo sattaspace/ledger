@@ -1,8 +1,0 @@
-{
-  "name": "Shared Expense Tracker kabita vue",
-  "description": "A collaborative budget and expense tracker for households, trips, and personal use. Split bills easily and track spending by category.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

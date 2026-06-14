@@ -211,3 +211,11 @@ addressbackend/
 addressfrontend/
 meridianbackend/
 meridianfrontend/
+backend_bkb/
+dealerfrontend_bkb/
+frontend_bkb/
+ledgerfrontend_bkb/
+ledgerbackend_needtodev/
+ledgerfrontend_needtodev/
+meridianbackend_needtodev/
+meridianfrontend_needtodev/
