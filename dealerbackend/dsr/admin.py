@@ -1,32 +1,47 @@
 """
 DEALERCORE v3.0 — DSR Admin
 ------------------------------
-Admin configuration for DSR (Daily Sales Representative) model.
-Includes hierarchy display and sales statistics.
+Admin configuration for DsrUser (Daily Sales Representative) model.
+
+After DSR→DsrUser merge, this admin replaces the old DSR admin.
+DsrUser is the unified model — every DsrUser IS a DSR.
+
+FIX: Removed references to the global `role` field (removed in DSR-004).
+Role is now per-dealer via DsrDealerAssignment. The admin now shows
+the primary assignment's role with a link to the assignment list.
 """
 
 from django.contrib import admin
 from django.db.models import Sum, Count, Q
-from .models import DSR
+from django.utils.html import format_html
+from users.models import DsrUser
 
 
-@admin.register(DSR)
-class DSRAdmin(admin.ModelAdmin):
-    list_display = ("name", "phone", "role_col", "parent_dsr_name",
+@admin.register(DsrUser)
+class DsrUserAdmin(admin.ModelAdmin):
+    list_display = ("full_name", "phone", "email", "user_type", "primary_role_col",
                     "subordinate_count", "total_sales", "total_due",
                     "updated_at")
-    list_filter = ("role",)
-    search_fields = ("name", "phone", "parent_dsr_name")
-    readonly_fields = ("id", "subordinate_count", "total_sales",
-                       "total_due", "created_at", "updated_at")
-    ordering = ("name",)
+    list_filter = ("user_type",)
+    search_fields = ("full_name", "phone", "email")
+    readonly_fields = ("id", "primary_role_display", "subordinate_count",
+                       "total_sales", "total_due", "created_at", "updated_at")
+    ordering = ("full_name",)
 
     fieldsets = (
-        ("DSR Info", {
-            "fields": ("id", "name", "phone", "role"),
+        ("DSR User Info", {
+            "fields": ("id", "email", "full_name", "phone", "user_type", "is_active"),
         }),
         ("Hierarchy", {
-            "fields": ("parent_dsr", "parent_dsr_name", "subordinate_count"),
+            "fields": ("subordinate_count",),
+            "description": "Subordinates are linked via DsrDealerAssignment.parent_dsr.",
+        }),
+        ("Primary Role", {
+            "fields": ("primary_role_display",),
+            "description": (
+                "Role is per-dealer via DsrDealerAssignment. "
+                "This shows the role from the DSR's first active assignment."
+            ),
         }),
         ("Statistics", {
             "fields": ("total_sales", "total_due"),
@@ -39,23 +54,74 @@ class DSRAdmin(admin.ModelAdmin):
 
     # ── Computed columns ────────────────────────────────────────────────
 
-    def role_col(self, obj):
-        """Colour-coded role badge."""
-        from django.utils.html import format_html
-        if obj.role == "DSR":
-            colour = "#0d6efd"
-        else:
-            colour = "#6f42c1"
-        return format_html(
-            '<span style="background:{};color:#fff;padding:2px 8px;'
-            'border-radius:4px;font-size:0.85em;">{}</span>',
-            colour, obj.role
+    def primary_role_col(self, obj):
+        """
+        Show role from the first active DsrDealerAssignment.
+
+        FIX DSR-004: The global `role` field was removed.
+        Role is now per-dealer via DsrDealerAssignment. This column looks up
+        the role from the DSR's active assignments.
+        """
+        assignment = (
+            obj.dealer_assignments
+            .filter(status="active")
+            .select_related("dealer")
+            .order_by("activated_at")
+            .first()
         )
-    role_col.short_description = "Role"
+        if assignment:
+            role = assignment.role
+            colour = self._role_colour(role)
+            dealer_tag = ""
+            if assignment.dealer:
+                dealer_tag = format_html(
+                    ' <span style="color:#64748b;font-size:0.75em;">@{}</span>',
+                    assignment.dealer.username,
+                )
+            return format_html(
+                '<span style="background:{};color:#fff;padding:2px 8px;'
+                'border-radius:4px;font-size:0.85em;">{}</span>{}',
+                colour, role, dealer_tag,
+            )
+        return format_html(
+            '<span style="color:#94a3b8;font-size:0.85em;">No assignment</span>'
+        )
+    primary_role_col.short_description = "Primary Role"
+
+    def primary_role_display(self, obj):
+        """Detailed role display for the detail view."""
+        assignments = (
+            obj.dealer_assignments
+            .filter(status="active")
+            .select_related("dealer")
+            .order_by("activated_at")
+        )
+        if not assignments:
+            return "No active assignments"
+
+        lines = []
+        for a in assignments:
+            dealer_label = a.dealer.username if a.dealer else "unknown"
+            colour = self._role_colour(a.role)
+            lines.append(
+                f'{a.role} @ {dealer_label}'
+            )
+        return " | ".join(lines)
+    primary_role_display.short_description = "Active Roles"
+
+    @staticmethod
+    def _role_colour(role: str) -> str:
+        """Return a colour hex for the given role."""
+        return {
+            "DSR": "#0d6efd",
+            "Senior_DSR": "#6f42c1",
+            "Manager": "#d63384",
+            "Collector": "#fd7e14",
+        }.get(role, "#64748b")
 
     def subordinate_count(self, obj):
-        """Number of Order Collectors under this DSR."""
-        return obj.subordinates.count()
+        """Number of Order Collectors under this DSR (via DsrDealerAssignment.parent_dsr)."""
+        return obj.subordinate_assignments.filter(status="active").count()
     subordinate_count.short_description = "Subordinates"
 
     def total_sales(self, obj):

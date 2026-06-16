@@ -38,7 +38,7 @@ from common.dealer_context import get_dealer_context
 from dealer.models import DealerConfig
 from inventory.models import Product, RestockRecord
 from sales.models import SaleRecord, CreditPayment
-from dsr.models import DSR
+from users.models import DsrUser
 from dsr.invitation_models import DsrDealerAssignment
 from reports.schemas import (
     AiReconciliationOut,
@@ -81,7 +81,7 @@ DUE_CREDIT_FILTER = Q(
     collection_status__in=[SaleRecord.STATUS_PENDING, SaleRecord.STATUS_PARTIAL],
 )
 
-# Relation-aware filters — for use on DSR.objects via sales__ reverse FK
+# Relation-aware filters — for use on DsrUser.objects via sales__ reverse FK
 DSR_ACTIVE_SALES_FILTER = Q(
     sales__is_closed_with_due=False,
     sales__is_voided=False,
@@ -204,14 +204,31 @@ class ReportsController:
             )
 
         # ── DSR performance (excludes written-off & voided sales) ──
-        # Get DSR IDs assigned to this dealer via junction table
-        assigned_dsr_ids = DsrDealerAssignment.objects.filter(
+        # FIX DSR-004: Role was removed from the DSR model. It is now
+        # per-dealer via DsrDealerAssignment.role. We build a lookup map
+        # from the dealer's active assignments so each DSR row can include
+        # their role for THIS dealer (a DSR may have different roles with
+        # different dealers). Parent DSR info also comes from the assignment
+        # now, since the hierarchy is per-dealer.
+        active_assignments = DsrDealerAssignment.objects.filter(
             dealer_id=dealer_username,
-            status=DsrDealerAssignment.STATUS_ACTIVE
-        ).values_list('dsr_id', flat=True)
-        
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related("parent_dsr")
+        assignment_map: dict = {}  # dsr_id → {role, parent_dsr_id, parent_dsr_name}
+        async for assignment in active_assignments:
+            if assignment.dsr_id:
+                assignment_map[assignment.dsr_id] = {
+                    "role": assignment.role,
+                    "parent_dsr_id": (
+                        str(assignment.parent_dsr_id) if assignment.parent_dsr_id else None
+                    ),
+                    "parent_dsr_name": (
+                        assignment.parent_dsr.full_name if assignment.parent_dsr else ""
+                    ),
+                }
+
         dsr_performance: List[DsrPerformanceRow] = []
-        async for dsr in DSR.objects.filter(id__in=assigned_dsr_ids).annotate(
+        async for dsr in DsrUser.objects.filter(id__in=assignment_map.keys()).annotate(
             total_sales=Coalesce(
                 Sum("sales__total_amount", filter=DSR_ACTIVE_SALES_FILTER, default=Decimal("0")),
                 Decimal("0"),
@@ -223,13 +240,14 @@ class ReportsController:
             count=Count("sales", filter=DSR_ACTIVE_SALES_FILTER),
         ).order_by("-total_sales"):
             pending = dsr.total_sales - dsr.collected
+            assignment_info = assignment_map.get(dsr.id, {})
             dsr_performance.append(
                 DsrPerformanceRow(
-                    id=dsr.id,
-                    name=dsr.name,
-                    role=dsr.role,
-                    parent_dsr_id=dsr.parent_dsr_id,
-                    parent_dsr_name=dsr.parent_dsr_name,
+                    id=str(dsr.id),
+                    name=dsr.full_name or dsr.email,
+                    role=assignment_info.get("role", DsrUser.ROLE_DSR),
+                    parent_dsr_id=assignment_info.get("parent_dsr_id"),
+                    parent_dsr_name=assignment_info.get("parent_dsr_name", ""),
                     total_sales=dsr.total_sales,
                     collected=dsr.collected,
                     pending=pending,
@@ -509,6 +527,16 @@ class ReportsController:
         # Process each DSR + unassigned
         all_dsr_ids = list(dsr_ids_with_due)
 
+        # FIX DSR-004: Pre-fetch DSR assignments for this dealer so we can
+        # look up per-dealer role without hitting dsr_obj.role (removed).
+        dsr_assignment_roles: dict = {}  # dsr_id → role
+        async for assignment in DsrDealerAssignment.objects.filter(
+            dealer_id=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ):
+            if assignment.dsr_id:
+                dsr_assignment_roles[assignment.dsr_id] = assignment.role
+
         for dsr_id in all_dsr_ids:
             filter_q = Q(DUE_CREDIT_FILTER, dsr_id=dsr_id, dealer_id=dealer_username)
 
@@ -517,10 +545,11 @@ class ReportsController:
             dsr_role = ""
             if dsr_id:
                 try:
-                    dsr_obj = await DSR.objects.aget(id=dsr_id)
-                    dsr_name = dsr_obj.name
-                    dsr_role = dsr_obj.role
-                except DSR.DoesNotExist:
+                    dsr_obj = await DsrUser.objects.aget(id=dsr_id)
+                    dsr_name = dsr_obj.full_name or dsr_obj.email
+                    # FIX DSR-004: role is per-dealer, not on DSR model
+                    dsr_role = dsr_assignment_roles.get(dsr_id, "")
+                except DsrUser.DoesNotExist:
                     dsr_name = f"Unknown (ID: {dsr_id})"
 
             # Aggregate
@@ -563,7 +592,7 @@ class ReportsController:
 
             rows.append(
                 DsrDueRow(
-                    dsr_id=dsr_id,
+                    dsr_id=str(dsr_id) if dsr_id else None,
                     dsr_name=dsr_name,
                     role=dsr_role,
                     total_sales=agg["total_amount"],

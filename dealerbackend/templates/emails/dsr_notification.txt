@@ -14,6 +14,11 @@ Log in to your dashboard to view and respond to this invitation:
 
 {{ dashboard_url }}
 
+{% if password_setup_url %}
+IMPORTANT: You don't have a password set yet. Set your password first:
+{{ password_setup_url }}
+{% endif %}
+
 ---
 © {{ current_year }} {{ site_name }}
 This email was sent to {{ email }}

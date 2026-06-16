@@ -3,42 +3,17 @@ DEALERCORE — Plan Limits Enforcement
 --------------------------------------
 Server-side enforcement of subscription limits and feature flags.
 
-FIX A-1 (Phase A — CRIT-1): the frontend used to be the sole gatekeeper
-for `max_products`, `max_dsrs`, `max_suppliers`, `export_pdf`, etc.
-Any user with a valid JWT could bypass those checks via direct API calls.
-This module provides:
+FIX DSR-020: Removed the X-Plan-Limits header fallback. Client-provided
+headers can be manipulated to bypass limits. Now the resolution order is:
+  1. JWT `plan_limits` claim (preferred — SattaBase should embed this)
+  2. Permissive defaults (backward-compat until #1 ships)
 
-  - `get_plan_limits(request)` \u2014 reads the plan limits from the JWT (custom
-    `plan_limits` claim if present, else falls back to a permissive default
-    so existing deployments are not broken until SattaBase is updated to
-    embed the claim).
-  - `check_plan_limit(request, key, current_count)` \u2014 raises `HttpError(403)`
-    if `current_count >= limit`.
-  - `check_feature(request, key)` \u2014 raises `HttpError(403)` if the feature is
-    not enabled for the current plan.
-
-SattaBase-side change required for full effect: include a `plan_limits`
-object claim in the access JWT, shaped like::
-
-    {
-      "max_products": 50,
-      "max_dsrs": 1,
-      "max_suppliers": 3,
-      "export_pdf": true,
-      "ai_insights": false,
-      ...
-    }
-
-Until that ships, the helper accepts the limits from the request's
-`X-Plan-Limits` header (set by the frontend from the /billing/auth/me
-access map). The header is trusted only because the request itself is
-JWT-authenticated \u2014 an attacker without a valid JWT cannot reach this
-code path. When SattaBase ships the claim, this fallback can be removed.
+When SattaBase starts embedding the `plan_limits` claim in the JWT, the
+fallback defaults can be removed entirely.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
@@ -48,11 +23,10 @@ from ninja.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Permissive fallback used when neither the JWT claim nor the X-Plan-Limits
-# header is present. Returning a very high number (effectively "unlimited")
-# preserves backward compatibility for existing customers until SattaBase
-# is updated. New deployments should configure SattaBase to embed the
-# `plan_limits` claim in the JWT.
+# Permissive fallback used when the JWT doesn't include plan_limits.
+# Returning a very high number (effectively "unlimited") preserves backward
+# compatibility for existing customers until SattaBase is updated to embed
+# the `plan_limits` claim in the JWT.
 _FALLBACK_LIMITS = {
     "max_products": 10_000,
     "max_dsrs": 1_000,
@@ -64,7 +38,7 @@ _FEATURE_FALSE_FALLBACK = False
 
 def _read_jwt_plan_limits(request: HttpRequest) -> Optional[dict]:
     """
-    Decode the Authorization Bearer JWT (without verifying signature \u2014 the
+    Decode the Authorization Bearer JWT (without verifying signature — the
     PermissionMiddleware already verified it upstream) and return the
     `plan_limits` claim if present.
 
@@ -84,54 +58,29 @@ def _read_jwt_plan_limits(request: HttpRequest) -> Optional[dict]:
     return payload.get("plan_limits")
 
 
-def _read_header_plan_limits(request: HttpRequest) -> Optional[dict]:
-    """
-    Read plan limits from `X-Plan-Limits` header (JSON-encoded). The
-    frontend sets this from the /billing/auth/me access map.
-
-    Headers are trusted only because the request is JWT-authenticated; an
-    attacker without a valid JWT cannot reach this code path.
-    """
-    raw = request.headers.get("X-Plan-Limits", "")
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        logger.warning("Invalid X-Plan-Limits header (not JSON)")
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
-
-
 def get_plan_limits(request: HttpRequest) -> dict:
     """
     Return the plan limits for the current request.
 
-    Resolution order:
-      1. JWT `plan_limits` claim (preferred \u2014 SattaBase should embed this)
-      2. `X-Plan-Limits` request header (frontend fallback)
-      3. Permissive defaults (backward-compat until #1 ships)
+    FIX DSR-020: Resolution order is now:
+      1. JWT `plan_limits` claim (preferred — SattaBase should embed this)
+      2. Permissive defaults (backward-compat until #1 ships)
 
-    Returns a dict of `key -> int` for limit keys, plus a parallel
-    `key -> bool` shape for feature flags via `is_feature_enabled`.
+    The X-Plan-Limits header is NO LONGER trusted. Client-provided header
+    values can be manipulated to bypass limits, so they must not be used
+    for enforcement decisions.
     """
     # 1. JWT claim
     limits = _read_jwt_plan_limits(request)
     source = "jwt"
     if not limits:
-        # 2. Header
-        limits = _read_header_plan_limits(request)
-        source = "header"
-    if not limits:
-        # 3. Permissive fallback
+        # 2. Permissive fallback
         limits = _FALLBACK_LIMITS
         source = "fallback"
         # Only warn once per process to avoid log spam.
         if not getattr(logger, "_fallback_warned", False):
             logger.warning(
-                "plan_limits not in JWT or X-Plan-Limits header \u2014 "
+                "plan_limits not in JWT — "
                 "using permissive fallback. Configure SattaBase to embed "
                 "`plan_limits` in the JWT for production enforcement."
             )
@@ -147,8 +96,7 @@ def is_feature_enabled(request: HttpRequest, feature: str) -> bool:
 
     Resolution order matches `get_plan_limits`:
       1. JWT `plan_limits.<feature>` (must be a boolean)
-      2. `X-Plan-Limits.<feature>` (must be a boolean)
-      3. Permissive fallback = False (deny-by-default for features)
+      2. Permissive fallback = False (deny-by-default for features)
     """
     limits = get_plan_limits(request)
     value = limits.get(feature)

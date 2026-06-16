@@ -1,0 +1,20 @@
+Verify Your Email - {{ site_name }}
+=====================================
+
+Hi {{ dsr_name }},
+
+Please verify your email address to activate your account on {{ site_name }}.
+
+Email verification is required before you can accept invitations from dealers.
+
+To verify your email, please visit:
+
+{{ verification_url }}
+
+This link expires in {{ expires_hours }} hours.
+
+If you did not create an account on {{ site_name }}, you can safely ignore this email.
+
+---
+© {{ current_year }} {{ site_name }}
+This email was sent to {{ email }}

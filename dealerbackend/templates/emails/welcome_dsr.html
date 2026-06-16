@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>You're Invited to Join {{ dealer_name }}</title>
+    <title>Welcome to {{ site_name }}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto;">
@@ -11,56 +11,52 @@
         <tr>
             <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
                 <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">{{ site_name }}</h1>
-                <p style="margin: 10px 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">DSR Invitation</p>
+                <p style="margin: 10px 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">Welcome Aboard!</p>
             </td>
         </tr>
-        
+
         <!-- Main Content -->
         <tr>
             <td style="background-color: #ffffff; padding: 40px 30px;">
-                <h2 style="margin: 0 0 20px; color: #1e293b; font-size: 24px;">You're Invited!</h2>
-                
+                <h2 style="margin: 0 0 20px; color: #1e293b; font-size: 24px;">Welcome, {{ dsr_name }}!</h2>
+
                 <p style="margin: 0 0 16px; color: #475569; font-size: 16px; line-height: 1.6;">
-                    <strong>{{ dealer_name }}</strong>{% if dealer_business %} ({{ dealer_business }}){% endif %} is inviting you to join their team as a <strong>{{ role }}</strong> on {{ site_name }}.
+                    Your account on <strong>{{ site_name }}</strong> has been successfully created. You're all set to start receiving invitations from dealers looking to add DSRs to their teams.
                 </p>
-                
-                {% if message %}
-                <div style="background-color: #f1f5f9; border-left: 4px solid #10b981; padding: 16px; margin: 20px 0;">
-                    <p style="margin: 0; color: #475569; font-size: 14px; font-style: italic;">
-                        "{{ message }}"
-                    </p>
-                </div>
-                {% endif %}
-                
+
                 <p style="margin: 0 0 24px; color: #475569; font-size: 16px; line-height: 1.6;">
-                    Click the button below to create your account and join their team:
+                    Here's what you can do next:
                 </p>
-                
+
+                <ul style="margin: 0 0 24px; color: #475569; font-size: 16px; line-height: 1.8; padding-left: 20px;">
+                    <li>Receive and review invitations from dealers</li>
+                    <li>Accept or decline team invitations</li>
+                    <li>Manage your profile and preferences</li>
+                </ul>
+
+                <p style="margin: 0 0 24px; color: #475569; font-size: 16px; line-height: 1.6;">
+                    Visit your dashboard to get started:
+                </p>
+
                 <!-- CTA Button -->
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                     <tr>
                         <td style="text-align: center; padding: 20px 0;">
-                            <a href="{{ registration_url }}" style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; padding: 16px 40px; border-radius: 8px; text-decoration: none; font-size: 16px; font-weight: 600;">
-                                Accept Invitation
+                            <a href="{{ dashboard_url }}" style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; padding: 16px 40px; border-radius: 8px; text-decoration: none; font-size: 16px; font-weight: 600;">
+                                Go to Dashboard
                             </a>
                         </td>
                     </tr>
                 </table>
-                
-                {% if expires_at %}
-                <p style="margin: 20px 0 0; color: #64748b; font-size: 14px; text-align: center;">
-                    ⏰ This invitation expires on {{ expires_at }}
-                </p>
-                {% endif %}
-                
+
                 <!-- Alternative Link -->
                 <p style="margin: 24px 0 0; color: #94a3b8; font-size: 13px; line-height: 1.5;">
                     If the button doesn't work, copy and paste this link into your browser:<br>
-                    <a href="{{ registration_url }}" style="color: #10b981; word-break: break-all;">{{ registration_url }}</a>
+                    <a href="{{ dashboard_url }}" style="color: #10b981; word-break: break-all;">{{ dashboard_url }}</a>
                 </p>
             </td>
         </tr>
-        
+
         <!-- Footer -->
         <tr>
             <td style="background-color: #f8fafc; padding: 30px; text-align: center; border-top: 1px solid #e2e8f0;">

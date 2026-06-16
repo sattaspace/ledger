@@ -89,6 +89,8 @@ async def get_dealer_context(request, dealer_username: Optional[str] = None) -> 
     """
     is_dealer = getattr(request, 'is_dealer', False)
     user_dealer_username = getattr(request, 'dealer_username', None)
+    # FIX DSR-007: selected_dealer is the X-Dealer-Username header set by
+    # the middleware, NOT the removed DsrUser.selected_dealer FK.
     selected_dealer = getattr(request, 'selected_dealer', None)
     user_email = getattr(request, 'user_email', None)
     

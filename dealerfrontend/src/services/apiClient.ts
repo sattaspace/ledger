@@ -227,31 +227,62 @@ class ApiClient {
       ...customConfig,
     };
 
-    // FIX B-12: previously always injected the DEALER JWT (from lib/api,
-    // i.e. SattaBase) into every request handled by apiClient. apiClient
-    // is used for BOTH dealer-business endpoints (where the dealer JWT is
-    // useful for identity) AND DSR-auth endpoints (where the dealer JWT
-    // is wrong — those endpoints expect a DSR-issued JWT or no auth).
+    // FIX B-12 + FIX DSR-013: Token injection now handles three scenarios:
     //
-    // We now skip dealer-JWT injection only for DSR paths
-    // (anything under /dsr/...). Business endpoints continue to receive
-    // the dealer JWT as before.
+    // 1. Dealer session (SattaBase JWT): Inject dealer JWT for business
+    //    endpoints. Skip for /dsr/ paths (those use the DSR client).
+    // 2. DSR Portal mode (DSR-scoped JWT): When a DSR has entered the
+    //    dealer portal, we inject the DSR JWT for ALL endpoints (not just
+    //    /dsr/ paths). The backend's PermissionMiddleware handles DSR JWTs
+    //    for business endpoints too. We detect portal mode by checking if
+    //    there's a DSR access token but NO dealer (SattaBase) access token.
+    // 3. No auth (public endpoints): Neither token is injected.
     const isDsrPath = endpoint.startsWith("/dsr/");
-    const token = (!config.headers?.Authorization && !isDsrPath)
-      ? getAccessToken()
-      : null;
-    if (token) {
+    const dealerToken = getAccessToken();
+    const dsrToken = localStorage.getItem("dsr_access_token");
+
+    let authToken: string | null = null;
+    if (!config.headers?.Authorization) {
+      if (isDsrPath) {
+        // DSR paths: use DSR token if available
+        authToken = dsrToken;
+      } else if (dealerToken) {
+        // Business paths with dealer session: use dealer token
+        authToken = dealerToken;
+      } else if (dsrToken) {
+        // FIX DSR-013: Business paths with DSR portal mode (no dealer
+        // token but DSR token exists): use DSR token. This allows DSRs
+        // to access the full dealer app UI with their scoped JWT.
+        authToken = dsrToken;
+      }
+    }
+
+    if (authToken) {
       config.headers = {
         ...config.headers,
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${authToken}`,
       };
     }
 
-    // X-Dealer-Username is multi-tenancy for dealer-business endpoints
-    // only. DSR endpoints don't need it (the dealer context is implicit
-    // in the DSR's assignment).
+    // X-Dealer-Username header for multi-tenancy.
+    // When a DSR is in portal mode, we get the dealer username from the
+    // DSR's selected dealer (localStorage). Otherwise, from the dealer
+    // session. Skip for /dsr/ paths (the DSR's assignment handles context).
     if (!isDsrPath) {
-      const dealerUsername = getSelectedDealerUsername();
+      let dealerUsername = getSelectedDealerUsername();
+      // FIX DSR-013: If no dealer username from SattaBase session, try
+      // the DSR's selected dealer (for DSR portal mode).
+      if (!dealerUsername && dsrToken) {
+        const dsrDealer = localStorage.getItem("dsr_selected_dealer");
+        if (dsrDealer) {
+          try {
+            const parsed = JSON.parse(dsrDealer);
+            dealerUsername = parsed.username;
+          } catch {
+            /* ignore parse errors */
+          }
+        }
+      }
       if (dealerUsername) {
         config.headers = {
           ...config.headers,
@@ -292,7 +323,7 @@ class ApiClient {
         {
           url,
           dealerUsername: config.headers?.["X-Dealer-Username"] || "none",
-          hasToken: !!token,
+          hasToken: !!authToken,
           body: body ? "(has body)" : "none",
         },
       );

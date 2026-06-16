@@ -1,0 +1,19 @@
+Welcome to {{ site_name }}, {{ dsr_name }}!
+==============================================
+
+Your account on {{ site_name }} has been successfully created. You're all set to start receiving invitations from dealers looking to add DSRs to their teams.
+
+Here's what you can do next:
+- Receive and review invitations from dealers
+- Accept or decline team invitations
+- Manage your profile and preferences
+
+Visit your dashboard to get started:
+
+{{ dashboard_url }}
+
+If you have any questions, feel free to reach out to our support team.
+
+---
+© {{ current_year }} {{ site_name }}
+This email was sent to {{ email }}

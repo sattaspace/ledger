@@ -13,7 +13,7 @@ from django.db import transaction
 
 from supplier.models import Supplier
 from inventory.models import Product, RestockRecord, Brand, Category
-from dsr.models import DSR
+from users.models import DsrUser
 from dealer.models import DealerConfig
 from sales.models import SaleRecord, CreditPayment, SaleReturn
 
@@ -47,7 +47,7 @@ class Command(BaseCommand):
                 "Products": Product.objects.count(),
                 "Categories": Category.objects.count(),
                 "Brands": Brand.objects.count(),
-                "DSRs": DSR.objects.count(),
+                "DSRs": DsrUser.objects.count(),
                 "Dealers": DealerConfig.objects.count(),
                 "Suppliers": Supplier.objects.count(),
             }
@@ -59,7 +59,7 @@ class Command(BaseCommand):
             Product.objects.all().delete()
             Category.objects.all().delete()
             Brand.objects.all().delete()
-            DSR.objects.all().delete()
+            DsrUser.objects.all().delete()
             DealerConfig.objects.all().delete()
             Supplier.objects.all().delete()
 

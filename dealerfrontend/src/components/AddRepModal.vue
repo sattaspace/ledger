@@ -65,13 +65,13 @@ const dsrMessage = ref('');
 const searchResult = ref<{
   exists: boolean;
   registered: boolean;
-  dsr_id?: string;
-  dsr_name?: string;
-  dsr_email?: string;
-  dsr_phone?: string;
-  already_assigned?: boolean;
-  has_pending_invitation?: boolean;
-  invitation_id?: string;
+  dsrId?: string;
+  dsrName?: string;
+  dsrEmail?: string;
+  dsrPhone?: string;
+  alreadyAssigned?: boolean;
+  hasPendingInvitation?: boolean;
+  invitationId?: string;
 } | null>(null);
 
 // Registration link (for non-registered DSRs)
@@ -163,30 +163,34 @@ async function handleSearch() {
     const apiResponse = await apiClient.get<{
       exists: boolean;
       registered: boolean;
-      dsr_id?: string;
-      dsr_name?: string;
-      dsr_email?: string;
-      dsr_phone?: string;
-      already_assigned?: boolean;
-      has_pending_invitation?: boolean;
-      invitation_id?: string;
+      dsrId?: string;
+      dsrName?: string;
+      dsrEmail?: string;
+      dsrPhone?: string;
+      alreadyAssigned?: boolean;
+      hasPendingInvitation?: boolean;
+      invitationId?: string;
     }>(`/dealer/dsr/search?email=${searchEmail}`);
 
     // apiClient returns { ok, status, data } - access actual data via .data
     const response = apiResponse.data || apiResponse;
     searchResult.value = response;
     
-    if (response.already_assigned) {
+    if (response.alreadyAssigned) {
       searchStep.value = 'input';
       errorMessage.value = 'This DSR is already assigned to your team.';
-    } else if (response.has_pending_invitation) {
-      searchStep.value = 'input';
-      errorMessage.value = 'A pending invitation already exists for this email address.';
+    } else if (response.hasPendingInvitation) {
+      // Don't block — the invite endpoint auto-revokes stale pending
+      // invitations. Let the user proceed; show a note about re-invite.
+      searchStep.value = response.registered ? 'found' : 'not_found';
+      if (response.dsrPhone) {
+        dsrPhone.value = response.dsrPhone;
+      }
     } else if (response.registered) {
       searchStep.value = 'found';
       // Pre-fill phone if found
-      if (response.dsr_phone) {
-        dsrPhone.value = response.dsr_phone;
+      if (response.dsrPhone) {
+        dsrPhone.value = response.dsrPhone;
       }
     } else {
       searchStep.value = 'not_found';
@@ -208,19 +212,19 @@ async function handleSendInvitation() {
   try {
     const apiResponse = await apiClient.post<{
       id: string;
-      dsr_email: string;
-      dsr_phone: string;
+      dsrEmail: string;
+      dsrPhone: string;
       role: string;
       status: string;
       token: string;
-      expires_at: string;
-      registration_url?: string;
+      expiresAt: string;
+      registrationUrl?: string;
       message: string;
     }>('/dealer/dsr/invite', {
-      dsr_email: dsrEmail.value.trim(),  // REQUIRED
-      dsr_phone: dsrPhone.value.trim() || undefined,  // OPTIONAL
+      dsrEmail: dsrEmail.value.trim(),  // REQUIRED (apiClient transforms to dsr_email)
+      dsrPhone: dsrPhone.value.trim() || undefined,  // OPTIONAL
       role: role.value,
-      parent_dsr_id: role.value === 'Order Collector' ? parentDsrId.value : undefined,
+      parentDsrId: role.value === 'Order Collector' ? parentDsrId.value : undefined,  // apiClient transforms to parent_dsr_id
       message: dsrMessage.value.trim() || undefined,
     });
 
@@ -229,8 +233,8 @@ async function handleSendInvitation() {
     invitationToken.value = response.token;
     
     // If registration URL is returned, DSR is not registered
-    if (response.registration_url) {
-      registrationUrl.value = response.registration_url;
+    if (response.registrationUrl) {
+      registrationUrl.value = response.registrationUrl;
     }
 
     searchStep.value = 'success';
@@ -405,18 +409,18 @@ watch([dsrEmail, dsrPhone, role, parentDsrId], () => {
                     </div>
                     <h3 class="text-lg font-semibold text-slate-800 mb-2">DSR Found!</h3>
                     <p class="text-sm text-slate-500">
-                      {{ searchResult?.dsr_name || 'A DSR' }} is already registered
+                      {{ searchResult?.dsrName || 'A DSR' }} is already registered
                     </p>
                   </div>
 
                   <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-4">
                     <div class="flex items-center gap-3">
                       <div class="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-semibold">
-                        {{ (searchResult?.dsr_name || 'DSR').split(' ').map(n => n[0]).join('').slice(0, 2) }}
+                        {{ (searchResult?.dsrName || 'DSR').split(' ').map(n => n[0] || '').join('').slice(0, 2).toUpperCase() }}
                       </div>
                       <div>
-                        <p class="font-semibold text-slate-800">{{ searchResult?.dsr_name || 'DSR' }}</p>
-                        <p class="text-sm text-slate-500">{{ searchResult?.dsr_email }}</p>
+                        <p class="font-semibold text-slate-800">{{ searchResult?.dsrName || 'DSR' }}</p>
+                        <p class="text-sm text-slate-500">{{ searchResult?.dsrEmail }}</p>
                       </div>
                     </div>
                   </div>

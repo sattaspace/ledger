@@ -44,7 +44,8 @@ class DsrUserOutput(Schema):
     phone_verified: bool = False
     email_verified: bool = False
     created_at: datetime
-    has_dsr_profile: bool = False
+    # has_dsr_profile removed after DSR→DsrUser merge: every DsrUser IS a DSR,
+    # so the field would always be True and is meaningless.
 
 
 class DsrLoginOutput(Schema):
@@ -105,9 +106,16 @@ class DsrRegisterOutput(Schema):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class InvitationOutput(Schema):
-    """Invitation details for DSR to view."""
+    """Invitation details for DSR to view.
+    
+    FIX DSR-INV-004: token field was required but never returned by the
+    list_invitations endpoint (removed in FIX DSR-009). This schema
+    mismatch caused Django Ninja to throw a validation error on every
+    GET /dsr/invitations call, which the frontend silently caught as
+    an empty invitation list — making invitations invisible in the DSR panel.
+    """
     id: str
-    token: str
+    token: Optional[str] = None  # FIX DSR-INV-004: Made optional (never returned)
     dealer: DealerChoice
     role: str
     permissions: Dict[str, Any] = {}
@@ -132,6 +140,13 @@ class AcceptInvitationOutput(Schema):
     role: str
     permissions: Dict[str, Any]
     message: str = "Invitation accepted"
+    # FIX DSR-017: Flag indicating phone number is required
+    phone_required: bool = False
+
+
+class SetPhoneInput(Schema):
+    """FIX DSR-017: Set phone number (required after first invitation acceptance)."""
+    phone: str
 
 
 class RejectInvitationInput(Schema):
@@ -167,12 +182,20 @@ class DealerSelectionOutput(Schema):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class DsrProfileOutput(Schema):
-    """DSR profile with user info and assignments."""
+    """DSR profile with user info and assignments.
+    
+    After DSR→DsrUser merge:
+      dsr_id   → str(user.id) (UUID)
+      dsr_name → user.full_name
+      dsr_role → from DsrDealerAssignment.role (per-dealer)
+    """
     user: DsrUserOutput
-    dsr_id: Optional[str] = None
-    dsr_name: str = ""
-    dsr_role: str = ""
+    dsr_id: Optional[str] = None  # str(user.id) — UUID from DsrUser
+    dsr_name: str = ""            # user.full_name from DsrUser
+    dsr_role: str = ""           # from DsrDealerAssignment.role
     dealers: List[DealerChoice] = []
+    # FIX DSR-007: selected_dealer is now None (legacy field kept for API compat).
+    # Frontend determines selected dealer from localStorage.
     selected_dealer: Optional[DealerChoice] = None
     skills: List[str] = []
     experience_years: int = 0
@@ -186,8 +209,9 @@ class UpdateProfileInput(Schema):
     email: Optional[str] = None
     avatar_url: Optional[str] = None
     bio: Optional[str] = None
-    skills: Optional[List[str]] = None
-    experience_years: Optional[int] = None
+    # FIX DSR-008: skills and experience_years removed from UpdateProfileInput.
+    # These fields now live on DsrMarketplaceProfile. When the marketplace
+    # feature is implemented, add a separate marketplace profile update endpoint.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -269,13 +293,18 @@ class DealerInviteDsrInput(Schema):
 
 
 class DealerInviteOutput(Schema):
-    """Dealer invitation response."""
+    """Dealer invitation response.
+    
+    FIX H-20: token field is no longer returned in the response body for
+    security reasons. The raw token only lives in the registration URL
+    (sent via email). Keeping the field as Optional for API backward compat.
+    """
     id: str
     dsr_email: str
     dsr_phone: str = ""
     role: str
     status: str
-    token: str
+    token: Optional[str] = None  # FIX H-20: no longer returned (was security risk)
     expires_at: datetime
     registration_url: Optional[str] = None
     message: str = "Invitation sent"
@@ -291,6 +320,10 @@ class DealerDsrListOutput(Schema):
 class RemoveDsrInput(Schema):
     """Dealer removing DSR input."""
     reason: Optional[str] = None
+    # FIX DSR-010: Optional DSR to reassign active sales to.
+    # If not provided, sales are left with dsr_status='removed' and
+    # the dealer must manually reassign them later.
+    reassign_to_dsr_id: Optional[str] = None
 
 
 class UpdateDsrPermissionsInput(Schema):

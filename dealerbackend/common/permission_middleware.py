@@ -3,6 +3,15 @@ DEALERCORE v3.0 — Permission Middleware
 ----------------------------------------
 Extracts user role from JWT and injects permission context.
 
+FIX DSR-001: This middleware now handles TWO types of JWT tokens:
+1. SattaBase JWT (RS256/HS256) — for dealers logging in via SattaBase
+2. Local DSR JWT (HS256 with SECRET_KEY) — for DSRs logging in directly
+
+When a SattaBase JWT fails verification, the middleware falls back to
+trying the local DSR JWT verification. If a DSR JWT is detected, it
+extracts the DSR's user_id and email from the token claims and sets
+the appropriate request attributes for downstream controllers.
+
 Dealer Detection (IMPORTANT):
 1. Extracts user ID from JWT (dealer_id, user_id, username, or sub claim)
 2. First checks JWT's is_dealer claim
@@ -30,6 +39,8 @@ class PermissionMiddleware:
     """
     Middleware to extract user role and permissions from JWT.
     
+    FIX DSR-001: Now handles both SattaBase JWTs and local DSR JWTs.
+    
     Adds to request:
     - request.user_role: Role enum
     - request.is_dealer: Boolean
@@ -38,6 +49,8 @@ class PermissionMiddleware:
     - request.dealer_username: str (from JWT or X-Dealer-Username header for DSRs)
     - request.user_email: str (extracted from JWT 'email' claim)
     - request.selected_dealer: str (X-Dealer-Username header for multi-dealer DSRs)
+    - request.is_dsr: Boolean (True if authenticated via local DSR JWT)
+    - request.dsr_user_id: str (DsrUser PK from local DSR JWT, if applicable)
     """
     
     def __init__(self, get_response: Callable):
@@ -45,7 +58,7 @@ class PermissionMiddleware:
     
     def __call__(self, request: HttpRequest):
         # Extract role from JWT
-        role, is_dealer, username, email = self._extract_user_info(request)
+        role, is_dealer, username, email, is_dsr, dsr_user_id = self._extract_user_info(request)
         
         # Check for X-Dealer-Username header (for multi-dealer DSR context)
         selected_dealer = request.headers.get('X-Dealer-Username')
@@ -53,16 +66,22 @@ class PermissionMiddleware:
         # Determine effective dealer username:
         # - For dealers: always use their own username (ignore header)
         # - For DSRs/Collectors: use header if provided, otherwise use JWT username
+        # FIX: Normalize username to string — JWT user_id may be int (e.g. 1)
+        # while X-Dealer-Username is always str (e.g. "1"). Without this,
+        # the aget_dealer_from_request anti-spoofing check fails because
+        # 1 != "1" in Python.
         if is_dealer:
-            effective_dealer = username  # Dealers can only access their own data
+            effective_dealer = str(username) if username else None
         elif selected_dealer:
-            effective_dealer = selected_dealer  # DSR selected dealer context
+            effective_dealer = selected_dealer  # Already a string from HTTP header
         else:
-            effective_dealer = username  # Fallback to JWT username
+            effective_dealer = str(username) if username else None
         
         # Attach to request
         request.user_role = role
         request.is_dealer = is_dealer
+        request.is_dsr = is_dsr  # FIX DSR-001: flag for local DSR JWT
+        request.dsr_user_id = dsr_user_id  # FIX DSR-001: DsrUser PK
         request.permissions = get_role_permissions(role) if role else []
         request.permission_checker = PermissionChecker(role=role, is_dealer=is_dealer)
         request.dealer_username = effective_dealer  # For dealer context scoping
@@ -72,61 +91,48 @@ class PermissionMiddleware:
         response = self.get_response(request)
         return response
     
-    def _extract_user_info(self, request: HttpRequest) -> tuple[Optional[Role], bool, Optional[str], Optional[str]]:
+    def _extract_user_info(self, request: HttpRequest) -> tuple[Optional[Role], bool, Optional[str], Optional[str], bool, Optional[str]]:
         """
         Extract user role and identity from JWT token.
         
-        FIX S-1: JWT signatures are now VERIFIED. We choose the verification
-        key based on the configured SattaBase settings:
-          - SATTABASE_JWT_PUBLIC_KEY set  → RS256 with that public key
-          - SATTABASE_JWT_SHARED_SECRET set → HS256 with that shared secret
-          - Otherwise → fall back to the local SECRET_KEY (HS256, dev only)
-        `require=["exp"]` enforces expiry. `iss`/`aud` are validated when
-        `SATTABASE_JWT_ISSUER` / `SATTABASE_JWT_AUDIENCE` are set.
-
-        FIX S-6: only catch the JWT exceptions we expect. Programming errors
-        (AttributeError, KeyError, etc.) must propagate so they show up in
-        logs instead of silently granting anonymous access.
-
-        Dealer Detection:
-        - First checks JWT's is_dealer claim
-        - If not set, checks DealerConfig table synchronously (username from JWT)
-        - This is required for IsDealerOnly permission to work correctly
+        FIX DSR-001: Attempts SattaBase JWT verification first, then falls
+        back to local DSR JWT verification. This unifies the two auth paths
+        at the middleware level.
         
-        Returns: (role, is_dealer, username, email)
+        Returns: (role, is_dealer, username, email, is_dsr, dsr_user_id)
         """
         import logging
         logger = logging.getLogger(__name__)
         
-        logger.info("[PERMISSION MIDDLEWARE] ====== START JWT EXTRACTION ======")
-        
         auth_header = request.headers.get('Authorization', '')
-        logger.info(f"[PERMISSION MIDDLEWARE] Authorization header present: {bool(auth_header)}")
         
         if not auth_header.startswith('Bearer '):
-            logger.warning("[PERMISSION MIDDLEWARE] No Bearer token found, returning anonymous")
-            return None, False, None, None
+            return None, False, None, None, False, None
         
         token = auth_header[7:]  # Remove "Bearer "
-        logger.info(f"[PERMISSION MIDDLEWARE] Token length: {len(token)}, preview: {token[:50]}...")
         
-        # Pick the verification key/algorithm
+        # ── Step 1: Try SattaBase JWT verification ──────────────────────
+        result = self._verify_sattabase_jwt(token, logger)
+        if result is not None:
+            return result
+        
+        # ── Step 2: Try local DSR JWT verification ──────────────────────
+        result = self._verify_dsr_jwt(token, logger)
+        if result is not None:
+            return result
+        
+        # Neither verification succeeded
+        return None, False, None, None, False, None
+
+    def _verify_sattabase_jwt(self, token: str, logger) -> Optional[tuple]:
+        """
+        Verify a SattaBase-issued JWT (RS256 or HS256).
+        
+        Returns (role, is_dealer, username, email, is_dsr=False, dsr_user_id=None)
+        or None if verification fails.
+        """
         public_key = getattr(settings, 'SATTABASE_JWT_PUBLIC_KEY', '') or ''
         shared_secret = getattr(settings, 'SATTABASE_JWT_SHARED_SECRET', '') or ''
-        
-        # Log JWT verification configuration (for debugging)
-        if not public_key and not shared_secret:
-            logger.warning(
-                "[PERMISSION MIDDLEWARE] JWT verification using local SECRET_KEY. "
-                "For production, set SATTABASE_JWT_PUBLIC_KEY or SATTABASE_JWT_SHARED_SECRET "
-                "to match SattaBase JWT signing key."
-            )
-        else:
-            logger.info(
-                f"[PERMISSION MIDDLEWARE] JWT verification configured: "
-                f"public_key={'set' if public_key else 'not set'}, "
-                f"shared_secret={'set' if shared_secret else 'not set'}"
-            )
         
         if public_key:
             verify_key = public_key
@@ -134,19 +140,9 @@ class PermissionMiddleware:
         elif shared_secret:
             verify_key = shared_secret
             algorithms = ['HS256']
-            # Log key details for debugging (show first/last few chars only for security)
-            key_preview = f"{shared_secret[:20]}...{shared_secret[-20:]}" if len(shared_secret) > 40 else shared_secret
-            logger.info(f"[PERMISSION MIDDLEWARE] Using shared_secret for HS256 verification, key preview: {key_preview}")
         else:
-            # Fallback to local SECRET_KEY (HS256). In production, set one of
-            # the two env vars above; otherwise signature verification is
-            # effectively using the local dev key.
             verify_key = settings.SECRET_KEY
             algorithms = ['HS256']
-            logger.warning(
-                f"[PERMISSION MIDDLEWARE] Using local SECRET_KEY for JWT verification (fallback mode). "
-                f"SATTABASE_JWT_SHARED_SECRET not set. Key preview: {settings.SECRET_KEY[:20]}..."
-            )
 
         decode_kwargs = {
             'algorithms': algorithms,
@@ -158,8 +154,6 @@ class PermissionMiddleware:
         issuer = getattr(settings, 'SATTABASE_JWT_ISSUER', '') or ''
         audience = getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or ''
         
-        logger.info(f"[PERMISSION MIDDLEWARE] JWT decode settings: issuer='{issuer}', audience='{audience}', algorithms={algorithms}")
-        
         if issuer:
             decode_kwargs['issuer'] = issuer
         if audience:
@@ -167,32 +161,20 @@ class PermissionMiddleware:
 
         try:
             payload = jwt.decode(token, verify_key, **decode_kwargs)
-            logger.info(f"[PERMISSION MIDDLEWARE] JWT decoded successfully!")
         except jwt.ExpiredSignatureError:
-            logger.warning("[PERMISSION MIDDLEWARE] JWT expired")
-            return None, False, None, None
+            logger.debug("[PERMISSION MIDDLEWARE] SattaBase JWT expired")
+            return None
         except jwt.InvalidTokenError as e:
-            logger.error(f"[PERMISSION MIDDLEWARE] JWT invalid: {e}")
-            # Debug: Try to decode without verification to see the payload
-            try:
-                unverified_payload = jwt.decode(token, options={"verify_signature": False})
-                logger.info(f"[PERMISSION MIDDLEWARE] Token payload (unverified): keys={list(unverified_payload.keys())}")
-                logger.info(f"[PERMISSION MIDDLEWARE] Token claims: user_id={unverified_payload.get('user_id')}, exp={unverified_payload.get('exp')}")
-            except Exception as debug_e:
-                logger.error(f"[PERMISSION MIDDLEWARE] Could not decode token even without verification: {debug_e}")
-            return None, False, None, None
+            logger.debug(f"[PERMISSION MIDDLEWARE] SattaBase JWT invalid: {e}")
+            return None
         except Exception as e:
-            logger.error(f"[PERMISSION MIDDLEWARE] JWT decode unexpected error: {type(e).__name__}: {e}")
-            return None, False, None, None
-        # Programming errors / unexpected exceptions propagate so they show
-        # up in logs instead of silently becoming "anonymous".
+            logger.error(f"[PERMISSION MIDDLEWARE] SattaBase JWT decode unexpected error: {type(e).__name__}: {e}")
+            return None
         
         # Extract role from JWT claims
         role_str = payload.get('role', '').lower()
         
         # Extract user identity for dealer context
-        # SattaBase may use: user_id, dealer_id, sub, or username
-        # Priority: dealer_id > user_id > username > sub
         dealer_id_from_jwt = (
             payload.get('dealer_id') or 
             payload.get('user_id') or 
@@ -201,26 +183,8 @@ class PermissionMiddleware:
         )
         email = payload.get('email')
         
-        # Debug logging for JWT payload - show all claims and their types
-        logger.info(
-            f"[PERMISSION MIDDLEWARE] JWT payload keys: {list(payload.keys())}"
-        )
-        logger.info(
-            f"[PERMISSION MIDDLEWARE] JWT claims: "
-            f"dealer_id={payload.get('dealer_id')} ({type(payload.get('dealer_id')).__name__}), "
-            f"user_id={payload.get('user_id')} ({type(payload.get('user_id')).__name__}), "
-            f"username={payload.get('username')} ({type(payload.get('username')).__name__}), "
-            f"sub={payload.get('sub')} ({type(payload.get('sub')).__name__}), "
-            f"is_dealer={payload.get('is_dealer')} ({type(payload.get('is_dealer')).__name__}), "
-            f"role={role_str}"
-        )
-        logger.info(
-            f"[PERMISSION MIDDLEWARE] Extracted dealer_id_from_jwt: {dealer_id_from_jwt} ({type(dealer_id_from_jwt).__name__})"
-        )
-        
         # Check is_dealer flag from JWT (may not be present)
         is_dealer = payload.get('is_dealer', False)
-        logger.info(f"[PERMISSION MIDDLEWARE] is_dealer from JWT claim: {is_dealer}")
         
         # Map to Role enum
         role_map = {
@@ -236,54 +200,87 @@ class PermissionMiddleware:
         if not role and is_dealer:
             role = Role.DEALER
         
-        # FIX: If is_dealer is not set in JWT, check DealerConfig synchronously.
-        # This is required because IsDealerOnly permission check happens BEFORE
-        # the controller runs, so the async DealerConfig lookup in get_dealer_context()
-        # is too late. We must determine dealer status here.
-        # 
-        # NOTE: The variable 'dealer_id_from_jwt' contains the dealer's identifier
-        # from SattaBase (from dealer_id, user_id, username, or sub claim).
-        # DealerConfig.username field stores this same dealer_id value.
+        # If is_dealer is not set in JWT, check DealerConfig synchronously.
         if not is_dealer and dealer_id_from_jwt:
             try:
                 from dealer.models import DealerConfig
-                # Convert to string for comparison - DealerConfig.username is a string field
                 lookup_value = str(dealer_id_from_jwt)
-                logger.info(
-                    f"[PERMISSION MIDDLEWARE] Checking DealerConfig: "
-                    f"looking for username='{lookup_value}'"
-                )
-                
-                # List all DealerConfig usernames for debugging
-                all_usernames = list(DealerConfig.objects.values_list('username', flat=True))
-                logger.info(f"[PERMISSION MIDDLEWARE] All DealerConfig usernames in DB: {all_usernames}")
-                
                 is_dealer = DealerConfig.objects.filter(username=lookup_value).exists()
-                logger.info(
-                    f"[PERMISSION MIDDLEWARE] DealerConfig check result: "
-                    f"username='{lookup_value}', is_dealer={is_dealer}"
-                )
                 if is_dealer and not role:
                     role = Role.DEALER
-                    logger.info(f"[PERMISSION MIDDLEWARE] Set role to DEALER based on DealerConfig check")
-            except Exception as e:
-                # Don't fail the request if DealerConfig check fails
-                logger.error(
-                    f"[PERMISSION MIDDLEWARE] DealerConfig check failed with exception: {type(e).__name__}: {e}",
-                    exc_info=True
-                )
+            except Exception:
                 pass
-        elif not dealer_id_from_jwt:
-            logger.warning("[PERMISSION MIDDLEWARE] No dealer_id/user_id/username/sub found in JWT - cannot check DealerConfig")
         
-        # Final result logging
-        logger.info(
-            f"[PERMISSION MIDDLEWARE] ====== FINAL RESULT ====== "
-            f"role={role}, is_dealer={is_dealer}, dealer_id={dealer_id_from_jwt}, email={email}"
-        )
+        return role, is_dealer, dealer_id_from_jwt, email, False, None
+
+    def _verify_dsr_jwt(self, token: str, logger) -> Optional[tuple]:
+        """
+        Verify a local DSR JWT (HS256 with SECRET_KEY).
         
-        # Return the dealer_id (stored in variable named 'username' for backward compatibility)
-        return role, is_dealer, dealer_id_from_jwt, email
+        FIX DSR-001: This allows DSR tokens issued by auth_api.py to be
+        recognized by PermissionMiddleware, unifying the two auth paths.
+        
+        Returns (role, is_dealer=False, username, email, is_dsr=True, dsr_user_id)
+        or None if verification fails.
+        """
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=["HS256"],
+                options={"verify_signature": True, "require": ["exp"]},
+            )
+        except jwt.ExpiredSignatureError:
+            logger.debug("[PERMISSION MIDDLEWARE] DSR JWT expired")
+            return None
+        except jwt.InvalidTokenError:
+            # Not a valid local JWT either — skip silently
+            return None
+        
+        # Check if this looks like a DSR token (has user_id and token_type=access)
+        token_type = payload.get("token_type")
+        if token_type is not None and token_type != "access":
+            return None  # Refresh tokens must not be used as access tokens
+        
+        user_id = payload.get("user_id") or payload.get("sub")
+        if not user_id:
+            return None  # Not a DSR token
+        
+        # Verify the DSR user exists and is active
+        try:
+            from users.models import DsrUser
+            try:
+                user = DsrUser.objects.get(id=user_id)
+            except DsrUser.DoesNotExist:
+                return None
+            
+            if not user.is_active:
+                return None
+            
+            # FIX H-7: reject tokens issued before last password change
+            pwd_changed_at_ts = (
+                int(user.password_changed_at.timestamp())
+                if user.password_changed_at
+                else 0
+            )
+            token_pwd_ts = payload.get("pwd_changed_at")
+            if token_pwd_ts is not None and int(token_pwd_ts) != pwd_changed_at_ts:
+                return None
+            
+            # Determine DSR role from user_type
+            role_map = {
+                'DSR': Role.DSR,
+                'Collector': Role.COLLECTOR,
+                'Manager': Role.MANAGER,
+                'ADMIN': Role.ADMIN,
+            }
+            role = role_map.get(user.user_type, Role.DSR)
+            
+            return role, False, None, user.email, True, str(user.id)
+            
+        except Exception as e:
+            logger.error(f"[PERMISSION MIDDLEWARE] DSR JWT user lookup failed: {type(e).__name__}: {e}")
+            return None
 
 
 # NOTE: The legacy DealerOnlyMiddleware, DSRPlusMiddleware, and

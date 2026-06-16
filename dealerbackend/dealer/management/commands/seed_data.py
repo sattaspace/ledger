@@ -34,7 +34,8 @@ TZ = get_current_timezone()
 
 from supplier.models import Supplier
 from inventory.models import Product, RestockRecord, Brand, Category
-from dsr.models import DSR, DsrDealerAssignment
+from users.models import DsrUser
+from dsr.invitation_models import DsrDealerAssignment
 from dealer.models import DealerConfig
 from sales.models import SaleRecord, CreditPayment
 
@@ -67,37 +68,41 @@ PRIMARY_DEALER = {
 #  These work FOR the dealer, linked via DsrDealerAssignment
 # ═══════════════════════════════════════════════════════
 
+# After DSR→DsrUser merge, DSRs are created as DsrUser objects.
+# DsrUser uses UUID PK (auto-generated) and email as USERNAME_FIELD.
+# `name` → `full_name`, `role` → `user_type`
+# parent_dsr linkage is via DsrDealerAssignment.parent_dsr (not DSR.parent_dsr).
 DSRS = [
     {
-        "id": "dsr-1",
-        "name": "Rajesh Kumar",
+        "email": "rajesh.kumar@seed.local",
+        "full_name": "Rajesh Kumar",
         "phone": "9876543210",
-        "role": "DSR",
-        "parent_dsr_id": None,
+        "user_type": "DSR",
+        "parent_dsr_email": None,  # Link via DsrDealerAssignment.parent_dsr
         "parent_dsr_name": "",
     },
     {
-        "id": "dsr-2",
-        "name": "Priya Patel",
+        "email": "priya.patel@seed.local",
+        "full_name": "Priya Patel",
         "phone": "9812345670",
-        "role": "DSR",
-        "parent_dsr_id": None,
+        "user_type": "DSR",
+        "parent_dsr_email": None,
         "parent_dsr_name": "",
     },
     {
-        "id": "dsr-3",
-        "name": "Sanjay Sharma",
+        "email": "sanjay.sharma@seed.local",
+        "full_name": "Sanjay Sharma",
         "phone": "9988776655",
-        "role": "DSR",
-        "parent_dsr_id": None,
+        "user_type": "DSR",
+        "parent_dsr_email": None,
         "parent_dsr_name": "",
     },
     {
-        "id": "dsr-4",
-        "name": "Michael Chang",
+        "email": "michael.chang@seed.local",
+        "full_name": "Michael Chang",
         "phone": "9123456789",
-        "role": "Order Collector",
-        "parent_dsr_id": "dsr-1",
+        "user_type": "Collector",
+        "parent_dsr_email": "rajesh.kumar@seed.local",
         "parent_dsr_name": "Rajesh Kumar",
     },
 ]
@@ -380,7 +385,7 @@ class Command(BaseCommand):
         Category.objects.all().delete()
         Brand.objects.all().delete()
         DsrDealerAssignment.objects.all().delete()
-        DSR.objects.all().delete()
+        DsrUser.objects.all().delete()
         DealerConfig.objects.all().delete()
         Supplier.objects.all().delete()
 
@@ -401,45 +406,65 @@ class Command(BaseCommand):
         return obj
 
     def _seed_dsrs(self, dealer, verbose):
-        """Seed DSRs and create dealer assignments."""
+        """Seed DsrUsers and create dealer assignments.
+        
+        After DSR→DsrUser merge, DSRs are created as DsrUser objects.
+        DsrUser uses email as USERNAME_FIELD and UUID as PK.
+        parent_dsr linkage is via DsrDealerAssignment.parent_dsr.
+        """
         count = 0
         assignment_count = 0
+        created_users = {}  # email → DsrUser instance, for parent lookups
+        
         for d in DSRS:
-            parent = None
-            if d["parent_dsr_id"]:
-                parent = DSR.objects.get(id=d["parent_dsr_id"])
-
-            obj, created = DSR.objects.get_or_create(
-                id=d["id"],
+            # Create DsrUser (UUID PK auto-generated)
+            obj, created = DsrUser.objects.get_or_create(
+                email=d["email"],
                 defaults={
-                    "name": d["name"],
+                    "full_name": d["full_name"],
                     "phone": d["phone"],
-                    "role": d["role"],
-                    "parent_dsr": parent,
-                    "parent_dsr_name": d["parent_dsr_name"],
+                    "user_type": d["user_type"],
                 },
             )
             if created:
                 count += 1
+                # Set a default password for seed users
+                obj.set_password("seed1234")
+                obj.save(update_fields=["password"])
                 if verbose:
-                    self.stdout.write(f"  + DSR: {obj.name} ({obj.role})")
+                    self.stdout.write(f"  + DsrUser: {obj.full_name} ({obj.user_type})")
+            
+            created_users[d["email"]] = obj
+            
+            # Resolve parent_dsr for DsrDealerAssignment
+            parent_dsr_user = None
+            if d.get("parent_dsr_email"):
+                parent_dsr_user = created_users.get(d["parent_dsr_email"])
+                if not parent_dsr_user:
+                    try:
+                        parent_dsr_user = DsrUser.objects.get(email=d["parent_dsr_email"])
+                    except DsrUser.DoesNotExist:
+                        self.stdout.write(self.style.WARNING(
+                            f"    ! Parent DSR not found: {d['parent_dsr_email']}"
+                        ))
             
             # Create dealer assignment - DSR works FOR the dealer
-            assignment_id = f"{d['id']}-{dealer.username}"
+            assignment_id = f"{str(obj.id)}-{dealer.username}"
             assignment, assignment_created = DsrDealerAssignment.objects.get_or_create(
                 id=assignment_id,
                 defaults={
                     "dsr": obj,
                     "dealer": dealer,
-                    "role": obj.role,
-                    "is_active": True,
+                    "role": d["user_type"],
+                    "parent_dsr": parent_dsr_user,
+                    "status": "active",
                     "commission_rate": Decimal("5.00"),
                 },
             )
             if assignment_created:
                 assignment_count += 1
                 if verbose:
-                    self.stdout.write(f"    + Assignment: {obj.name} → {dealer.username}")
+                    self.stdout.write(f"    + Assignment: {obj.full_name} → {dealer.username}")
         
         self.stdout.write(
             self.style.SUCCESS(f"  DSRs:     {count} created, {assignment_count} assignments")
@@ -555,7 +580,22 @@ class Command(BaseCommand):
             product = Product.objects.get(id=s["product_id"])
             dsr = None
             if s["dsr_id"]:
-                dsr = DSR.objects.get(id=s["dsr_id"])
+                # After DSR→DsrUser merge, look up by email for seed data
+                # (old seed IDs like "dsr-1" are not UUIDs)
+                dsr_email_map = {
+                    "dsr-1": "rajesh.kumar@seed.local",
+                    "dsr-2": "priya.patel@seed.local",
+                    "dsr-3": "sanjay.sharma@seed.local",
+                    "dsr-4": "michael.chang@seed.local",
+                }
+                dsr_email = dsr_email_map.get(s["dsr_id"])
+                if dsr_email:
+                    try:
+                        dsr = DsrUser.objects.get(email=dsr_email)
+                    except DsrUser.DoesNotExist:
+                        self.stdout.write(self.style.WARNING(
+                            f"    ! DSR not found for sale: {s['dsr_name']}"
+                        ))
 
             obj, created = SaleRecord.objects.get_or_create(
                 id=s["id"],

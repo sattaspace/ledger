@@ -8,7 +8,7 @@
  * Uses the isolated dsrClient - NO dependency on dealer auth.
  */
 import { ref, computed } from 'vue';
-import { Store, CheckCircle, UserPlus, AlertCircle } from 'lucide-vue-next';
+import { Store, CheckCircle, UserPlus, AlertCircle, Mail, ShieldCheck } from 'lucide-vue-next';
 import { dsrApi } from '../services/dsrClient';
 
 const emit = defineEmits<{
@@ -25,6 +25,7 @@ const confirmPassword = ref('');
 const isLoading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
+const showVerificationNotice = ref(false);  // FIX DSR-INV-005
 
 // Computed
 const canSubmit = computed(() => {
@@ -63,12 +64,14 @@ async function handleRegister() {
       phone.value || undefined
     );
     
-    successMessage.value = 'Registration successful! You can now receive invitations from dealers.';
+    // FIX DSR-INV-005: Show clear verification message after registration
+    successMessage.value = 'Account created successfully!';
+    showVerificationNotice.value = true;
     
-    // Emit registered event after a short delay
+    // Emit registered event after a longer delay so user can read the verification notice
     setTimeout(() => {
       emit('registered');
-    }, 1500);
+    }, 5000);
   } catch (error: any) {
     console.error('[DSR REGISTER] Registration failed:', error);
     const detail = error?.message || 'Registration failed. Please try again.';
@@ -155,9 +158,30 @@ async function handleRegister() {
           </div>
           
           <!-- Success message -->
-          <div v-if="successMessage" class="mb-4 p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-3">
-            <CheckCircle class="h-5 w-5 text-emerald-600 shrink-0" />
-            <p class="text-emerald-700">{{ successMessage }}</p>
+          <div v-if="successMessage" class="mb-4 space-y-3">
+            <div class="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-3">
+              <CheckCircle class="h-5 w-5 text-emerald-600 shrink-0" />
+              <p class="text-emerald-700">{{ successMessage }}</p>
+            </div>
+            <!-- FIX DSR-INV-005: Prominent email verification notice -->
+            <div v-if="showVerificationNotice" class="p-4 bg-amber-50 border border-amber-300 rounded-lg">
+              <div class="flex items-start gap-3">
+                <div class="bg-amber-100 p-2 rounded-lg shrink-0">
+                  <Mail class="h-5 w-5 text-amber-600" />
+                </div>
+                <div>
+                  <h4 class="text-sm font-semibold text-amber-800 mb-1">Verify Your Email</h4>
+                  <p class="text-sm text-amber-700">
+                    We've sent a verification link to <strong>{{ email }}</strong>. 
+                    Please check your inbox and click the link to verify your email address.
+                    <span class="font-semibold">You must verify your email before you can accept dealer invitations.</span>
+                  </p>
+                  <p class="text-xs text-amber-600 mt-2">
+                    You will be redirected to your DSR Portal shortly, where you can also resend the verification email if needed.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
           
           <!-- Error message -->

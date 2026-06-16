@@ -25,7 +25,6 @@ from django.utils import timezone
 from django.conf import settings
 
 from users.models import DsrUser
-from dsr.models import DSR
 from dsr.invitation_models import DsrInvitation, DsrDealerAssignment, DEFAULT_PERMISSIONS
 from dealer.models import DealerConfig
 from dsr.auth_schemas import (
@@ -38,7 +37,11 @@ from dsr.auth_schemas import (
 )
 from common.dealer_context import get_dealer_context
 from common.permissions import IsJwtAuthenticated, IsDealerOnly, IsDsrOrDealer
-from common.tasks import send_dsr_invitation_email, send_dsr_notification_email
+from common.tasks import (
+    send_dsr_invitation_email,
+    send_dsr_notification_email,
+    send_dsr_removed_notification,
+)
 from common.rate_limit import rate_limit
 
 
@@ -53,6 +56,8 @@ def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
     For DSRs: Verify DSR is assigned to the dealer before returning.
     """
     jwt_dealer = getattr(request, "dealer_username", None)
+    if jwt_dealer is not None:
+        jwt_dealer = str(jwt_dealer)  # FIX: normalize int→str for comparison
     header_dealer = request.headers.get("X-Dealer-Username")
     is_dealer = getattr(request, "is_dealer", False)
 
@@ -84,7 +89,13 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
     import logging
     logger = logging.getLogger(__name__)
     
+    # FIX: Normalize to string — JWT user_id may be int (e.g. 1) while
+    # X-Dealer-Username header is always str (e.g. "1"). Without str()
+    # normalization, the anti-spoofing check jwt_dealer != header_dealer
+    # incorrectly fails because 1 != "1" in Python.
     jwt_dealer = getattr(request, "dealer_username", None)
+    if jwt_dealer is not None:
+        jwt_dealer = str(jwt_dealer)
     header_dealer = request.headers.get("X-Dealer-Username")
     is_dealer = getattr(request, "is_dealer", False)
     user_email = getattr(request, "user_email", None)
@@ -93,6 +104,17 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
         f"[aget_dealer_from_request] jwt_dealer={jwt_dealer}, "
         f"header_dealer={header_dealer}, is_dealer={is_dealer}, user_email={user_email}"
     )
+
+    # FIX: If middleware didn't set is_dealer=True, check via DealerConfig
+    # lookup. SattaBase JWTs may not include is_dealer flag, but the user
+    # might still be a dealer (has a DealerConfig record).
+    if not is_dealer and jwt_dealer:
+        try:
+            is_dealer = await DealerConfig.objects.filter(username=str(jwt_dealer)).aexists()
+            if is_dealer:
+                logger.info(f"[aget_dealer_from_request] Dealer detected via DealerConfig fallback: {jwt_dealer}")
+        except Exception as e:
+            logger.warning(f"[aget_dealer_from_request] DealerConfig lookup failed: {e}")
 
     # Determine which dealer to use
     # For dealers: use their own dealer context (jwt_dealer)
@@ -105,7 +127,7 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
             return None
     else:
         # DSR: Use the header dealer (their selected dealer context)
-        chosen = header_dealer
+        chosen = header_dealer or jwt_dealer
 
     if not chosen:
         logger.warning("[aget_dealer_from_request] No dealer context found")
@@ -120,12 +142,8 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
         # For DSRs, verify assignment to this dealer
         if not is_dealer and user_email:
             # Check if this DSR is assigned to the dealer
-            from users.models import DsrUser
-            from dsr.models import DSR
-            
             try:
-                dsr_user = await DsrUser.objects.aget(email__iexact=user_email)
-                dsr_profile = await DSR.objects.aget(user=dsr_user)
+                dsr_profile = await DsrUser.objects.aget(email__iexact=user_email)
                 
                 is_assigned = await DsrDealerAssignment.objects.filter(
                     dsr=dsr_profile,
@@ -140,7 +158,7 @@ async def aget_dealer_from_request(request: HttpRequest) -> Optional[DealerConfi
                     return None
                     
                 logger.info(f"[aget_dealer_from_request] DSR {user_email} is assigned to dealer {chosen}")
-            except (DsrUser.DoesNotExist, DSR.DoesNotExist):
+            except DsrUser.DoesNotExist:
                 logger.warning(f"[aget_dealer_from_request] DSR user/profile not found for {user_email}")
                 return None
         
@@ -222,40 +240,38 @@ class DealerDsrController:
         phone = data.dsr_phone.strip() if data.dsr_phone else ""
         
         # Check for existing pending invitation by email
-        existing = await DsrInvitation.objects.filter(
+        # FIX: Auto-revoke stale pending invitations instead of blocking.
+        # This handles the common case where a previous invite attempt
+        # created the DB record but the API response errored out (e.g. the
+        # Pydantic token-field validation bug), leaving the dealer stuck
+        # with an invisible pending invitation they can't re-send.
+        existing_invitation = await DsrInvitation.objects.filter(
             dealer=dealer,
             dsr_email=email,
             status=DsrInvitation.STATUS_PENDING,
-        ).aexists()
+        ).afirst()
         
-        if existing:
-            return 400, {
-                "detail": "Pending invitation already exists for this email",
-                "code": "invitation_exists"
-            }
+        if existing_invitation:
+            # Check if it's expired — auto-revoke expired invitations
+            if existing_invitation.expires_at and existing_invitation.expires_at < timezone.now():
+                await existing_invitation.arevoke()
+                logger.info(f"[DSR INVITE] Auto-revoked expired invitation {existing_invitation.id} for {email}")
+            else:
+                # Active pending invitation exists — revoke and re-invite
+                # so the dealer gets a fresh token and email is re-sent.
+                await existing_invitation.arevoke()
+                logger.info(f"[DSR INVITE] Revoked existing pending invitation {existing_invitation.id} for re-invite")
         
         # Check if DSR already exists (registered) - search by email
         dsr_profile = None
         existing_user = None
         
-        # First try to find by DsrUser.email
+        # After DSR merge, DsrUser IS the DSR — no separate lookup needed
         try:
             existing_user = await DsrUser.objects.aget(email__iexact=email)
-            # Get DSR profile
-            dsr_profile = await DSR.objects.aget(user=existing_user)
+            dsr_profile = existing_user  # After merge, DsrUser IS the DSR
         except DsrUser.DoesNotExist:
             pass
-        except DSR.DoesNotExist:
-            pass
-        
-        # Also check if DSR exists with this email but different user (edge case)
-        if not dsr_profile:
-            try:
-                dsr_profile = await DSR.objects.aget(email__iexact=email)
-                if dsr_profile.user:
-                    existing_user = dsr_profile.user
-            except DSR.DoesNotExist:
-                pass
         
         # Check if already assigned to this dealer
         if dsr_profile:
@@ -336,6 +352,21 @@ class DealerDsrController:
             # DSR is registered - send notification email
             dsr_name = existing_user.full_name or email.split('@')[0]
             
+            # FIX: If DSR has an unusable password (e.g. migrated from old DSR
+            # model with set_unusable_password()), they can't log into the DSR
+            # portal to see/accept the invitation. Generate a password setup
+            # token and include it in the notification email.
+            password_setup_url = None
+            if not existing_user.has_usable_password():
+                import secrets as _secrets
+                setup_token = _secrets.token_urlsafe(32)
+                await existing_user.aset_password_reset_token(setup_token)
+                password_setup_url = (
+                    f"{getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')}"
+                    f"/dsr/reset-password?token={setup_token}"
+                )
+                logger.info(f"[DSR INVITE] Generated password setup link for {email} (unusable password)")
+            
             send_dsr_notification_email.delay(
                 email=email,
                 dsr_name=dsr_name,
@@ -344,6 +375,7 @@ class DealerDsrController:
                 role=data.role,
                 invitation_id=invitation.id,
                 message=data.message,
+                password_setup_url=password_setup_url,
             )
             
             logger.info(f"[DSR INVITE] Notification email queued for registered DSR {email}")
@@ -408,8 +440,8 @@ class DealerDsrController:
         except DsrInvitation.DoesNotExist:
             return 404, {"detail": "Invitation not found", "code": "not_found"}
         
-        invitation.revoke()
-        await invitation.asave()
+        # FIX DSR-003: use async arevoke() instead of sync revoke() + asave()
+        await invitation.arevoke()
         
         return {"message": "Invitation revoked"}
     
@@ -425,15 +457,15 @@ class DealerDsrController:
         async for assignment in DsrDealerAssignment.objects.filter(
             dealer=dealer,
             status=DsrDealerAssignment.STATUS_ACTIVE,
-        ).select_related("dsr", "dsr__user"):
-            # Check has_account by checking if user_id is set (avoids lazy loading)
-            has_account = assignment.dsr.user_id is not None
+        ).select_related("dsr"):
+            # After DSR merge, dsr FK points to DsrUser which IS the account
+            has_account = assignment.dsr_id is not None
             active.append({
                 "id": assignment.id,
-                "dsr_id": assignment.dsr.id,
-                "dsr_name": assignment.dsr.name,
-                "dsr_email": assignment.dsr.email,
-                "dsr_phone": assignment.dsr.phone,
+                "dsr_id": str(assignment.dsr.id),
+                "dsr_name": assignment.dsr.full_name or assignment.dsr.phone or assignment.dsr.email or "Unknown",
+                "dsr_email": assignment.dsr.email or "",
+                "dsr_phone": assignment.dsr.phone or "",
                 "role": assignment.role,
                 "permissions": assignment.permissions,
                 "assigned_at": assignment.assigned_at,
@@ -464,8 +496,8 @@ class DealerDsrController:
         ).select_related("dsr"):
             removed.append({
                 "id": assignment.id,
-                "dsr_id": assignment.dsr.id,
-                "dsr_name": assignment.dsr.name,
+                "dsr_id": str(assignment.dsr.id),
+                "dsr_name": assignment.dsr.full_name or assignment.dsr.phone or assignment.dsr.email or "Unknown",
                 "role": assignment.role,
                 "removed_at": assignment.removed_at,
                 "removal_reason": assignment.removal_reason,
@@ -558,26 +590,65 @@ class DealerDsrController:
         # Update SaleRecord to mark DSR status as 'removed'
         from sales.models import SaleRecord
         dsr = assignment.dsr
-        
-        # Update current DSR sales to show removed status
-        await SaleRecord.objects.filter(
-            dsr=dsr,
-            dealer=dealer
-        ).aupdate(dsr_status='removed')
-        
-        # Update original DSR sales to show removed status
-        await SaleRecord.objects.filter(
-            original_dsr=dsr,
-            dealer=dealer
-        ).aupdate(original_dsr_status='removed')
+
+        # FIX DSR-010: Optional sale reassignment on DSR removal.
+        # If reassign_to_dsr_id is provided, active sales are transferred
+        # to the new DSR. If not, sales are left with dsr_status='removed'.
+        reassign_to = None
+        if data and data.reassign_to_dsr_id:
+            # Validate the target DSR is active in this dealer's team
+            try:
+                reassign_assignment = await DsrDealerAssignment.objects.aget(
+                    dsr_id=data.reassign_to_dsr_id,
+                    dealer=dealer,
+                    status=DsrDealerAssignment.STATUS_ACTIVE,
+                )
+                reassign_to = await DsrUser.objects.aget(id=data.reassign_to_dsr_id)
+            except (DsrDealerAssignment.DoesNotExist, DsrUser.DoesNotExist):
+                return 400, {
+                    "detail": f"DSR with id '{data.reassign_to_dsr_id}' not found or not active in your team",
+                    "code": "invalid_reassign_target"
+                }
+
+        if reassign_to:
+            # Reassign active sales to the new DSR
+            await SaleRecord.objects.filter(
+                dsr=dsr,
+                dealer=dealer
+            ).aupdate(dsr=reassign_to, dsr_status='reassigned')
+
+            # Update original DSR sales to show removed status
+            await SaleRecord.objects.filter(
+                original_dsr=dsr,
+                dealer=dealer
+            ).aupdate(original_dsr_status='removed')
+        else:
+            # Just mark sales as removed (no reassignment)
+            await SaleRecord.objects.filter(
+                dsr=dsr,
+                dealer=dealer
+            ).aupdate(dsr_status='removed')
+
+            await SaleRecord.objects.filter(
+                original_dsr=dsr,
+                dealer=dealer
+            ).aupdate(original_dsr_status='removed')
         
         # Deactivate assignment (dealer removing) - use async version
         reason = data.reason if data else None
         await assignment.adeactivate_by_dealer(reason or "")
         
-        # TODO: Notify DSR about removal via email
+        # FIX DSR-019: Notify DSR about removal
+        if dsr and dsr.email:
+            send_dsr_removed_notification.delay(
+                dsr_email=dsr.email,
+                dsr_name=dsr.full_name,
+                dealer_name=dealer.full_name or dealer.username,
+                dealer_business=dealer.business_name or "",
+                reason=reason or "",
+            )
         
-        return {"message": f"DSR {assignment.dsr.name} removed from team"}
+        return {"message": f"DSR {assignment.dsr.full_name} removed from team"}
     
     @http_get("/search", response={200: dict, 400: dict})
     async def search_dsr(self, request: HttpRequest, email: str = ""):
@@ -596,7 +667,7 @@ class DealerDsrController:
         # Check if DSR user exists by email
         try:
             user = await DsrUser.objects.aget(email__iexact=email)
-            dsr = await DSR.objects.aget(user=user)
+            dsr = user  # After merge, DsrUser IS the DSR
             
             # Check if already assigned to this dealer
             is_assigned = await DsrDealerAssignment.objects.filter(
@@ -608,13 +679,13 @@ class DealerDsrController:
             return {
                 "exists": True,
                 "registered": True,
-                "dsr_id": dsr.id,
-                "dsr_name": dsr.name,
+                "dsr_id": str(dsr.id),
+                "dsr_name": dsr.full_name,
                 "dsr_email": user.email,
                 "dsr_phone": dsr.phone,
                 "already_assigned": is_assigned,
             }
-        except (DsrUser.DoesNotExist, DSR.DoesNotExist):
+        except DsrUser.DoesNotExist:
             pass
         
         # Check if there's a pending invitation
@@ -630,6 +701,8 @@ class DealerDsrController:
                 "registered": False,
                 "has_pending_invitation": True,
                 "invitation_id": pending_inv.id,
+                # Note: invite endpoint auto-revokes pending invitations,
+                # so the user can still proceed with inviting.
             }
         
         return {

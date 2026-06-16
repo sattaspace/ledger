@@ -50,6 +50,13 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     TYPE_COLLECTOR = "Collector"
     TYPE_MANAGER = "Manager"
     TYPE_ADMIN = "ADMIN"
+
+    # Role constants (moved from DSR model after merge)
+    ROLE_DSR = "DSR"
+    ROLE_OC = "Order Collector"
+    ROLE_SENIOR_DSR = "Senior_DSR"
+    ROLE_MANAGER = "Manager"
+    ROLE_COLLECTOR = "Collector"
     USER_TYPE_CHOICES = [
         (TYPE_DSR, "DSR"),
         (TYPE_COLLECTOR, "Order Collector"),
@@ -133,6 +140,21 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     phone_verified_at = models.DateTimeField(null=True, blank=True)
     email_verified = models.BooleanField(default=False)
     email_verified_at = models.DateTimeField(null=True, blank=True)
+    # FIX DSR-005/018: Email verification token for self-registration.
+    # After DSR registers, a verification email is sent. The DSR must verify
+    # their email before accepting invitations. This prevents spam accounts
+    # and email impersonation.
+    email_verification_token = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_("SHA-256 hash of the email verification token"),
+    )
+    email_verification_expires = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("When the email verification token expires"),
+    )
     
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -154,19 +176,256 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
     # JWT refresh token (for token blacklisting)
     refresh_token = models.TextField(blank=True, default="")
     
-    # Selected dealer context (for multi-dealer DSRs)
-    selected_dealer = models.ForeignKey(
-        "dealer.DealerConfig",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="active_dsr_sessions",
-        help_text=_("Currently selected dealer context for this DSR"),
-    )
+    # FIX DSR-007: Removed `selected_dealer` FK. Dealer selection is now
+    # handled entirely on the frontend (localStorage + X-Dealer-Username header)
+    # and validated server-side via DsrDealerAssignment on each request.
+    # The FK was problematic because:
+    # 1. DB write on every dealer switch (unnecessary I/O)
+    # 2. Concurrent sessions overwrite each other's selection
+    # 3. CASCADE/SET_NULL risks on DealerConfig deletion
+    # 4. Duplicates information that belongs in frontend state
     
-    # ═══════════════════════════════════════════════════════════════════
-    # FUTURE FREELANCE MARKETPLACE FIELDS (Reserved for enhancement)
-    # ═══════════════════════════════════════════════════════════════════
+    # FIX DSR-008: Removed ~15 freelance marketplace fields from DsrUser.
+    # These fields (is_public, availability_status, skills, experience_years,
+    # rating, total_jobs, total_reviews, hourly_rate, daily_rate, portfolio_url,
+    # certifications) have been moved to a separate DsrMarketplaceProfile model.
+    # They were never used in any current API endpoint, added complexity to
+    # every DB query, and confused developers. The marketplace feature should
+    # create the DsrMarketplaceProfile only when actually needed.
+    
+    objects = DsrUserManager()
+    
+    # Email is the primary identifier
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["full_name"]
+    
+    class Meta:
+        db_table = "users_dsr_user"
+        verbose_name = _("DSR User")
+        verbose_name_plural = _("DSR Users")
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["phone"]),
+            models.Index(fields=["email"]),
+            models.Index(fields=["user_type", "is_active"]),
+            models.Index(fields=["created_at"]),
+        ]
+    
+    def __str__(self):
+        return f"{self.full_name or self.phone} ({self.user_type})"
+    
+    @property
+    def display_name(self) -> str:
+        """Return the display name (full_name or phone)."""
+        return self.full_name or self.phone
+    
+    @property
+    def dsr_id_str(self) -> str:
+        """String representation of DSR ID for use as FK value in sales/assignments.
+        Returns the UUID as a string (used wherever dsr_id was previously a CharField)."""
+        return str(self.id)
+
+    @property
+    def is_dsr(self) -> bool:
+        """Check if user is a DSR."""
+        return self.user_type == self.TYPE_DSR
+    
+    @property
+    def is_collector(self) -> bool:
+        """Check if user is a Collector."""
+        return self.user_type == self.TYPE_COLLECTOR
+    
+    @property
+    def is_manager(self) -> bool:
+        """Check if user is a Manager."""
+        return self.user_type == self.TYPE_MANAGER
+    
+    @property
+    def is_admin_user(self) -> bool:
+        """Check if user is an Admin."""
+        return self.user_type == self.TYPE_ADMIN
+    
+    def verify_phone(self):
+        """Mark phone as verified."""
+        self.phone_verified = True
+        self.phone_verified_at = timezone.now()
+        self.save(update_fields=["phone_verified", "phone_verified_at"])
+    
+    def verify_email(self):
+        """Mark email as verified."""
+        self.email_verified = True
+        self.email_verified_at = timezone.now()
+        # FIX DSR-005/018: Clear the verification token after use
+        self.email_verification_token = ""
+        self.email_verification_expires = None
+        self.save(update_fields=["email_verified", "email_verified_at", "email_verification_token", "email_verification_expires"])
+
+    def set_email_verification_token(self, token: str, expires_hours: int = 24):
+        """FIX DSR-005/018: Store SHA-256 hash of the email verification token.
+        The raw token is only sent in the verification email link, never stored.
+        """
+        import hashlib
+        from datetime import timedelta
+        self.email_verification_token = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.email_verification_expires = timezone.now() + timedelta(hours=expires_hours)
+        self.save(update_fields=["email_verification_token", "email_verification_expires"])
+
+    async def aset_email_verification_token(self, token: str, expires_hours: int = 24):
+        """FIX DSR-005/018: Async version of set_email_verification_token."""
+        import hashlib
+        from datetime import timedelta
+        self.email_verification_token = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.email_verification_expires = timezone.now() + timedelta(hours=expires_hours)
+        await self.asave(update_fields=["email_verification_token", "email_verification_expires"])
+
+    def is_email_verification_valid(self, token: str) -> bool:
+        """FIX DSR-005/018: Check if email verification token is valid."""
+        if not self.email_verification_token or not self.email_verification_expires:
+            return False
+        import hmac
+        expected = self._hash_reset_token(token)  # Reuse SHA-256 hash
+        if not hmac.compare_digest(expected, self.email_verification_token):
+            return False
+        return timezone.now() < self.email_verification_expires
+    
+    @staticmethod
+    def _hash_reset_token(token: str) -> str:
+        """FIX M-4: store a SHA-256 hash of the token instead of the raw value.
+        A DB dump can no longer be used to take over accounts with outstanding
+        reset requests. Hashing is sufficient because the token already has
+        256 bits of entropy (secrets.token_urlsafe(32)) — no need for bcrypt.
+        """
+        import hashlib
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    # FIX H-7: override Django's set_password so every password change
+    # (including via set_password() called by the admin or by an external
+    # flow) bumps `password_changed_at`. The token claim check in
+    # `decode_token()` then automatically invalidates any token that was
+    # issued before the new value.
+    def set_password(self, raw_password: str) -> None:
+        super().set_password(raw_password)
+        self.password_changed_at = timezone.now()
+
+    async def aset_password(self, raw_password: str) -> None:
+        """FIX H-7: async variant used by async views so callers don't have
+        to wrap in sync_to_async."""
+        from asgiref.sync import sync_to_async
+        await sync_to_async(self.set_password)(raw_password)
+
+    def set_password_reset_token(self, token: str, expires_hours: int = 24):
+        """Set password reset token with expiration (sync)."""
+        from datetime import timedelta
+        self.password_reset_token = self._hash_reset_token(token)
+        self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
+        self.save(update_fields=["password_reset_token", "password_reset_expires"])
+
+    async def aset_password_reset_token(self, token: str, expires_hours: int = 24):
+        """FIX H-9: async variant for async views."""
+        from datetime import timedelta
+        self.password_reset_token = self._hash_reset_token(token)
+        self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
+        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
+
+    def clear_password_reset_token(self):
+        """Clear password reset token (sync)."""
+        self.password_reset_token = ""
+        self.password_reset_expires = None
+        self.save(update_fields=["password_reset_token", "password_reset_expires"])
+
+    async def aclear_password_reset_token(self):
+        """FIX H-9: async variant for async views."""
+        self.password_reset_token = ""
+        self.password_reset_expires = None
+        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
+
+    def is_password_reset_valid(self, token: str) -> bool:
+        """Check if password reset token is valid (constant-time compare)."""
+        if not self.password_reset_token or not self.password_reset_expires:
+            return False
+        # FIX M-4: compare hashed token.
+        import hmac
+        expected = self._hash_reset_token(token)
+        if not hmac.compare_digest(expected, self.password_reset_token):
+            return False
+        return timezone.now() < self.password_reset_expires
+    
+    async def get_assigned_dealers(self):
+        """
+        Get all dealers this DSR is assigned to.
+        Returns list of DealerConfig objects.
+        FIX: After DSR→DsrUser merge, FK points directly to DsrUser.
+        """
+        from dsr.invitation_models import DsrDealerAssignment
+        
+        assignments = DsrDealerAssignment.objects.filter(
+            dsr=self,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related("dealer")
+        
+        return [assignment.dealer async for assignment in assignments]
+    
+    async def get_dealer_choices(self):
+        """
+        Get list of dealers for selection UI.
+        Returns list of dicts with dealer info.
+        """
+        dealers = await self.get_assigned_dealers()
+        return [
+            {
+                "username": dealer.username,
+                "full_name": dealer.full_name,
+                "business_name": dealer.business_name,
+            }
+            for dealer in dealers
+        ]
+    
+    async def get_pending_invitations(self):
+        """
+        Get pending invitations for this DSR.
+        
+        FIX DSR-INV-001: Query by dsr FK, email, AND phone to ensure
+        all matching invitations are found regardless of how the dealer
+        invited (by email, phone, or linked FK).
+        """
+        from django.db.models import Q
+        from dsr.invitation_models import DsrInvitation
+        
+        match_q = Q(dsr=self)
+        if self.email:
+            match_q |= Q(dsr_email__iexact=self.email, dsr__isnull=True)
+        if self.phone:
+            match_q |= Q(dsr_phone=self.phone, dsr__isnull=True)
+        
+        invitations = DsrInvitation.objects.filter(
+            match_q,
+            status=DsrInvitation.STATUS_PENDING,
+        ).select_related("dealer")
+        return [inv async for inv in invitations]
+
+
+class DsrMarketplaceProfile(models.Model):
+    """
+    FIX DSR-008: Separated marketplace fields from DsrUser.
+    
+    This model is only created when a DSR opts into the freelance marketplace.
+    Keeping these fields separate from DsrUser:
+    - Reduces DsrUser row size (~200 bytes saved per user)
+    - Simplifies migrations when marketplace features evolve
+    - Avoids confusing developers with unused fields on the core model
+    - Enables lazy creation — profile exists only when needed
+    
+    Created on-demand when a DSR activates their marketplace profile.
+    """
+    
+    # Link to user (OneToOne)
+    user = models.OneToOneField(
+        DsrUser,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="marketplace_profile",
+        help_text=_("The DSR user this marketplace profile belongs to"),
+    )
     
     # Profile visibility
     is_public = models.BooleanField(
@@ -239,186 +498,27 @@ class DsrUser(AbstractBaseUser, PermissionsMixin):
         help_text=_("List of certifications"),
     )
     
-    objects = DsrUserManager()
-    
-    # Email is the primary identifier
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["full_name"]
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        db_table = "users_dsr_user"
-        verbose_name = _("DSR User")
-        verbose_name_plural = _("DSR Users")
-        ordering = ["-created_at"]
+        db_table = "users_dsr_marketplace_profile"
+        verbose_name = _("DSR Marketplace Profile")
+        verbose_name_plural = _("DSR Marketplace Profiles")
         indexes = [
-            models.Index(fields=["phone"]),
-            models.Index(fields=["email"]),
-            models.Index(fields=["user_type", "is_active"]),
-            models.Index(fields=["created_at"]),
             models.Index(fields=["is_public", "availability_status"]),
         ]
     
     def __str__(self):
-        return f"{self.full_name or self.phone} ({self.user_type})"
-    
-    @property
-    def display_name(self) -> str:
-        """Return the display name (full_name or phone)."""
-        return self.full_name or self.phone
-    
-    @property
-    def is_dsr(self) -> bool:
-        """Check if user is a DSR."""
-        return self.user_type == self.TYPE_DSR
-    
-    @property
-    def is_collector(self) -> bool:
-        """Check if user is a Collector."""
-        return self.user_type == self.TYPE_COLLECTOR
-    
-    @property
-    def is_manager(self) -> bool:
-        """Check if user is a Manager."""
-        return self.user_type == self.TYPE_MANAGER
-    
-    @property
-    def is_admin_user(self) -> bool:
-        """Check if user is an Admin."""
-        return self.user_type == self.TYPE_ADMIN
-    
-    def verify_phone(self):
-        """Mark phone as verified."""
-        self.phone_verified = True
-        self.phone_verified_at = timezone.now()
-        self.save(update_fields=["phone_verified", "phone_verified_at"])
-    
-    def verify_email(self):
-        """Mark email as verified."""
-        self.email_verified = True
-        self.email_verified_at = timezone.now()
-        self.save(update_fields=["email_verified", "email_verified_at"])
-    
-    @staticmethod
-    def _hash_reset_token(token: str) -> str:
-        """FIX M-4: store a SHA-256 hash of the token instead of the raw value.
-        A DB dump can no longer be used to take over accounts with outstanding
-        reset requests. Hashing is sufficient because the token already has
-        256 bits of entropy (secrets.token_urlsafe(32)) — no need for bcrypt.
-        """
-        import hashlib
-        return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-    # FIX H-7: override Django's set_password so every password change
-    # (including via set_password() called by the admin or by an external
-    # flow) bumps `password_changed_at`. The token claim check in
-    # `decode_token()` then automatically invalidates any token that was
-    # issued before the new value.
-    def set_password(self, raw_password: str) -> None:
-        super().set_password(raw_password)
-        self.password_changed_at = timezone.now()
-
-    async def aset_password(self, raw_password: str) -> None:
-        """FIX H-7: async variant used by async views so callers don't have
-        to wrap in sync_to_async."""
-        from asgiref.sync import sync_to_async
-        await sync_to_async(self.set_password)(raw_password)
-
-    def set_password_reset_token(self, token: str, expires_hours: int = 24):
-        """Set password reset token with expiration (sync)."""
-        from datetime import timedelta
-        self.password_reset_token = self._hash_reset_token(token)
-        self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
-        self.save(update_fields=["password_reset_token", "password_reset_expires"])
-
-    async def aset_password_reset_token(self, token: str, expires_hours: int = 24):
-        """FIX H-9: async variant for async views."""
-        from datetime import timedelta
-        self.password_reset_token = self._hash_reset_token(token)
-        self.password_reset_expires = timezone.now() + timedelta(hours=expires_hours)
-        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
-
-    def clear_password_reset_token(self):
-        """Clear password reset token (sync)."""
-        self.password_reset_token = ""
-        self.password_reset_expires = None
-        self.save(update_fields=["password_reset_token", "password_reset_expires"])
-
-    async def aclear_password_reset_token(self):
-        """FIX H-9: async variant for async views."""
-        self.password_reset_token = ""
-        self.password_reset_expires = None
-        await self.asave(update_fields=["password_reset_token", "password_reset_expires"])
-
-    def is_password_reset_valid(self, token: str) -> bool:
-        """Check if password reset token is valid (constant-time compare)."""
-        if not self.password_reset_token or not self.password_reset_expires:
-            return False
-        # FIX M-4: compare hashed token.
-        import hmac
-        expected = self._hash_reset_token(token)
-        if not hmac.compare_digest(expected, self.password_reset_token):
-            return False
-        return timezone.now() < self.password_reset_expires
-    
-    async def get_assigned_dealers(self):
-        """
-        Get all dealers this DSR is assigned to.
-        Returns list of DealerConfig objects.
-        """
-        from dsr.invitation_models import DsrDealerAssignment
-        
-        assignments = DsrDealerAssignment.objects.filter(
-            dsr__user=self,
-            status=DsrDealerAssignment.STATUS_ACTIVE,
-        ).select_related("dealer")
-        
-        return [assignment.dealer async for assignment in assignments]
-    
-    async def get_dealer_choices(self):
-        """
-        Get list of dealers for selection UI.
-        Returns list of dicts with dealer info.
-        """
-        dealers = await self.get_assigned_dealers()
-        return [
-            {
-                "username": dealer.username,
-                "full_name": dealer.full_name,
-                "business_name": dealer.business_name,
-            }
-            for dealer in dealers
-        ]
-    
-    async def get_pending_invitations(self):
-        """
-        Get pending invitations for this DSR.
-        """
-        from dsr.invitation_models import DsrInvitation
-        from dsr.models import DSR
-        
-        try:
-            dsr = await DSR.objects.aget(user=self)
-            invitations = DsrInvitation.objects.filter(
-                dsr=dsr,
-                status=DsrInvitation.STATUS_PENDING,
-            ).select_related("dealer")
-            return [inv async for inv in invitations]
-        except DSR.DoesNotExist:
-            return []
+        return f"Marketplace: {self.user.full_name or self.user.email}"
     
     def update_rating(self, new_rating: float):
-        """
-        Update average rating with new review.
-        Uses weighted average calculation.
-        """
+        """Update average rating with new review."""
         if self.total_reviews == 0:
             self.rating = new_rating
         else:
-            # Weighted average
             total_points = float(self.rating) * self.total_reviews
             self.rating = (total_points + new_rating) / (self.total_reviews + 1)
-            # Round to 2 decimal places
             self.rating = round(self.rating, 2)
-        
         self.total_reviews += 1
         self.save(update_fields=["rating", "total_reviews"])

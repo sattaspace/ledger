@@ -1,0 +1,16 @@
+You Have Been Removed from {{ dealer_name }} - {{ site_name }}
+===============================================================
+
+Hi {{ dsr_name }},
+
+You have been removed from {{ dealer_name }}{% if dealer_business %} ({{ dealer_business }}){% endif %} on {{ site_name }}.
+
+{% if reason %}
+Reason:
+{{ reason }}
+{% endif %}
+
+You will no longer have access to this dealer's resources. If you believe this was done in error, please contact the dealer directly or reach out to our support team.
+
+---
+© {{ current_year }} {{ site_name }}

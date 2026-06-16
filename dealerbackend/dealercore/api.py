@@ -30,7 +30,11 @@ api = NinjaExtraAPI(
 from inventory.api import InventoryController
 from sales.api import SalesController
 from dsr.api import DSRController
-from dsr.invitation_api import DsrInvitationController as LegacyDsrInvitationController
+# FIX DSR-003: Removed legacy DsrInvitationController (invitation_api.py).
+# It used IsAuthenticated permission which never works with JWT-only auth,
+# causing all its endpoints to return 403. Functionality is covered by:
+#   - DsrInvitationController in auth_api.py (DSR-side: accept/reject by ID)
+#   - DealerDsrController in dealer_dsr_api.py (Dealer-side: invite/revoke/list)
 from dsr.auth_api import DsrAuthController, DsrInvitationController, DsrAssignmentController
 from dsr.dealer_dsr_api import DealerDsrController
 from supplier.api import SupplierController
@@ -57,7 +61,4 @@ api.register_controllers(
     DsrInvitationController,  # DSR-side invitation management (accept/reject)
     DsrAssignmentController,  # DSR-side assignment management (leave dealer)
     DealerDsrController,  # Dealer-side DSR management (invite/remove)
-    
-    # Legacy (for backward compatibility)
-    LegacyDsrInvitationController,  # Old invitation endpoints
 )

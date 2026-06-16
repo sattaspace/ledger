@@ -15,8 +15,22 @@ const DSR_REFRESH_KEY = "dsr_refresh_token";
 const DSR_USER_KEY = "dsr_user";
 const DSR_SELECTED_DEALER_KEY = "dsr_selected_dealer";
 
-// Base URL for DSR API
-const DSR_API_BASE = "http://localhost:8088/api";
+// Base URL for DSR API — resolved from environment variables (same source
+// as the dealer apiClient). Previously hardcoded to localhost which broke
+// every non-local deployment.
+function resolveDsrApiBase(): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const env =
+    typeof import.meta !== "undefined" && (import.meta as any).env
+      ? (import.meta as any).env
+      : {};
+  return (
+    env.PUBLIC_DEALER_API_URL ||
+    env.VITE_API_BASE_URL ||
+    "http://localhost:8088/api"
+  );
+}
+const DSR_API_BASE = resolveDsrApiBase();
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +47,9 @@ export interface DsrUser {
   user_type: string;
   full_name: string;
   avatar_url?: string;
+  email_verified?: boolean; // FIX DSR-INV-005: Needed for verification banner
+  phone_verified?: boolean;
+  has_dsr_profile?: boolean;
 }
 
 export interface DealerChoice {
@@ -58,6 +75,14 @@ export interface DsrProfileResponse {
   dsr_role: string;
   dealers: DealerChoice[];
   selected_dealer: DealerChoice | null;
+}
+
+export interface DsrRegisterViaInviteResponse {
+  access: string;
+  refresh: string;
+  user: DsrUser;
+  dealer: DealerChoice;
+  message?: string;
 }
 
 // ─── Token Management ────────────────────────────────────────────────────────
@@ -136,10 +161,14 @@ async function dsrRequest<T>(
     config.body = JSON.stringify(body);
   }
 
-  console.log(`[DSR CLIENT] ${method} ${endpoint}`, {
-    useAuth,
-    hasBody: !!body,
-  });
+  // FIX: gate request diagnostics behind DEV mode to avoid leaking
+  // API call details in production console.
+  if (import.meta.env.DEV) {
+    console.log(`[DSR CLIENT] ${method} ${endpoint}`, {
+      useAuth,
+      hasBody: !!body,
+    });
+  }
 
   const response = await fetch(url, config);
 
@@ -157,11 +186,12 @@ async function dsrRequest<T>(
     }
   }
 
-  console.log(`[DSR CLIENT] ${method} ${endpoint} response:`, {
-    status: response.status,
-    ok: response.ok,
-    data,
-  });
+  if (import.meta.env.DEV) {
+    console.log(`[DSR CLIENT] ${method} ${endpoint} response:`, {
+      status: response.status,
+      ok: response.ok,
+    });
+  }
 
   if (!response.ok) {
     const error: DsrApiError = {
@@ -200,10 +230,12 @@ export const dsrApi = {
       setDsrSelectedDealer(data.dealers[0]);
     }
 
-    console.log("[DSR API] Login successful:", {
-      hasToken: !!getDsrAccessToken(),
-      awaitingInvitation: data.awaiting_invitation,
-    });
+    if (import.meta.env.DEV) {
+      console.log("[DSR API] Login successful:", {
+        hasToken: !!getDsrAccessToken(),
+        awaitingInvitation: data.awaiting_invitation,
+      });
+    }
 
     return data;
   },
@@ -255,11 +287,17 @@ export const dsrApi = {
    */
   async selectDealer(
     dealerUsername: string,
-  ): Promise<{ access: string; refresh: string; dealer: DealerChoice }> {
+  ): Promise<{
+    access: string;
+    refresh: string;
+    dealer: DealerChoice;
+    permissions: Record<string, any>;
+  }> {
     const data = await dsrRequest<{
       access: string;
       refresh: string;
       dealer: DealerChoice;
+      permissions: Record<string, any>;
     }>(
       "POST",
       "/dsr/auth/select-dealer",
@@ -378,6 +416,151 @@ export const dsrApi = {
     }
     // Fallback for other formats
     return { active: [], removed: [], left: [] };
+  },
+
+  /**
+   * Register DSR via invitation token.
+   *
+   * FIX: Previously this method lived in dsrAuth.service.ts and went through
+   * the dealer apiClient (wrong auth context). Now consolidated into the
+   * isolated DSR client.
+   */
+  async registerViaInvitation(
+    token: string,
+    fullName: string,
+    phone: string,
+    password: string,
+  ): Promise<DsrRegisterViaInviteResponse> {
+    const data = await dsrRequest<DsrRegisterViaInviteResponse>(
+      "POST",
+      `/dsr/auth/register/${token}`,
+      {
+        full_name: fullName,
+        phone,
+        password,
+      },
+    );
+
+    if (data.access && data.refresh) {
+      setDsrTokens(data.access, data.refresh);
+    }
+    if (data.user) {
+      setDsrUser(data.user);
+    }
+    if (data.dealer) {
+      setDsrSelectedDealer(data.dealer);
+    }
+
+    return data;
+  },
+
+  /**
+   * Update DSR profile
+   */
+  async updateProfile(updates: {
+    full_name?: string;
+    email?: string;
+    phone?: string;
+    avatar_url?: string;
+    bio?: string;
+  }): Promise<DsrProfileResponse> {
+    return dsrRequest<DsrProfileResponse>("PUT", "/dsr/auth/me", updates, true);
+  },
+
+  /**
+   * Change password
+   */
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      "/dsr/auth/change-password",
+      {
+        current_password: currentPassword,
+        new_password: newPassword,
+      },
+      true,
+    );
+  },
+
+  /**
+   * Request password reset
+   */
+  async requestPasswordReset(
+    phoneOrEmail: string,
+  ): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      "/dsr/auth/password-reset/request",
+      { phone_or_email: phoneOrEmail },
+    );
+  },
+
+  /**
+   * Confirm password reset
+   */
+  async confirmPasswordReset(
+    token: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      "/dsr/auth/password-reset/confirm",
+      { token, new_password: newPassword },
+    );
+  },
+
+  /**
+   * Verify email address
+   */
+  async verifyEmail(token: string): Promise<{ message: string }> {
+    // Backend expects `token` as a query parameter (?token=xxx), not in the body.
+    return dsrRequest<{ message: string }>(
+      "POST",
+      `/dsr/auth/verify-email?token=${encodeURIComponent(token)}`,
+    );
+  },
+
+  /**
+   * Resend email verification
+   * FIX DSR-INV-005: Now requires auth (backend validates via JWT token).
+   */
+  async resendVerification(email?: string): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      "/dsr/auth/resend-verification",
+      email ? { email } : {},
+      true, // FIX: requires auth — backend gets user from JWT
+    );
+  },
+
+  /**
+   * Set phone number (required after first invitation acceptance)
+   */
+  async setPhone(phone: string): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      "/dsr/auth/set-phone",
+      { phone },
+      true,
+    );
+  },
+
+  /**
+   * Leave a dealer assignment
+   */
+  async leaveDealer(
+    assignmentId: string,
+    reason?: string,
+  ): Promise<{ message: string }> {
+    return dsrRequest<{ message: string }>(
+      "POST",
+      `/dsr/assignments/${assignmentId}/leave`,
+      { reason },
+      true,
+    );
   },
 };
 

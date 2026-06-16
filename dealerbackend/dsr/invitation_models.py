@@ -136,9 +136,9 @@ class DsrInvitation(models.Model):
         help_text="DSR email (optional, for notifications)",
     )
     
-    # Link to existing DSR (if already registered)
+    # Link to existing DsrUser (if already registered)
     dsr = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -159,9 +159,9 @@ class DsrInvitation(models.Model):
         help_text="Permissions being offered to this DSR",
     )
     
-    # For collectors - parent DSR they report to
+    # For collectors - parent DsrUser they report to
     parent_dsr = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -191,9 +191,9 @@ class DsrInvitation(models.Model):
     )
     accepted_at = models.DateTimeField(null=True, blank=True)
     
-    # Who accepted (links to DSR profile)
+    # Who accepted (links to DsrUser profile)
     accepted_by = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -338,17 +338,17 @@ class DsrInvitation(models.Model):
 
 class DsrDealerAssignment(models.Model):
     """
-    Junction table linking DSRs to Dealers with per-dealer permissions.
+    Junction table linking DsrUsers to Dealers with per-dealer permissions.
     
     This enables the multi-dealer architecture where:
-    - A DSR can work for multiple dealers
+    - A DsrUser can work for multiple dealers
     - Each dealer sets different permissions
-    - DSR can accept/reject invitations
+    - DsrUser can accept/reject invitations
     - Removal preserves transaction records
     
     Status Flow:
     ─────────────────────────────────────────────────────────────────
-    pending → active → removed (by dealer) OR left (by DSR)
+    pending → active → removed (by dealer) OR left (by DsrUser)
     
     Records are never deleted - status changes preserve history.
     ─────────────────────────────────────────────────────────────────
@@ -369,13 +369,11 @@ class DsrDealerAssignment(models.Model):
     
     id = models.CharField(max_length=100, primary_key=True)
 
-    # FIX M-13: change on_delete from CASCADE to SET_NULL so deleting a DSR
-    # or Dealer preserves the assignment history rows (the docstring at
-    # the top of this class promises "records are never deleted").
-    # CASCADE was silently violating that promise.
+    # After DSR→DsrUser merge, deleting the user should cascade since
+    # DsrUser IS the DSR now.
     dsr = models.ForeignKey(
-        "dsr.DSR",
-        on_delete=models.SET_NULL,
+        "users.DsrUser",
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="dealer_assignments",
@@ -403,9 +401,9 @@ class DsrDealerAssignment(models.Model):
         help_text="Per-dealer permissions for this DSR",
     )
     
-    # For collectors - parent DSR
+    # For collectors - parent DsrUser
     parent_dsr = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -470,7 +468,7 @@ class DsrDealerAssignment(models.Model):
     
     def __str__(self):
         status_display = dict(self.STATUS_CHOICES).get(self.status, self.status)
-        return f"{self.dsr.name} → {self.dealer.full_name} ({status_display})"
+        return f"{self.dsr.full_name or self.dsr.email} → {self.dealer.full_name} ({status_display})"
     
     def save(self, *args, **kwargs):
         # Set default permissions based on role if not provided

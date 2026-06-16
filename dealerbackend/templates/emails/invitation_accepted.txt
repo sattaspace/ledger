@@ -1,0 +1,14 @@
+{{ dsr_name }} Accepted Your Invitation - {{ site_name }}
+===========================================================
+
+{{ dsr_name }} has accepted your invitation to join {{ dealer_name }} as a {{ role }}.
+
+DSR Details:
+  Name:  {{ dsr_name }}
+  Email: {{ dsr_email }}
+  Role:  {{ role }}
+
+{{ dsr_name }} is now part of your team and can begin working with your dealership.
+
+---
+© {{ current_year }} {{ site_name }}

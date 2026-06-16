@@ -51,7 +51,7 @@ from dealercore.async_db import aatomic, async_aggregate, async_exists
 from common.dealer_context import get_dealer_context
 from dealer.models import DealerConfig
 from inventory.models import Product
-from dsr.models import DSR
+from users.models import DsrUser
 from sales.models import SaleRecord, CreditPayment, SaleReturn
 from sales.schemas import (
     BulkSaleIn,
@@ -441,10 +441,10 @@ class SalesController:
                 new_dsr_id = update_data.pop("dsr_id")
                 if new_dsr_id:
                     try:
-                        new_dsr = await DSR.objects.aget(id=new_dsr_id)
+                        new_dsr = await DsrUser.objects.aget(id=new_dsr_id)
                         sale.dsr = new_dsr
-                        sale.dsr_name = new_dsr.name
-                    except DSR.DoesNotExist:
+                        sale.dsr_name = new_dsr.full_name
+                    except DsrUser.DoesNotExist:
                         raise HttpError(400, f"DSR with id '{new_dsr_id}' not found")
                 else:
                     sale.dsr = None
@@ -517,9 +517,9 @@ class SalesController:
         dsr_obj = None
         if payload.dsr_id:
             try:
-                dsr_obj = await DSR.objects.aget(id=payload.dsr_id)
-                dsr_name = dsr_obj.name
-            except DSR.DoesNotExist:
+                dsr_obj = await DsrUser.objects.aget(id=payload.dsr_id)
+                dsr_name = dsr_obj.full_name
+            except DsrUser.DoesNotExist:
                 pass
 
         # Compute totals
@@ -557,9 +557,9 @@ class SalesController:
         sale_original_dsr_name = dsr_name
         if is_bulk and dsr_obj:
             try:
-                sale_original_dsr = await DSR.objects.aget(id=dsr_obj.id)
-                sale_original_dsr_name = sale_original_dsr.name
-            except (DSR.DoesNotExist, AttributeError):
+                sale_original_dsr = await DsrUser.objects.aget(id=dsr_obj.id)
+                sale_original_dsr_name = sale_original_dsr.full_name
+            except (DsrUser.DoesNotExist, AttributeError):
                 sale_original_dsr = dsr_obj
                 sale_original_dsr_name = dsr_name
 
@@ -617,9 +617,9 @@ class SalesController:
             customer_phone=sale.customer_phone,
             is_vehicle=sale.is_vehicle,
             vehicle_number=sale.vehicle_number,
-            dsr_id=sale.dsr_id,
+            dsr_id=str(sale.dsr_id) if sale.dsr_id else None,
             dsr_name=sale.dsr_name,
-            original_dsr_id=sale.original_dsr_id,
+            original_dsr_id=str(sale.original_dsr_id) if sale.original_dsr_id else None,
             original_dsr_name=sale.original_dsr_name,
             selling_price=sale.selling_price,
             total_amount=sale.total_amount,

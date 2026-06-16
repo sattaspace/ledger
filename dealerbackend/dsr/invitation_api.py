@@ -11,12 +11,11 @@ import secrets
 from ninja_extra import api_controller, http_post, http_get, http_patch, http_delete
 from ninja_extra.permissions import IsAuthenticated
 from ninja import Schema, Field
-from django.shortcuts import get_object_or_404
 from django.db import transaction
 
 from dsr.invitation_models import DsrInvitation, DsrDealerAssignment
 from common.rate_limit import rate_limit
-from dsr.models import DSR
+from users.models import DsrUser
 from dealer.models import DealerConfig
 
 
@@ -97,8 +96,8 @@ class DsrInvitationController:
         parent_dsr = None
         if data.role == "Collector" and data.parent_dsr_id:
             try:
-                parent_dsr = await DSR.objects.aget(id=data.parent_dsr_id)
-            except DSR.DoesNotExist:
+                parent_dsr = await DsrUser.objects.aget(id=data.parent_dsr_id)
+            except DsrUser.DoesNotExist:
                 return {"detail": "Parent DSR not found", "code": "parent_dsr_not_found"}, 400
 
         # Check for existing pending invitation
@@ -148,8 +147,8 @@ class DsrInvitationController:
             "expires_at": invitation.expires_at.isoformat(),
             "created_at": invitation.created_at.isoformat(),
             "message": invitation.message,
-            "parent_dsr_id": invitation.parent_dsr_id if invitation.parent_dsr else None,
-            "parent_dsr_name": invitation.parent_dsr.name if invitation.parent_dsr else None,
+            "parent_dsr_id": str(invitation.parent_dsr_id) if invitation.parent_dsr_id else None,
+            "parent_dsr_name": invitation.parent_dsr.full_name if invitation.parent_dsr else None,
             "invite_url": invite_url,
         }
 
@@ -197,8 +196,8 @@ class DsrInvitationController:
                 "expires_at": inv.expires_at.isoformat(),
                 "created_at": inv.created_at.isoformat(),
                 "message": inv.message,
-                "parent_dsr_id": inv.parent_dsr_id if inv.parent_dsr else None,
-                "parent_dsr_name": inv.parent_dsr.name if inv.parent_dsr else None,
+                "parent_dsr_id": str(inv.parent_dsr_id) if inv.parent_dsr_id else None,
+                "parent_dsr_name": inv.parent_dsr.full_name if inv.parent_dsr else None,
             }
             for inv in invitations
         ]
@@ -235,8 +234,8 @@ class DsrInvitationController:
             "expires_at": invitation.expires_at.isoformat(),
             "created_at": invitation.created_at.isoformat(),
             "message": invitation.message,
-            "parent_dsr_id": invitation.parent_dsr_id if invitation.parent_dsr else None,
-            "parent_dsr_name": invitation.parent_dsr.name if invitation.parent_dsr else None,
+            "parent_dsr_id": str(invitation.parent_dsr_id) if invitation.parent_dsr_id else None,
+            "parent_dsr_name": invitation.parent_dsr.full_name if invitation.parent_dsr else None,
         }
 
     @http_post("/{token}/accept")
@@ -284,36 +283,26 @@ class DsrInvitationController:
                 "code": "email_mismatch"
             }, 403
 
-        # FIX H-11 / H-12: Reuse existing DSR profile (look up by email) instead of
-        # creating a new orphan row for every accept. Link user/email so the new
-        # DSR can pass `validate_dsr_access` (which matches on dsr__email).
+        # After DSR→DsrUser merge: DsrUser IS the user now.
+        # Look up by email; create only if no DsrUser exists yet.
+        # parent_dsr is tracked on DsrDealerAssignment, not on DsrUser.
         dsr_name = invitation.dsr_email.split('@')[0]  # Default name from email
 
-        # Try to find an existing DSR with this email
-        dsr = await (
-            DSR.objects
-            .filter(email__iexact=user_email)
-            .select_related("user")
-            .afirst()
-        )
+        # Try to find an existing DsrUser with this email
+        dsr = await DsrUser.objects.filter(email__iexact=user_email).afirst()
         if dsr is None:
-            dsr = await DSR.objects.acreate(
-                id=await self._generate_dsr_id(),
-                name=dsr_name,
-                email=user_email,  # FIX H-11: was ""; required for validate_dsr_access
-                phone="",  # Will be updated when user provides phone
-                role=invitation.role,
-                parent_dsr=invitation.parent_dsr,
-                parent_dsr_name=invitation.parent_dsr.name if invitation.parent_dsr else "",
+            # Determine user_type from invitation role
+            user_type = (
+                DsrUser.TYPE_COLLECTOR
+                if invitation.role == DsrInvitation.ROLE_COLLECTOR
+                else DsrUser.TYPE_DSR
             )
-        else:
-            # Update existing DSR with invitation details if role/parent changed
-            if dsr.role != invitation.role:
-                dsr.role = invitation.role
-            if invitation.parent_dsr and dsr.parent_dsr_id != invitation.parent_dsr_id:
-                dsr.parent_dsr = invitation.parent_dsr
-                dsr.parent_dsr_name = invitation.parent_dsr.name
-            await dsr.asave(update_fields=["role", "parent_dsr", "parent_dsr_name", "updated_at"])
+            dsr = await DsrUser.objects.acreate(
+                email=user_email,
+                full_name=dsr_name,
+                phone="",  # Will be updated when user provides phone
+                user_type=user_type,
+            )
 
         # Check if assignment already exists
         existing = await DsrDealerAssignment.objects.filter(
@@ -330,8 +319,8 @@ class DsrInvitationController:
                     "message": "Invitation accepted (reactivated)",
                     "assignment": {
                         "id": existing.id,
-                        "dsr_id": dsr.id,
-                        "dsr_name": dsr.name,
+                        "dsr_id": str(dsr.id),
+                        "dsr_name": dsr.full_name,
                         "dealer_username": invitation.dealer.username,
                         "role": existing.role,
                     }
@@ -358,41 +347,12 @@ class DsrInvitationController:
             "message": "Invitation accepted successfully",
             "assignment": {
                 "id": assignment.id,
-                "dsr_id": dsr.id,
-                "dsr_name": dsr.name,
+                "dsr_id": str(dsr.id),
+                "dsr_name": dsr.full_name,
                 "dealer_username": invitation.dealer.username,
                 "role": assignment.role,
             }
         }
-
-    async def _generate_dsr_id(self) -> str:
-        """Generate a unique DSR ID."""
-        from django.db.models import Max
-        import time
-
-        prefix = "dsr"
-        max_retries = 5
-        for attempt in range(max_retries):
-            result = await DSR.objects.filter(id__startswith=prefix).aaggregate(
-                _max=Max("id")
-            )
-            last = result.get("_max")
-
-            num = 1
-            if last:
-                try:
-                    num = int(last.split("-")[-1]) + 1
-                except (ValueError, IndexError):
-                    num = 1
-
-            num += attempt
-            candidate_id = f"{prefix}-{num}"
-
-            exists = await DSR.objects.filter(id=candidate_id).aexists()
-            if not exists:
-                return candidate_id
-
-        return f"{prefix}-{int(time.time() * 1000)}"
 
     @http_patch("/{invitation_id}/revoke")
     async def revoke_invitation(self, request, invitation_id: str):
@@ -479,20 +439,24 @@ class DsrInvitationController:
         if role:
             queryset = queryset.filter(role=role)
 
-        assignments = await queryset.all()
+        # FIX: Use async iteration instead of `await queryset.all()` —
+        # Django QuerySet doesn't support await on `.all()`.
+        assignments = []
+        async for a in queryset:
+            assignments.append(a)
 
         return [
             {
                 "id": a.id,
-                "dsr_id": a.dsr.id,
-                "dsr_name": a.dsr.name,
+                "dsr_id": str(a.dsr.id),
+                "dsr_name": a.dsr.full_name,
                 "dealer_username": a.dealer.username,
                 "dealer_name": a.dealer.full_name,
                 "role": a.role,
                 "is_active": a.is_active,
                 "assigned_at": a.assigned_at.isoformat(),
-                "parent_dsr_id": a.parent_dsr_id if a.parent_dsr else None,
-                "parent_dsr_name": a.parent_dsr.name if a.parent_dsr else None,
+                "parent_dsr_id": str(a.parent_dsr.id) if a.parent_dsr else None,
+                "parent_dsr_name": a.parent_dsr.full_name if a.parent_dsr else None,
             }
             for a in assignments
         ]

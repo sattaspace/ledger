@@ -3,7 +3,9 @@
  * DSR Dashboard
  * -------------
  * Main dashboard for logged-in DSRs.
- * Shows invitations, assignments, and provides access to dealer tools.
+ * Shows invitations, assignments, profile editing, and provides access to dealer tools.
+ * 
+ * FIX DSR-014: Added "Profile" tab with profile editing and password change.
  * 
  * Uses the isolated dsrClient - NO dependency on dealer auth.
  */
@@ -23,7 +25,13 @@ import {
   ShoppingBag,
   Package,
   Coins,
-  FileText
+  FileText,
+  Save,
+  Key,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  Send
 } from 'lucide-vue-next';
 import { 
   dsrApi, 
@@ -44,18 +52,43 @@ const emit = defineEmits<{
 const user = ref<DsrUser | null>(null);
 const selectedDealer = ref<DealerChoice | null>(null);
 const dealers = ref<DealerChoice[]>([]);
-// Invitations grouped by status: { pending: [], accepted: [], rejected: [] }
 const invitations = ref<{ pending: any[]; accepted: any[]; rejected: any[] }>({ pending: [], accepted: [], rejected: [] });
-// Assignments grouped by status: { active: [], removed: [], left: [] }
 const assignments = ref<{ active: any[]; removed: any[]; left: any[] }>({ active: [], removed: [], left: [] });
 const isLoading = ref(true);
 const error = ref('');
-const activeTab = ref<'overview' | 'invitations' | 'assignments'>('overview');
+const activeTab = ref<'overview' | 'invitations' | 'assignments' | 'profile'>('overview');
+
+// ─── FIX DSR-014: Profile editing state ────────────────────────────────
+const profileForm = ref({
+  full_name: '',
+  phone: '',
+  bio: '',
+});
+const profileSaving = ref(false);
+const profileSaved = ref(false);
+const profileError = ref('');
+
+// Password change state
+const passwordForm = ref({
+  current_password: '',
+  new_password: '',
+  confirm_password: '',
+});
+const passwordSaving = ref(false);
+const passwordSaved = ref(false);
+const passwordError = ref('');
+const showCurrentPassword = ref(false);
+const showNewPassword = ref(false);
+
+// ─── FIX DSR-INV-005: Email verification state ────────────────────────
+const emailVerified = computed(() => (user.value as any)?.email_verified !== false);
+const resendVerificationLoading = ref(false);
+const resendVerificationSent = ref(false);
+const resendVerificationError = ref('');
 
 // Computed - use the pending/active arrays directly from the backend response
 const pendingInvitations = computed(() => invitations.value.pending || []);
 const activeAssignments = computed(() => assignments.value.active || []);
-// All invitations (for the invitations tab)
 const allInvitations = computed(() => [
   ...(invitations.value.pending || []),
   ...(invitations.value.accepted || []),
@@ -67,19 +100,12 @@ async function loadDashboard() {
   isLoading.value = true;
   error.value = '';
   
-  console.log('[DSR DASHBOARD] Loading dashboard...');
-  
   try {
-    // Get stored user and dealer
     user.value = getDsrUser();
     selectedDealer.value = getDsrSelectedDealer();
     
-    console.log('[DSR DASHBOARD] Stored user:', user.value?.email);
-    console.log('[DSR DASHBOARD] Has token:', !!getDsrAccessToken());
-    
     // Fetch profile from API
     const profile = await dsrApi.getProfile();
-    console.log('[DSR DASHBOARD] Profile loaded:', profile);
     
     user.value = profile.user as DsrUser;
     dealers.value = profile.dealers || [];
@@ -87,18 +113,22 @@ async function loadDashboard() {
       selectedDealer.value = profile.selected_dealer;
     }
     
+    // Initialize profile form from user data
+    profileForm.value = {
+      full_name: profile.user.full_name || '',
+      phone: profile.user.phone || '',
+      bio: (profile.user as any).bio || '',
+    };
+    
     // Fetch invitations
     await fetchInvitations();
     
     // Fetch assignments
     await fetchAssignments();
   } catch (err: any) {
-    console.error('[DSR DASHBOARD] Failed to load:', err);
     error.value = err?.message || 'Failed to load dashboard. Please try again.';
     
-    // If unauthorized, clear auth and redirect to login
     if (err?.status === 401) {
-      console.log('[DSR DASHBOARD] Unauthorized - clearing auth');
       clearDsrAuth();
       emit('logout');
     }
@@ -110,12 +140,12 @@ async function loadDashboard() {
 async function fetchInvitations() {
   try {
     invitations.value = await dsrApi.getInvitations();
-    const total = (invitations.value.pending?.length || 0) + 
-                  (invitations.value.accepted?.length || 0) + 
-                  (invitations.value.rejected?.length || 0);
-    console.log('[DSR DASHBOARD] Invitations loaded:', total, invitations.value);
-  } catch (err) {
-    console.error('[DSR DASHBOARD] Failed to fetch invitations:', err);
+  } catch (err: any) {
+    // FIX DSR-INV-003: Log the error instead of silently swallowing it.
+    // A 401 here means the token is invalid (should not happen since
+    // getProfile succeeded), but other errors (500, CORS, network)
+    // should be visible for debugging.
+    console.error('[DSR DASHBOARD] Failed to fetch invitations:', err?.message || err);
     invitations.value = { pending: [], accepted: [], rejected: [] };
   }
 }
@@ -123,9 +153,8 @@ async function fetchInvitations() {
 async function fetchAssignments() {
   try {
     assignments.value = await dsrApi.getAssignments();
-    console.log('[DSR DASHBOARD] Assignments loaded:', assignments.value);
-  } catch (err) {
-    console.error('[DSR DASHBOARD] Failed to fetch assignments:', err);
+  } catch (err: any) {
+    console.error('[DSR DASHBOARD] Failed to fetch assignments:', err?.message || err);
     assignments.value = { active: [], removed: [], left: [] };
   }
 }
@@ -135,7 +164,13 @@ async function acceptInvitation(invitationId: string) {
     await dsrApi.acceptInvitation(invitationId);
     await loadDashboard();
   } catch (err: any) {
-    error.value = err?.message || 'Failed to accept invitation';
+    // FIX DSR-INV-005: Show specific message for email verification required
+    const code = err?.data?.code;
+    if (code === 'email_not_verified' || err?.status === 403) {
+      error.value = 'Please verify your email address before accepting invitations. Check the verification banner above or go to your Profile to resend the verification email.';
+    } else {
+      error.value = err?.message || 'Failed to accept invitation';
+    }
   }
 }
 
@@ -155,14 +190,100 @@ async function handleLogout() {
   emit('logout');
 }
 
+// ─── FIX DSR-INV-005: Email verification handler ────────────────────────
+async function handleResendVerification() {
+  resendVerificationLoading.value = true;
+  resendVerificationError.value = '';
+  resendVerificationSent.value = false;
+  
+  try {
+    await dsrApi.resendVerification();
+    resendVerificationSent.value = true;
+    setTimeout(() => { resendVerificationSent.value = false; }, 10000);
+  } catch (err: any) {
+    resendVerificationError.value = err?.message || 'Failed to send verification email. Please try again.';
+  } finally {
+    resendVerificationLoading.value = false;
+  }
+}
+
 function handleEnterPortal(assignment: any) {
-  console.log('[DSR DASHBOARD] Entering dealer portal for:', assignment);
   const dealer = assignment.dealer;
   if (dealer) {
     selectedDealer.value = dealer;
     emit('enterDealerPortal', { ...assignment, dealer });
-  } else {
-    console.error('[DSR DASHBOARD] No dealer info in assignment');
+  }
+}
+
+// ─── FIX DSR-014: Profile & Password handlers ─────────────────────────
+
+async function saveProfile() {
+  profileSaving.value = true;
+  profileError.value = '';
+  profileSaved.value = false;
+  
+  try {
+    const updates: Record<string, string> = {};
+    if (profileForm.value.full_name !== (user.value?.full_name || '')) {
+      updates.full_name = profileForm.value.full_name;
+    }
+    if (profileForm.value.phone !== (user.value?.phone || '')) {
+      updates.phone = profileForm.value.phone;
+    }
+    if (profileForm.value.bio !== ((user.value as any)?.bio || '')) {
+      updates.bio = profileForm.value.bio;
+    }
+    
+    if (Object.keys(updates).length > 0) {
+      await dsrApi.updateProfile(updates);
+      // Refresh user data
+      const profile = await dsrApi.getProfile();
+      user.value = profile.user as DsrUser;
+    }
+    
+    profileSaved.value = true;
+    setTimeout(() => { profileSaved.value = false; }, 3000);
+  } catch (err: any) {
+    profileError.value = err?.message || 'Failed to update profile';
+  } finally {
+    profileSaving.value = false;
+  }
+}
+
+async function changePassword() {
+  passwordSaving.value = true;
+  passwordError.value = '';
+  passwordSaved.value = false;
+  
+  if (passwordForm.value.new_password !== passwordForm.value.confirm_password) {
+    passwordError.value = 'Passwords do not match';
+    passwordSaving.value = false;
+    return;
+  }
+  
+  if (passwordForm.value.new_password.length < 8) {
+    passwordError.value = 'Password must be at least 8 characters';
+    passwordSaving.value = false;
+    return;
+  }
+  
+  try {
+    await dsrApi.changePassword(
+      passwordForm.value.current_password,
+      passwordForm.value.new_password,
+    );
+    
+    passwordSaved.value = true;
+    passwordForm.value = {
+      current_password: '',
+      new_password: '',
+      confirm_password: '',
+    };
+    setTimeout(() => { passwordSaved.value = false; }, 3000);
+  } catch (err: any) {
+    passwordError.value = err?.message || 'Failed to change password';
+  } finally {
+    passwordSaving.value = false;
   }
 }
 
@@ -219,6 +340,40 @@ onMounted(() => {
 
       <!-- Dashboard Content -->
       <template v-else>
+        <!-- FIX DSR-INV-005: Email Verification Banner -->
+        <div v-if="!emailVerified" class="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 shadow-sm">
+          <div class="flex items-start gap-4">
+            <div class="bg-amber-100 p-3 rounded-xl shrink-0">
+              <ShieldCheck class="h-6 w-6 text-amber-600" />
+            </div>
+            <div class="flex-1 min-w-0">
+              <h3 class="text-base font-semibold text-amber-800 mb-1">Email Verification Required</h3>
+              <p class="text-sm text-amber-700 mb-3">
+                Your email <strong>{{ user?.email }}</strong> is not verified yet. You must verify your email before you can accept dealer invitations.
+                Please check your inbox for the verification link, or resend it below.
+              </p>
+              <div class="flex flex-wrap items-center gap-3">
+                <button
+                  @click="handleResendVerification"
+                  :disabled="resendVerificationLoading || resendVerificationSent"
+                  class="inline-flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-amber-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition"
+                >
+                  <svg v-if="resendVerificationLoading" class="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                  </svg>
+                  <Send v-else class="h-4 w-4" />
+                  {{ resendVerificationSent ? 'Email Sent!' : resendVerificationLoading ? 'Sending...' : 'Resend Verification Email' }}
+                </button>
+                <span v-if="resendVerificationSent" class="text-sm text-emerald-600 font-medium">
+                  Check your inbox!
+                </span>
+              </div>
+              <p v-if="resendVerificationError" class="mt-2 text-sm text-red-600">{{ resendVerificationError }}</p>
+            </div>
+          </div>
+        </div>
+
         <!-- Tabs -->
         <div class="flex gap-2 mb-6 overflow-x-auto pb-2">
           <button
@@ -264,6 +419,18 @@ onMounted(() => {
             ]"
           >
             My Dealers
+          </button>
+          <!-- FIX DSR-014: Profile tab -->
+          <button
+            @click="activeTab = 'profile'"
+            :class="[
+              'px-4 py-2 rounded-lg font-medium transition whitespace-nowrap',
+              activeTab === 'profile'
+                ? 'bg-emerald-600 text-white'
+                : 'bg-white text-slate-600 hover:bg-slate-50'
+            ]"
+          >
+            Profile
           </button>
         </div>
 
@@ -433,7 +600,7 @@ onMounted(() => {
                   </div>
                   <div>
                     <p class="font-medium text-slate-800">{{ inv.dealer?.business_name || inv.dealer?.full_name || 'Unknown Dealer' }}</p>
-                    <p class="text-sm text-slate-500">{{ inv.role || 'DSR' }} • {{ inv.status }}</p>
+                    <p class="text-sm text-slate-500">{{ inv.role || 'DSR' }} &bull; {{ inv.status }}</p>
                   </div>
                 </div>
                 <div v-if="inv.status === 'pending'" class="flex gap-2">
@@ -497,6 +664,194 @@ onMounted(() => {
                 </div>
                 <ChevronRight class="h-5 w-5 text-slate-400" />
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             FIX DSR-014: PROFILE TAB
+             DSR profile editing and password change.
+        ═══════════════════════════════════════════════════════════════ -->
+        <div v-if="activeTab === 'profile'" class="space-y-6">
+          <!-- Profile Info Card -->
+          <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+            <div class="p-6 border-b border-slate-100">
+              <div class="flex items-center gap-4">
+                <div class="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white text-2xl font-bold">
+                  {{ user?.full_name?.charAt(0)?.toUpperCase() || '?' }}
+                </div>
+                <div>
+                  <h3 class="text-lg font-bold text-slate-800">{{ user?.full_name || 'No name set' }}</h3>
+                  <p class="text-sm text-slate-500">{{ user?.email }}</p>
+                  <div class="flex items-center gap-2 mt-1">
+                    <span v-if="user?.phone" class="text-xs text-slate-500">{{ user.phone }}</span>
+                    <span v-if="user?.user_type" class="px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-700">
+                      {{ user.user_type }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- FIX DSR-INV-005: Email verification status in Profile -->
+            <div class="px-6 py-3 border-b border-slate-100">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <ShieldCheck v-if="emailVerified" class="h-4 w-4 text-emerald-500" />
+                  <AlertCircle v-else class="h-4 w-4 text-amber-500" />
+                  <span class="text-sm font-medium" :class="emailVerified ? 'text-emerald-700' : 'text-amber-700'">
+                    Email: {{ emailVerified ? 'Verified' : 'Not Verified' }}
+                  </span>
+                </div>
+                <button
+                  v-if="!emailVerified"
+                  @click="handleResendVerification"
+                  :disabled="resendVerificationLoading || resendVerificationSent"
+                  class="text-xs px-3 py-1.5 bg-amber-100 hover:bg-amber-200 disabled:bg-amber-50 disabled:text-amber-400 text-amber-700 font-medium rounded-lg transition"
+                >
+                  {{ resendVerificationSent ? 'Sent!' : resendVerificationLoading ? 'Sending...' : 'Resend Verification' }}
+                </button>
+              </div>
+              <p v-if="!emailVerified" class="text-xs text-amber-600 mt-1">
+                You must verify your email before accepting dealer invitations.
+              </p>
+              <p v-if="resendVerificationError" class="text-xs text-red-600 mt-1">{{ resendVerificationError }}</p>
+            </div>
+
+            <!-- Edit Profile Form -->
+            <div class="p-6">
+              <h4 class="text-sm font-semibold text-slate-700 mb-4">Edit Profile</h4>
+              
+              <div v-if="profileError" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                {{ profileError }}
+              </div>
+              <div v-if="profileSaved" class="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm">
+                Profile updated successfully!
+              </div>
+
+              <form @submit.prevent="saveProfile" class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
+                  <input
+                    v-model="profileForm.full_name"
+                    type="text"
+                    placeholder="Enter your full name"
+                    class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                  <input
+                    v-model="profileForm.phone"
+                    type="tel"
+                    placeholder="Enter your phone number"
+                    class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">Bio</label>
+                  <textarea
+                    v-model="profileForm.bio"
+                    placeholder="Tell dealers about yourself..."
+                    rows="3"
+                    class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none"
+                  />
+                </div>
+                
+                <button
+                  type="submit"
+                  :disabled="profileSaving"
+                  class="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-50"
+                >
+                  <Save v-if="!profileSaving" class="h-4 w-4" />
+                  <RefreshCw v-else class="h-4 w-4 animate-spin" />
+                  {{ profileSaving ? 'Saving...' : 'Save Changes' }}
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Change Password Card -->
+          <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+            <div class="p-6">
+              <div class="flex items-center gap-2 mb-4">
+                <Key class="h-5 w-5 text-slate-600" />
+                <h4 class="text-sm font-semibold text-slate-700">Change Password</h4>
+              </div>
+              
+              <div v-if="passwordError" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                {{ passwordError }}
+              </div>
+              <div v-if="passwordSaved" class="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm">
+                Password changed successfully!
+              </div>
+
+              <form @submit.prevent="changePassword" class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">Current Password</label>
+                  <div class="relative">
+                    <input
+                      v-model="passwordForm.current_password"
+                      :type="showCurrentPassword ? 'text' : 'password'"
+                      placeholder="Enter current password"
+                      class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 pr-10"
+                      required
+                    />
+                    <button
+                      type="button"
+                      @click="showCurrentPassword = !showCurrentPassword"
+                      class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <Eye v-if="!showCurrentPassword" class="h-4 w-4" />
+                      <EyeOff v-else class="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">New Password</label>
+                  <div class="relative">
+                    <input
+                      v-model="passwordForm.new_password"
+                      :type="showNewPassword ? 'text' : 'password'"
+                      placeholder="Enter new password (min 8 characters)"
+                      class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 pr-10"
+                      required
+                    />
+                    <button
+                      type="button"
+                      @click="showNewPassword = !showNewPassword"
+                      class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <Eye v-if="!showNewPassword" class="h-4 w-4" />
+                      <EyeOff v-else class="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-slate-700 mb-1">Confirm New Password</label>
+                  <input
+                    v-model="passwordForm.confirm_password"
+                    type="password"
+                    placeholder="Confirm new password"
+                    class="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    required
+                  />
+                </div>
+                
+                <button
+                  type="submit"
+                  :disabled="passwordSaving"
+                  class="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-sm font-medium rounded-lg transition disabled:opacity-50"
+                >
+                  <Key v-if="!passwordSaving" class="h-4 w-4" />
+                  <RefreshCw v-else class="h-4 w-4 animate-spin" />
+                  {{ passwordSaving ? 'Changing...' : 'Change Password' }}
+                </button>
+              </form>
             </div>
           </div>
         </div>

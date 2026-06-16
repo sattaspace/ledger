@@ -1,0 +1,14 @@
+{{ dsr_name }} Declined Your Invitation - {{ site_name }}
+===========================================================
+
+{{ dsr_name }} has declined your invitation to join {{ dealer_name }} as a {{ role }}.
+
+DSR Details:
+  Name:  {{ dsr_name }}
+  Email: {{ dsr_email }}
+  Role:  {{ role }}
+
+You may want to reach out to {{ dsr_name }} directly or send a new invitation if circumstances change.
+
+---
+© {{ current_year }} {{ site_name }}

@@ -1,0 +1,18 @@
+{{ dsr_name }} Has Left Your Team - {{ site_name }}
+====================================================
+
+{{ dsr_name }} has left {{ dealer_name }}.
+
+DSR Details:
+  Name:  {{ dsr_name }}
+  Email: {{ dsr_email }}
+
+{% if reason %}
+Reason provided:
+{{ reason }}
+{% endif %}
+
+{{ dsr_name }} no longer has access to your dealer resources. If you'd like to re-invite them in the future, you can send a new invitation from your dashboard.
+
+---
+© {{ current_year }} {{ site_name }}

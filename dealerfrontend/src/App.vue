@@ -104,9 +104,12 @@ const activeTab = ref('overview');
 const menuOpen = ref(false);
 
 // ─── DSR Authentication State ───────────────────────────────────────────────
-// View mode: 'dealer' (default dealer login) | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'
-const authView = ref<'dealer' | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite'>('dealer');
+// View mode: 'dealer' (default) | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite' | 'dsr-verify-email'
+const authView = ref<'dealer' | 'dsr-login' | 'dsr-register' | 'dsr-dashboard' | 'dsr-register-invite' | 'dsr-verify-email'>('dealer');
 const dsrInviteToken = ref<string | null>(null);
+const dsrVerifyToken = ref<string | null>(null);  // FIX DSR-INV-005: Email verification token
+const dsrVerifyStatus = ref<'loading' | 'success' | 'error'>('loading');
+const dsrVerifyErrorMsg = ref('');
 
 // Use a reactive ref for DSR auth state that can be updated on login/logout
 // Initialize from localStorage but make it reactive
@@ -114,6 +117,13 @@ const dsrAuthState = ref(!!localStorage.getItem('dsr_access_token'));
 
 // Check DSR auth on mount (in case page was refreshed after DSR login)
 const isDsrAuthenticated = computed(() => dsrAuthState.value);
+
+// FIX DSR-013: DSR "Enter Portal" mode. When a DSR clicks "Enter Portal"
+// on their dashboard, they enter the main dealer app using their DSR-scoped
+// JWT. This flag switches the UI from DSR-only views to the full dealer app
+// while still using DSR authentication (not SattaBase dealer auth).
+const dsrInPortalMode = ref(false);
+const dsrPortalDealer = ref<{ username: string; full_name: string; business_name: string } | null>(null);
 
 // Database Core States
 const products = ref<Product[]>([]);
@@ -310,6 +320,20 @@ onMounted(async () => {
   //      (dealers should not be redirected into a DSR flow mid-session).
   const params = new URLSearchParams(window.location.search);
   const inviteToken = params.get('token');
+  const pathname = window.location.pathname;
+  
+  // FIX DSR-INV-005: Handle email verification link (/dsr/verify-email?token=xxx)
+  if (pathname.includes('/dsr/verify-email')) {
+    const verifyToken = params.get('token');
+    if (verifyToken) {
+      dsrVerifyToken.value = verifyToken;
+      authView.value = 'dsr-verify-email';
+      const cleanedUrl = pathname;
+      window.history.replaceState({}, document.title, cleanedUrl);
+      return;
+    }
+  }
+  
   if (inviteToken && !isAuthenticated.value) {
     dsrInviteToken.value = inviteToken;
     authView.value = 'dsr-register-invite';
@@ -358,6 +382,20 @@ watch(isAuthenticated, async (newValue, oldValue) => {
     await loadAll();
   }
 });
+
+// FIX DSR-INV-005: Watch for email verification token and auto-verify
+watch(dsrVerifyToken, async (token) => {
+  if (!token) return;
+  dsrVerifyStatus.value = 'loading';
+  try {
+    const { dsrApi } = await import('./services/dsrClient');
+    await dsrApi.verifyEmail(token);
+    dsrVerifyStatus.value = 'success';
+  } catch (err: any) {
+    dsrVerifyStatus.value = 'error';
+    dsrVerifyErrorMsg.value = err?.data?.detail || err?.message || 'Verification failed. The link may have expired.';
+  }
+}, { immediate: true });
 
 // Full state synchronization fetcher — uses centralized API services
 const fetchFullDetails = async () => {
@@ -787,34 +825,105 @@ const handleDsrLogout = async () => {
 };
 
 const handleDsrEnterPortal = async (assignment: any) => {
-  console.log('[APP] DSR entering dealer portal:', assignment);
-
   if (!assignment?.dealer?.username) {
     console.error('[APP] No dealer username in assignment');
     return;
   }
 
   try {
-    // Import dsrApi dynamically to avoid circular deps
     const { dsrApi, setDsrSelectedDealer } = await import('./services/dsrClient');
+    const { setAccessMap } = await import('./composables/useAccess');
 
-    // Select the dealer context - this updates tokens and selected dealer
+    // Select the dealer context — backend returns DSR-scoped JWT tokens
+    // that include the dealer context. The middleware will recognize these
+    // and set the correct permissions.
     const result = await dsrApi.selectDealer(assignment.dealer.username);
-    console.log('[APP] Dealer selected:', result);
 
-    // Set the dealer in our local state
+    // Store dealer selection
     setDsrSelectedDealer(result.dealer);
 
-    // FIX L-18: replaced native alert() (which blocks the main thread)
-    // with the existing triggerToast / triggerErrorToast system.
+    // FIX DSR-013: Convert the DSR's per-dealer permissions into the flat
+    // access map format used by hasAccess() / PermissionGuard.
+    // The backend returns nested permissions like:
+    //   { "dashboard": {"view": true}, "sales": {"view": true, "edit": true} }
+    // But hasAccess() expects flat boolean keys like:
+    //   { "dashboard": true, "sales": true, ... }
+    // A module is accessible if its "view" permission is true (or the whole
+    // value is a boolean true). We also add default entries for features
+    // that DSRs should always be able to access in portal mode.
+    const dsrAccessMap: Record<string, boolean | number | string> = {};
+    const perms = result.permissions || {};
+    for (const [module, actions] of Object.entries(perms)) {
+      if (typeof actions === 'boolean') {
+        dsrAccessMap[module] = actions;
+      } else if (typeof actions === 'object' && actions !== null) {
+        // Module is accessible if "view" is true
+        dsrAccessMap[module] = !!(actions as Record<string, any>).view;
+      }
+    }
+
+    // Ensure core features are always available in DSR portal mode.
+    // DSRs need dashboard, inventory, sales, collections, reports at minimum.
+    // If the permissions map didn't explicitly deny them, grant access.
+    const coreFeatures = ['dashboard', 'inventory', 'sales', 'collections', 'reports', 'bad_debt'];
+    for (const feature of coreFeatures) {
+      if (dsrAccessMap[feature] === undefined) {
+        dsrAccessMap[feature] = true;
+      }
+    }
+
+    // Suppliers and team are typically restricted for DSRs; only enable if
+    // explicitly granted in their permissions.
+    if (dsrAccessMap['suppliers'] === undefined) {
+      dsrAccessMap['suppliers'] = false;
+    }
+
+    // Set numeric limits to "unlimited" (0) for DSR portal mode so they
+    // don't hit plan-based restrictions that apply to the dealer.
+    dsrAccessMap['max_products'] = 0;
+    dsrAccessMap['max_dsrs'] = 0;
+    dsrAccessMap['max_suppliers'] = 0;
+
+    if (import.meta.env.DEV) {
+      console.log('%c[APP] DSR portal access map', 'color: #8b5cf6; font-weight: bold', {
+        rawPermissions: perms,
+        accessMap: dsrAccessMap,
+      });
+    }
+
+    setAccessMap(dsrAccessMap);
+
+    // FIX DSR-013: Enter the dealer portal in DSR mode.
+    // Instead of just showing a toast, we now actually switch to the
+    // main dealer app UI using the DSR's scoped JWT.
+    dsrPortalDealer.value = result.dealer;
+    dsrInPortalMode.value = true;
+
+    // Load dealer data (products, sales, etc.) using the DSR-scoped JWT.
+    // The apiClient will automatically attach the DSR JWT and
+    // X-Dealer-Username header.
+    await loadAll();
+
     const dealerLabel = result.dealer.full_name || result.dealer.business_name || 'dealer';
-    triggerToast(
-      `Connected to ${dealerLabel}. DSR dealer portal features are being developed — you'll soon be able to view inventory, record sales, and collect payments here.`,
-    );
+    triggerToast(`Connected to ${dealerLabel}. You're now in the dealer portal.`);
   } catch (error: any) {
     console.error('[APP] Failed to enter dealer portal:', error);
     triggerErrorToast('Failed to connect to dealer portal. Please try again.');
   }
+};
+
+const handleDsrExitPortal = () => {
+  // FIX DSR-013: Return from dealer portal to DSR dashboard.
+  dsrInPortalMode.value = false;
+  dsrPortalDealer.value = null;
+  activeTab.value = 'overview';
+
+  // Clear the DSR portal access map so it doesn't leak into the
+  // DSR dashboard view. The access map will be repopulated if the
+  // DSR enters portal mode again or if a dealer logs in.
+  import('./composables/useAccess').then(({ clearAccessMap }) => {
+    clearAccessMap();
+  });
 };
 
 const handleSessionRestored = async () => {
@@ -876,9 +985,9 @@ const maxSuppliers = getLimit('max_suppliers', 0);
        DSR AUTHENTICATION VIEWS
        ═══════════════════════════════════════════════════════════════════════ -->
   
-  <!-- DSR Dashboard - shown when DSR is authenticated -->
+  <!-- DSR Dashboard - shown when DSR is authenticated and NOT in portal mode -->
   <DsrDashboard 
-    v-if="!isAuthenticated && isDsrAuthenticated && authView === 'dsr-dashboard'"
+    v-if="!isAuthenticated && isDsrAuthenticated && authView === 'dsr-dashboard' && !dsrInPortalMode"
     @logout="handleDsrLogout"
     @enterDealerPortal="handleDsrEnterPortal"
   />
@@ -906,14 +1015,417 @@ const maxSuppliers = getLimit('max_suppliers', 0);
     @showLogin="authView = 'dsr-login'"
   />
   
+  <!-- FIX DSR-INV-005: DSR Email Verification Page -->
+  <div 
+    v-else-if="authView === 'dsr-verify-email'" 
+    class="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-4"
+  >
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-xl p-8 text-center">
+      <div class="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center"
+        :class="dsrVerifyStatus === 'success' ? 'bg-emerald-100' : dsrVerifyStatus === 'error' ? 'bg-red-100' : 'bg-amber-100'">
+        <svg v-if="dsrVerifyStatus === 'loading'" class="animate-spin h-8 w-8 text-amber-600" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+        </svg>
+        <svg v-else-if="dsrVerifyStatus === 'success'" class="h-8 w-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        <svg v-else class="h-8 w-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </div>
+      <h2 class="text-xl font-bold text-slate-800 mb-2">
+        {{ dsrVerifyStatus === 'loading' ? 'Verifying...' : dsrVerifyStatus === 'success' ? 'Email Verified!' : 'Verification Failed' }}
+      </h2>
+      <p class="text-sm text-slate-600 mb-6">
+        {{ dsrVerifyStatus === 'loading' ? 'Please wait while we verify your email address.' 
+          : dsrVerifyStatus === 'success' ? 'Your email has been verified successfully! You can now accept dealer invitations.' 
+          : dsrVerifyErrorMsg || 'The verification link is invalid or has expired. Please request a new one from your DSR Portal.' }}
+      </p>
+      <button
+        v-if="dsrVerifyStatus !== 'loading'"
+        @click="dsrVerifyStatus === 'success' ? (authView = 'dsr-login') : (authView = 'dsr-login')"
+        class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg transition"
+      >
+        {{ dsrVerifyStatus === 'success' ? 'Go to DSR Portal' : 'Back to Login' }}
+      </button>
+    </div>
+  </div>
+  
   <!-- Dealer Login Page - shown when not authenticated -->
   <LoginPage 
-    v-else-if="!isAuthenticated" 
+    v-else-if="!isAuthenticated && !dsrInPortalMode" 
     @login="handleLoginSuccess"
     @showDsrLogin="authView = 'dsr-login'"
   />
   
-  <!-- Main App - shown when authenticated -->
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       FIX DSR-013: DSR PORTAL MODE
+       When a DSR enters the dealer portal, we render the main app UI
+       without requiring SattaBase dealer auth. The DSR's scoped JWT +
+       X-Dealer-Username header provides all the auth context the backend
+       needs (handled by PermissionMiddleware).
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <template v-else-if="dsrInPortalMode">
+    <div class="app-shell">
+      <!-- DSR Portal Mode Banner -->
+      <div class="fixed top-0 left-0 right-0 z-50 bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-4 py-2 flex items-center justify-between shadow-lg">
+        <div class="flex items-center gap-3">
+          <div class="bg-white/20 p-1.5 rounded-lg">
+            <Sparkles class="h-4 w-4" />
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-semibold">DSR Portal Mode</span>
+            <span class="text-xs text-purple-200">•</span>
+            <span class="text-xs text-purple-200">{{ dsrPortalDealer?.full_name || dsrPortalDealer?.business_name || 'Dealer' }}</span>
+          </div>
+        </div>
+        <button
+          @click="handleDsrExitPortal"
+          class="flex items-center gap-1.5 px-3 py-1 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition"
+        >
+          <LogOut class="h-3.5 w-3.5" />
+          Back to Dashboard
+        </button>
+      </div>
+      
+      <!-- Desktop Sidebar -->
+      <aside class="sidebar-desktop" style="margin-top: 40px;">
+        <div class="sidebar-brand">
+          <div class="brand-logo">
+            <Sparkles class="brand-logo-icon" />
+          </div>
+          <div class="brand-text">
+            <h1 class="brand-name">DEALERCORE</h1>
+            <span class="brand-version">v3.0</span>
+          </div>
+        </div>
+
+        <div class="sidebar-dealer-selector">
+          <DealerSelector @dealer-changed="fetchFullDetails" />
+        </div>
+
+        <nav class="sidebar-nav">
+          <button
+            v-for="item in navItems"
+            :key="item.id"
+            :id="`sidebar-nav-${item.id}`"
+            @click="handleNavigate(item.id)"
+            :class="['sidebar-nav-item', { 'sidebar-nav-item--active': activeTab === item.id }]"
+          >
+            <div v-if="activeTab === item.id" class="nav-glow-pill"></div>
+            <LayoutDashboard v-if="item.id === 'overview'" class="nav-icon" />
+            <UserCircle v-else-if="item.id === 'team'" class="nav-icon" />
+            <Package v-else-if="item.id === 'inventory'" class="nav-icon" />
+            <ShoppingCart v-else-if="item.id === 'sales'" class="nav-icon" />
+            <Coins v-else-if="item.id === 'collections'" class="nav-icon" />
+            <FilePieChart v-else-if="item.id === 'reports'" class="nav-icon" />
+            <Package v-else-if="item.id === 'suppliers'" class="nav-icon" />
+            <AlertTriangle v-else-if="item.id === 'bad-debt'" class="nav-icon" />
+            <span class="nav-label">{{ item.name }}</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-user">
+            <div class="user-avatar-sm">
+              {{ dsrPortalDealer?.full_name?.charAt(0) || 'D' }}
+            </div>
+            <div class="user-info">
+              <span class="user-name text-xs">{{ dsrPortalDealer?.full_name || 'DSR Mode' }}</span>
+              <span class="user-role text-xs text-purple-300">DSR Portal</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ═══════════════════════════════════════════════════════════════════
+           DSR PORTAL — MAIN CONTENT AREA
+           Reuses the same content components as the main dealer app.
+           The DSR's scoped JWT + X-Dealer-Username header ensure the
+           backend returns only data belonging to the selected dealer.
+           ═══════════════════════════════════════════════════════════════════ -->
+      <div class="main-wrapper" style="margin-top: 40px;">
+
+        <!-- ─── HEADER METRICS — Gradient Cards ────────────────────────── -->
+        <header class="metrics-header">
+          <div class="metrics-cards">
+            <!-- Low Inventory Alert Card -->
+            <div class="metric-card metric-card--danger">
+              <div class="metric-card-icon-wrap metric-card-icon-wrap--danger">
+                <AlertCircle class="metric-card-icon" />
+              </div>
+              <div class="metric-card-content">
+                <span class="metric-card-label">Low Inventory</span>
+                <span class="metric-card-value metric-card-value--danger">
+                  {{ summary && summary.lowStockCount > 0 ? `${summary.lowStockCount} Items` : '0 Items' }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Pending Credit Card -->
+            <div
+              class="metric-card metric-card--warning"
+              @click="handleNavigate('collections')"
+              role="button"
+              tabindex="0"
+            >
+              <div class="metric-card-icon-wrap metric-card-icon-wrap--warning">
+                <Coins class="metric-card-icon" />
+              </div>
+              <div class="metric-card-content">
+                <span class="metric-card-label">Pending Credit</span>
+                <span class="metric-card-value metric-card-value--warning">
+                  {{ summary ? formatCurrency(summary.creditPending) : '₹0' }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Today's Transactions Card -->
+            <div class="metric-card metric-card--success">
+              <div class="metric-card-icon-wrap metric-card-icon-wrap--success">
+                <ShoppingCart class="metric-card-icon" />
+              </div>
+              <div class="metric-card-content">
+                <span class="metric-card-label">Today's Sales</span>
+                <span class="metric-card-value metric-card-value--success">
+                  {{ summary ? `${summary.totalSalesCount} Bills` : '0 Bills' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Action CTA -->
+          <button
+            id="sys-btn-quick-sale"
+            @click="handleNavigate('sales')"
+            class="header-cta-btn"
+          >
+            <ShoppingCart class="header-cta-icon" />
+            <span>New Sale</span>
+          </button>
+        </header>
+
+        <!-- ─── MAIN BODY ──────────────────────────────────────────────── -->
+        <div class="main-body">
+
+          <!-- Success Toast Notification -->
+          <Transition name="toast">
+            <div
+              v-if="successToast"
+              class="toast-notification"
+            >
+              <div class="toast-dot"></div>
+              <span class="toast-message">{{ successToast }}</span>
+              <button @click="successToast = ''" class="toast-close">
+                <X class="toast-close-icon" />
+              </button>
+            </div>
+          </Transition>
+
+          <!-- Error Toast Notification -->
+          <Transition name="toast">
+            <div
+              v-if="errorToast"
+              class="toast-notification toast-notification--error"
+            >
+              <div class="toast-dot toast-dot--error"></div>
+              <span class="toast-message">{{ errorToast }}</span>
+              <button @click="errorToast = ''" class="toast-close">
+                <X class="toast-close-icon" />
+              </button>
+            </div>
+          </Transition>
+
+          <!-- Loading State -->
+          <div v-if="loading" class="skeleton-screen">
+            <div class="skeleton-header">
+              <div class="skeleton-card skeleton-shimmer"></div>
+              <div class="skeleton-card skeleton-shimmer"></div>
+              <div class="skeleton-card skeleton-shimmer"></div>
+            </div>
+            <div class="skeleton-body">
+              <div class="skeleton-row skeleton-shimmer" style="width: 60%"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 90%"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 75%"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 85%"></div>
+              <div class="skeleton-grid">
+                <div class="skeleton-block skeleton-shimmer"></div>
+                <div class="skeleton-block skeleton-shimmer"></div>
+                <div class="skeleton-block skeleton-shimmer"></div>
+              </div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 50%"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 95%"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 70%"></div>
+            </div>
+            <div class="skeleton-footer">
+              <div class="skeleton-dot"></div>
+              <div class="skeleton-row skeleton-shimmer" style="width: 30%"></div>
+            </div>
+          </div>
+
+          <!-- Content Area — same components as main dealer app -->
+          <div v-else class="content-area">
+            <PermissionGuard feature="dashboard">
+              <Overview
+                v-if="activeTab === 'overview'"
+                :summary="summary"
+                :sales="sales"
+                :formatCurrency="formatCurrency"
+                @navigate="handleNavigate"
+                @quickAction="handleQuickAction"
+              />
+            </PermissionGuard>
+
+            <!-- Team Management Tab -->
+            <PermissionGuard feature="dashboard">
+              <div v-if="activeTab === 'team'" class="p-4 md:p-6 space-y-6">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 class="text-2xl font-bold text-slate-800">Team Management</h2>
+                    <p class="text-sm text-slate-500">Manage your sales representatives</p>
+                  </div>
+                  <button
+                    @click="showAddRepModal = true"
+                    class="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition"
+                  >
+                    <UserCircle class="h-5 w-5" />
+                    Add Sales Rep
+                  </button>
+                </div>
+                <DsrManagementPanel ref="dsrRosterRef" @refresh="fetchFullDetails" />
+              </div>
+            </PermissionGuard>
+
+            <PermissionGuard feature="inventory">
+              <Inventory
+                v-if="activeTab === 'inventory'"
+                :products="products"
+                :suppliers="suppliers"
+                :restocks="restocksList"
+                :dsrs="dsrs"
+                :quickActionProduct="quickActionProduct"
+                :formatCurrency="formatCurrency"
+                :onAddProduct="handleAddProduct"
+                :onRestock="handleRestockLogged"
+                :onEditProduct="handleEditProduct"
+                :onDeleteProduct="handleDeleteProduct"
+                :brands="brands"
+                :categories="categories"
+                :onAddBrand="handleAddBrand"
+                :onDeleteBrand="handleDeleteBrand"
+                :onAddCategory="handleAddCategory"
+                :onDeleteCategory="handleDeleteCategory"
+                @refreshData="fetchFullDetails"
+                @clearQuickActionProduct="quickActionProduct = null"
+              />
+            </PermissionGuard>
+
+            <PermissionGuard feature="suppliers">
+              <Suppliers
+                v-if="activeTab === 'suppliers'"
+                :suppliers="suppliers"
+                :categories="categories"
+                :formatCurrency="formatCurrency"
+                :onAddSupplier="handleAddSupplier"
+                :onEditSupplier="handleEditSupplier"
+                :onDeleteSupplier="handleDeleteSupplier"
+                @refreshData="fetchFullDetails"
+              />
+            </PermissionGuard>
+
+            <PermissionGuard feature="sales">
+              <Sales
+                v-if="activeTab === 'sales'"
+                :products="products"
+                :sales="sales"
+                :dsrs="dsrs"
+                :quickActionType="quickActionType"
+                :formatCurrency="formatCurrency"
+                :onAddSale="handleAddSale"
+                :onAddBulkSales="handleAddBulkSales"
+                :onVoidSale="handleVoidSale"
+                :onEditSale="handleEditSale"
+                :onReturnItem="handleReturnSaleItem"
+                @refreshData="fetchFullDetails"
+                @clearQuickActionType="quickActionType = null"
+              />
+            </PermissionGuard>
+
+            <PermissionGuard feature="collections">
+              <Collections
+                v-if="activeTab === 'collections'"
+                :sales="sales"
+                :formatCurrency="formatCurrency"
+                :onCollectPayment="handleCollectPayment"
+                :onCloseWithDue="handleCloseWithDue"
+                @refreshData="fetchFullDetails"
+              />
+            </PermissionGuard>
+
+            <PermissionGuard feature="bad_debt">
+              <BadDebt
+                v-if="activeTab === 'bad-debt'"
+                :sales="sales"
+                :formatCurrency="formatCurrency"
+                @refreshData="fetchFullDetails"
+              />
+            </PermissionGuard>
+
+            <PermissionGuard feature="reports">
+              <Reports
+                v-if="activeTab === 'reports'"
+                :summary="summary"
+                :dsrs="dsrs"
+                :sales="sales"
+                :products="products"
+                :aiResponse="aiResponse"
+                :isAiLoading="isAiLoading"
+                :formatCurrency="formatCurrency"
+                :onEditDsr="handleEditDsr"
+                :onDeleteDsr="handleDeleteDsr"
+                @askGemini="handleAskGemini"
+                @refreshData="fetchFullDetails"
+              />
+            </PermissionGuard>
+          </div>
+        </div>
+
+        <!-- ─── FOOTER — Minimal Status Bar ────────────────────────────── -->
+        <footer class="status-bar">
+          <div class="status-bar-left">
+            <div class="status-dot"></div>
+            <span class="status-text">
+              <strong>{{ activeDealer ? activeDealer.fullName : (dsrPortalDealer?.full_name || 'DSR') }}</strong> — DSR Portal Mode
+            </span>
+          </div>
+          <div class="status-bar-right">
+            <span class="status-terminal">DEALERCORE v3.0</span>
+          </div>
+        </footer>
+
+        <!-- ─── MOBILE BOTTOM NAVIGATION BAR ───────────────────────────── -->
+        <nav class="mobile-bottomnav">
+          <button
+            v-for="item in navItems"
+            :key="item.id"
+            :id="`mobile-nav-${item.id}`"
+            @click="handleNavigate(item.id)"
+            :class="['mobile-bottomnav-item', { 'mobile-bottomnav-item--active': activeTab === item.id }]"
+          >
+            <LayoutDashboard v-if="item.id === 'overview'" class="mobile-bottomnav-icon" />
+            <UserCircle v-else-if="item.id === 'team'" class="mobile-bottomnav-icon" />
+            <Package v-else-if="item.id === 'inventory'" class="mobile-bottomnav-icon" />
+            <Users v-else-if="item.id === 'suppliers'" class="mobile-bottomnav-icon" />
+            <ShoppingCart v-else-if="item.id === 'sales'" class="mobile-bottomnav-icon" />
+            <Coins v-else-if="item.id === 'collections'" class="mobile-bottomnav-icon" />
+            <AlertTriangle v-else-if="item.id === 'bad-debt'" class="mobile-bottomnav-icon" />
+            <FilePieChart v-else-if="item.id === 'reports'" class="mobile-bottomnav-icon" />
+            <span class="mobile-bottomnav-label">{{ item.id === 'overview' ? 'Home' : item.id === 'team' ? 'Team' : item.id === 'inventory' ? 'Inventory' : item.id === 'suppliers' ? 'Suppliers' : item.id === 'sales' ? 'Sales' : item.id === 'collections' ? 'Dues' : 'Reports' }}</span>
+          </button>
+        </nav>
+      </div>
+
+    </div>
+  </template>
+  
+  <!-- Main App - shown when authenticated (SattaBase dealer auth) -->
   <SessionGuard
     v-else
     require-auth

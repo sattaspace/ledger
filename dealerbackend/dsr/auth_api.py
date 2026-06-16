@@ -47,7 +47,6 @@ from django.contrib.auth import authenticate
 import jwt as pyjwt
 
 from users.models import DsrUser
-from dsr.models import DSR
 from dsr.invitation_models import DsrInvitation, DsrDealerAssignment
 from dealer.models import DealerConfig
 from common.dsr_auth_errors import (
@@ -56,7 +55,6 @@ from common.dsr_auth_errors import (
     error_invalid_credentials,
     error_user_not_found,
     error_account_deactivated,
-    error_profile_not_found,
     error_no_dealer_assignment,
     error_phone_exists,
     error_email_exists,
@@ -68,6 +66,16 @@ from common.dsr_auth_errors import (
 )
 # FIX H-6: rate-limit the auth endpoints to deter brute-force / spam.
 from common.rate_limit import rate_limit
+from common.tasks import (
+    send_email_verification,
+    send_dsr_invitation_email,
+    send_dsr_notification_email,
+    send_invitation_accepted_notification,
+    send_invitation_rejected_notification,
+    send_dsr_removed_notification,
+    send_dsr_left_notification,
+    send_welcome_email,
+)
 from dsr.auth_schemas import (
     DsrLoginInput,
     DsrLoginOutput,
@@ -94,6 +102,7 @@ from dsr.auth_schemas import (
     AssignmentOutput,
     AssignmentListOutput,
     LeaveDealerInput,
+    SetPhoneInput,
 )
 
 
@@ -258,16 +267,13 @@ class DsrAuthController:
 
         # DEBUG: Log incoming data
         logger.info(f"[DSR REGISTER] Received registration request: email={data.email}, phone={data.phone}, full_name={data.full_name}")
-        print(f"[DSR REGISTER] Received registration request: email={data.email}, phone={data.phone}, full_name={data.full_name}")
 
         # Check if email already exists (email is primary identifier)
         email_exists = await DsrUser.objects.filter(email__iexact=data.email).aexists()
         logger.info(f"[DSR REGISTER] Email exists check: {email_exists}")
-        print(f"[DSR REGISTER] Email exists check: {email_exists}")
 
         if email_exists:
             logger.warning(f"[DSR REGISTER] Email already registered: {data.email}")
-            print(f"[DSR REGISTER] Email already registered: {data.email}")
             return error_email_exists()
 
         # Create user account (email is required, phone is optional)
@@ -277,9 +283,6 @@ class DsrAuthController:
         # sync_to_async instead so we don't lose atomicity guarantees
         # but stay async-safe.
         from asgiref.sync import sync_to_async
-        from django.db import transaction as _transaction
-
-        print(f"[DSR REGISTER] Creating user with email={data.email}")
         try:
             user = await DsrUser.objects.acreate_user(
                 email=data.email,
@@ -288,41 +291,24 @@ class DsrAuthController:
                 phone=data.phone or "",
                 user_type=DsrUser.TYPE_DSR,
             )
-            print(f"[DSR REGISTER] User created successfully: id={user.id}, email={user.email}")
 
-            # Create DSR profile
-            dsr_id = f"DSR-{str(user.id)[:8].upper()}"
-            print(f"[DSR REGISTER] Creating DSR profile with id={dsr_id}")
-            dsr = await DSR.objects.acreate(
-                id=dsr_id,
-                name=data.full_name,
-                phone=data.phone or "",
-                role=DSR.ROLE_DSR,
-                user=user,
-                email=data.email,
-            )
-            print(f"[DSR REGISTER] DSR profile created successfully: id={dsr.id}")
-
-            # FIX: Link any existing pending invitations to this new DSR profile.
-            # When a dealer invites a DSR by email before the DSR has registered,
-            # the invitation is created with dsr_email but dsr=None. Now that the
+            # FIX DSR-INV-001: Link any existing pending invitations to this new DSR user.
+            # When a dealer invites a DSR by email or phone before the DSR has registered,
+            # the invitation is created with dsr_email/dsr_phone but dsr=None. Now that the
             # DSR has registered, we link those invitations so they appear in the
             # DSR's invitation list.
-            pending_invitations = DsrInvitation.objects.filter(
-                dsr_email__iexact=data.email,
-                status=DsrInvitation.STATUS_PENDING,
-                dsr__isnull=True,  # Only invitations not already linked
-            )
-            linked_count = await pending_invitations.aupdate(dsr=dsr)
+            from django.db.models import Q
+            link_q = Q(dsr__isnull=True, status=DsrInvitation.STATUS_PENDING)
+            email_q = Q(dsr_email__iexact=data.email) if data.email else Q(pk__in=[])
+            phone_q = Q(dsr_phone=data.phone) if data.phone else Q(pk__in=[])
+            pending_invitations = DsrInvitation.objects.filter(link_q & (email_q | phone_q))
+            linked_count = await pending_invitations.aupdate(dsr=user)
             if linked_count > 0:
-                logger.info(f"[DSR REGISTER] Linked {linked_count} pending invitation(s) to new DSR {dsr.id}")
-                print(f"[DSR REGISTER] Linked {linked_count} pending invitation(s) to new DSR {dsr.id}")
+                logger.info(f"[DSR REGISTER] Linked {linked_count} pending invitation(s) to new DSR {user.id} (by email and/or phone)")
 
         except Exception as e:
-            print(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
-            logger.error(f"[DSR REGISTER] ERROR creating user/DSR: {type(e).__name__}: {e}")
-            # Best-effort rollback of the user if the DSR profile insert fails
-            # — avoids leaving a half-created user with no DSR profile.
+            logger.error(f"[DSR REGISTER] ERROR creating user: {type(e).__name__}: {e}")
+            # Best-effort rollback of the user if the insert fails.
             try:
                 if 'user' in locals() and user.pk:
                     await sync_to_async(user.delete)()
@@ -332,6 +318,27 @@ class DsrAuthController:
 
         # Generate tokens
         access, refresh = await agenerate_tokens(user)
+
+        # FIX DSR-005/018: Send email verification after self-registration.
+        # DSRs must verify their email before accepting invitations.
+        # For self-registered users (not via invitation), email is unverified.
+        verification_token = secrets.token_urlsafe(32)
+        await user.aset_email_verification_token(verification_token)
+
+        frontend_url = getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')
+        verification_url = f"{frontend_url}/dsr/verify-email?token={verification_token}"
+
+        send_email_verification.delay(
+            email=user.email,
+            dsr_name=user.full_name or user.email.split('@')[0],
+            verification_url=verification_url,
+        )
+
+        # Also send welcome email
+        send_welcome_email.delay(
+            email=user.email,
+            dsr_name=user.full_name or user.email.split('@')[0],
+        )
 
         return {
             "access": access,
@@ -348,7 +355,7 @@ class DsrAuthController:
                 "created_at": user.created_at,
                 "has_dsr_profile": True,
             },
-            "message": "Registration successful. You can now receive dealer invitations.",
+            "message": "Registration successful. Please verify your email to accept dealer invitations.",
         }
 
     @http_post("/register/{token}", response={200: DsrRegisterOutput, 400: dict, 409: dict, 410: dict})
@@ -358,9 +365,8 @@ class DsrAuthController:
         Register DSR account via invitation token.
 
         This creates:
-        1. DsrUser account (for authentication)
-        2. DSR profile (for business data)
-        3. DsrDealerAssignment (links DSR to dealer)
+        1. DsrUser account (for authentication — IS the DSR after model merge)
+        2. DsrDealerAssignment (links DSR to dealer)
         """
         # Validate invitation token (FIX L-9: hash before lookup)
         try:
@@ -380,55 +386,58 @@ class DsrAuthController:
         # Determine phone (from data or invitation)
         phone = data.phone or invitation.dsr_phone
 
-        # Check if user already exists
-        existing_user = await DsrUser.objects.filter(phone=phone).aexists()
+        # Check if user already exists (by email, since email is primary identifier)
+        existing_user = await DsrUser.objects.filter(email__iexact=invitation.dsr_email).aexists()
         if existing_user:
-            return error_phone_exists()
+            return error_email_exists()
 
-        # Create user account + DSR profile + assignment in one transaction.
-        # FIX M-7 / M-10: any failure rolls back the entire registration so we
-        # don't leave orphaned DsrUser / DSR rows in the DB.
+        # Create user account + assignment in one transaction.
+        # FIX DSR-011: Django's `transaction.atomic()` is a DECORATOR / sync
+        # context manager — `async with` on it raises AttributeError: __aenter__.
+        # Wrap the entire block in sync_to_async so we get true atomicity
+        # without the async-with bug.
+        from asgiref.sync import sync_to_async
         from django.db import transaction as _transaction
 
-        async with _transaction.atomic():
-            user = await DsrUser.objects.acreate_user(
-                phone=phone,
-                password=data.password,
-                full_name=data.full_name,
-                email=invitation.dsr_email or "",
-                user_type=DsrUser.TYPE_DSR,
-            )
+        @sync_to_async
+        def _create_user_and_assignment():
+            with _transaction.atomic():
+                user = DsrUser.objects.create_user(
+                    phone=phone,
+                    password=data.password,
+                    full_name=data.full_name,
+                    email=invitation.dsr_email or "",
+                    user_type=DsrUser.TYPE_DSR,
+                )
 
-            # Create DSR profile
-            dsr_id = f"DSR-{str(user.id)[:8].upper()}"
-            dsr = await DSR.objects.acreate(
-                id=dsr_id,
-                name=data.full_name,
-                phone=phone,
-                role=invitation.role,
-                user=user,
-                email=invitation.dsr_email or "",
-                parent_dsr_id=invitation.parent_dsr_id,
-            )
+                # FIX DSR-005/018: Auto-verify email for invitation-based
+                # registration — the user proved email ownership by clicking
+                # the invitation link sent to their email address.
+                user.email_verified = True
+                user.email_verified_at = timezone.now()
+                user.save(update_fields=["email_verified", "email_verified_at"])
 
-            # Create dealer assignment (FIX M-13: ensure id fits 100-char PK)
-            assignment_id = f"ASSIGN-{dsr_id}-{invitation.dealer.username}"[:100]
-            await DsrDealerAssignment.objects.acreate(
-                id=assignment_id,
-                dsr=dsr,
-                dealer=invitation.dealer,
-                role=invitation.role,
-                permissions=invitation.permissions,
-                parent_dsr_id=invitation.parent_dsr_id,
-                status=DsrDealerAssignment.STATUS_ACTIVE,
-            )
+                # Create dealer assignment (FIX M-13: ensure id fits 100-char PK)
+                assignment_id = f"ASSIGN-{user.id}-{invitation.dealer.username}"[:100]
+                DsrDealerAssignment.objects.create(
+                    id=assignment_id,
+                    dsr=user,
+                    dealer=invitation.dealer,
+                    role=invitation.role,
+                    permissions=invitation.permissions,
+                    parent_dsr_id=invitation.parent_dsr_id,
+                    status=DsrDealerAssignment.STATUS_ACTIVE,
+                )
 
-            # Mark invitation as accepted (use async version)
-            await invitation.aaccept(dsr)
+                # Mark invitation as accepted
+                invitation.accept(user)
 
-            # Set selected dealer
-            user.selected_dealer = invitation.dealer
-            await user.asave(update_fields=["selected_dealer"])
+                # FIX DSR-007: No longer persist selected_dealer on user model.
+                # The frontend handles dealer selection via X-Dealer-Username header.
+
+                return user
+
+        user = await _create_user_and_assignment()
 
         # Generate tokens
         access, refresh = await agenerate_tokens(user)
@@ -471,20 +480,15 @@ class DsrAuthController:
         Error Codes:
         - invalid_credentials: Wrong email or password
         - account_deactivated: User account is disabled
-        - profile_not_found: DSR profile missing
         - no_dealer_assignment: DSR not assigned to any dealer
         """
         import logging
         logger = logging.getLogger(__name__)
 
-        print(f"[DSR LOGIN] Login attempt with email: {data.email}")
-
         # Find user by email (email is the primary identifier)
         try:
             user = await DsrUser.objects.aget(email__iexact=data.email)
-            print(f"[DSR LOGIN] Found user by email: {user.id}")
         except DsrUser.DoesNotExist:
-            print(f"[DSR LOGIN] User not found by email: {data.email}")
             # FIX H-5: timing-attack mitigation. Run a dummy check_password
             # against a static PBKDF2 hash so a missing email takes the same
             # wall-clock time as a wrong password for an existing email -
@@ -497,29 +501,16 @@ class DsrAuthController:
 
         # Check password
         if not user.check_password(data.password):
-            print(f"[DSR LOGIN] Invalid password for user: {user.id}")
             return error_invalid_credentials()
-
-        print(f"[DSR LOGIN] Password correct for user: {user.id}")
 
         # Check if active
         if not user.is_active:
-            print(f"[DSR LOGIN] User account is deactivated: {user.id}")
             return error_account_deactivated()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-            print(f"[DSR LOGIN] Found DSR profile: {dsr.id}")
-        except DSR.DoesNotExist:
-            print(f"[DSR LOGIN] DSR profile NOT FOUND for user: {user.id}")
-            print(f"[DSR LOGIN] User details: email={user.email}, phone={user.phone}, full_name={user.full_name}")
-            return error_profile_not_found()
-
-        # Get assigned dealers
+        # Get assigned dealers (DsrUser IS the DSR after model merge)
         dealers = []
         async for assignment in DsrDealerAssignment.objects.filter(
-            dsr=dsr,
+            dsr=user,
             status=DsrDealerAssignment.STATUS_ACTIVE,
         ).select_related("dealer"):
             dealers.append({
@@ -534,7 +525,6 @@ class DsrAuthController:
         # If DSR has no dealer assignments, still allow login
         # They can view pending invitations in their dashboard
         if not dealers:
-            print(f"[DSR LOGIN] No dealer assignments for DSR: {dsr.id}")
             return {
                 "access": access,
                 "refresh": refresh,
@@ -556,11 +546,12 @@ class DsrAuthController:
                 "awaiting_invitation": True,  # Flag for frontend
             }
 
-        # If only one dealer, auto-select it
+        # FIX DSR-007: No longer auto-persist selected_dealer on user model.
+        # The frontend receives the dealer list and handles selection via
+        # X-Dealer-Username header on subsequent requests.
         require_dealer_selection = len(dealers) > 1
-        if len(dealers) == 1:
-            user.selected_dealer_id = dealers[0]["username"]
-            await user.asave(update_fields=["selected_dealer"])
+        # Hint to frontend which dealer to auto-select if only one
+        auto_select_dealer = dealers[0] if len(dealers) == 1 else None
 
         # Update last login
         user.last_login = timezone.now()
@@ -583,6 +574,7 @@ class DsrAuthController:
             },
             "dealers": dealers,
             "require_dealer_selection": require_dealer_selection,
+            "auto_select_dealer": auto_select_dealer,
         }
 
     @http_post("/select-dealer", response={200: DealerSelectionOutput, 401: dict, 403: dict, 404: dict})
@@ -590,7 +582,11 @@ class DsrAuthController:
         """
         Select dealer context for multi-dealer DSR.
 
-        Updates the user's selected_dealer and returns new tokens.
+        FIX DSR-007: No longer persists the selection to DsrUser.selected_dealer.
+        The frontend sets X-Dealer-Username header on subsequent requests.
+        This endpoint validates the selection against DsrDealerAssignment and
+        returns new tokens with dealer context. The frontend is responsible
+        for persisting the selection in localStorage.
         """
         user = await aget_user_from_token(request)
         if not user:
@@ -603,13 +599,8 @@ class DsrAuthController:
             return dsr_error_response("Dealer not found", "dealer_not_found", 404)
 
         # Check if DSR is assigned to this dealer
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
-
         assignment = await DsrDealerAssignment.objects.filter(
-            dsr=dsr,
+            dsr=user,
             dealer=dealer,
             status=DsrDealerAssignment.STATUS_ACTIVE,
         ).afirst()
@@ -621,9 +612,8 @@ class DsrAuthController:
                 403
             )
 
-        # Update selected dealer
-        user.selected_dealer = dealer
-        await user.asave(update_fields=["selected_dealer"])
+        # FIX DSR-007: No DB write — just validate and return tokens.
+        # The frontend persists selection in localStorage + X-Dealer-Username header.
 
         # Generate new tokens with dealer context
         access, refresh = await agenerate_tokens(user)
@@ -699,30 +689,22 @@ class DsrAuthController:
         if not user:
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            dsr = None
-
-        # Get dealers
+        # Get dealers (DsrUser IS the DSR after model merge)
         dealers = []
-        selected_dealer = None
+        # FIX DSR-007: No server-side selected_dealer. The frontend
+        # determines the active dealer from localStorage/X-Dealer-Username.
+        # We return the full list so the frontend can decide.
 
-        if dsr:
-            async for assignment in DsrDealerAssignment.objects.filter(
-                dsr=dsr,
-                status=DsrDealerAssignment.STATUS_ACTIVE,
-            ).select_related("dealer"):
-                dealer_info = {
-                    "username": assignment.dealer.username,
-                    "full_name": assignment.dealer.full_name,
-                    "business_name": assignment.dealer.business_name,
-                }
-                dealers.append(dealer_info)
-
-                if user.selected_dealer_id == assignment.dealer.username:
-                    selected_dealer = dealer_info
+        async for assignment in DsrDealerAssignment.objects.filter(
+            dsr=user,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related("dealer"):
+            dealer_info = {
+                "username": assignment.dealer.username,
+                "full_name": assignment.dealer.full_name,
+                "business_name": assignment.dealer.business_name,
+            }
+            dealers.append(dealer_info)
 
         return {
             "user": {
@@ -735,17 +717,23 @@ class DsrAuthController:
                 "phone_verified": user.phone_verified,
                 "email_verified": user.email_verified,
                 "created_at": user.created_at,
-                "has_dsr_profile": dsr is not None,
+                "has_dsr_profile": True,
             },
-            "dsr_id": dsr.id if dsr else None,
-            "dsr_name": dsr.name if dsr else "",
-            "dsr_role": dsr.role if dsr else "",
+            "dsr_id": str(user.id),
+            "dsr_name": user.full_name,
+            # FIX DSR-004: role is per-dealer, not global on DSR model.
+            # Return the role from the first active assignment if available.
+            "dsr_role": "",  # Deprecated — use assignment.role from /dsr/assignments
             "dealers": dealers,
-            "selected_dealer": selected_dealer,
-            "skills": user.skills,
-            "experience_years": user.experience_years,
-            "rating": float(user.rating),
-            "total_jobs": user.total_jobs,
+            # FIX DSR-007: No server-side selected_dealer; frontend decides.
+            "selected_dealer": None,
+            # FIX DSR-008: Marketplace fields moved to DsrMarketplaceProfile.
+            # Return defaults for backward API compatibility; when marketplace
+            # feature is implemented, fetch from user.marketplace_profile.
+            "skills": [],
+            "experience_years": 0,
+            "rating": 0.0,
+            "total_jobs": 0,
         }
 
     @http_put("/me", response={200: DsrProfileOutput, 401: dict})
@@ -764,21 +752,11 @@ class DsrAuthController:
             user.avatar_url = data.avatar_url
         if data.bio is not None:
             user.bio = data.bio
-        if data.skills is not None:
-            user.skills = data.skills
-        if data.experience_years is not None:
-            user.experience_years = data.experience_years
+        # FIX DSR-008: skills and experience_years moved to DsrMarketplaceProfile.
+        # These fields are no longer on DsrUser. When marketplace is implemented,
+        # update the marketplace profile instead.
 
         await user.asave()
-
-        # Sync DSR profile if exists
-        try:
-            dsr = await DSR.objects.aget(user=user)
-            if data.full_name:
-                dsr.name = data.full_name
-                await dsr.asave(update_fields=["name"])
-        except DSR.DoesNotExist:
-            dsr = None
 
         return await self.get_profile(request)
 
@@ -798,6 +776,33 @@ class DsrAuthController:
         await user.asave()
 
         return {"message": "Password changed successfully"}
+
+    @http_post("/set-phone", response={200: MessageOutput, 400: dict, 401: dict})
+    async def set_phone(self, request: HttpRequest, data: SetPhoneInput):
+        """
+        Set phone number for DSR account.
+        
+        FIX DSR-017: Phone number is required after accepting the first
+        invitation. DSRs who registered via email-only invitations may not
+        have a phone on file. This endpoint allows them to add one.
+        """
+        user = await aget_user_from_token(request)
+        if not user:
+            return error_auth_required()
+
+        phone = data.phone.strip()
+        if not phone:
+            return dsr_error_response("Phone number is required", "phone_required", 400)
+
+        # Check if phone is already taken by another user
+        existing = await DsrUser.objects.filter(phone=phone).exclude(id=user.id).aexists()
+        if existing:
+            return error_phone_exists()
+
+        user.phone = phone
+        await user.asave(update_fields=["phone"])
+
+        return {"message": "Phone number updated successfully"}
 
     @http_post("/password-reset/request", response=MessageOutput)
     @rate_limit(
@@ -828,9 +833,19 @@ class DsrAuthController:
             # FIX H-9: use async setter (model now hashes the token - see M-4)
             await user.aset_password_reset_token(token)
 
-            # TODO: Send SMS or email with reset link
-            # The message should contain:
-            # {FRONTEND_URL}/dsr/reset-password?token={token}
+            # Send password reset email via Celery
+            from django.conf import settings
+            from common.tasks import send_password_reset_email
+
+            reset_url = (
+                f"{settings.DEALER_FRONTEND_URL}/dsr/reset-password"
+                f"?token={token}"
+            )
+            send_password_reset_email.delay(
+                email=user.email,
+                reset_url=reset_url,
+                expires_hours=1,
+            )
 
         # Always return success to prevent enumeration
         return {"message": "If the account exists, a password reset link has been sent."}
@@ -858,6 +873,80 @@ class DsrAuthController:
 
         return {"message": "Password reset successful"}
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # FIX DSR-005/018: EMAIL VERIFICATION ENDPOINTS
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @http_post("/verify-email", response={200: MessageOutput, 400: dict, 410: dict})
+    async def verify_email(self, request: HttpRequest, token: str):
+        """
+        Verify DSR email address.
+        
+        FIX DSR-005/018: After self-registration, DSRs receive a verification
+        email with a tokenized link. This endpoint validates the token and
+        marks the email as verified. Only after verification can DSRs accept
+        dealer invitations.
+        """
+        if not token:
+            return dsr_error_response("Verification token is required", "token_required", 400)
+
+        # Look up user by hashed token
+        from users.models import DsrUser as _DU
+        hashed = _DU._hash_reset_token(token)
+        try:
+            user = await DsrUser.objects.aget(email_verification_token=hashed)
+        except DsrUser.DoesNotExist:
+            return dsr_error_response("Invalid or expired verification token", "invalid_token", 400)
+
+        # Check if already verified
+        if user.email_verified:
+            return {"message": "Email already verified"}
+
+        # Check if token is expired
+        if user.email_verification_expires and timezone.now() > user.email_verification_expires:
+            return dsr_error_response("Verification token has expired. Please request a new one.", "token_expired", 410)
+
+        # Verify the token (constant-time compare)
+        if not user.is_email_verification_valid(token):
+            return dsr_error_response("Invalid verification token", "invalid_token", 400)
+
+        # Mark as verified
+        from asgiref.sync import sync_to_async
+        await sync_to_async(user.verify_email)()
+
+        return {"message": "Email verified successfully. You can now accept dealer invitations."}
+
+    @http_post("/resend-verification", response=MessageOutput)
+    @rate_limit("dsr_resend_verification", limit=3, period=3600, scope="ip")
+    async def resend_verification(self, request: HttpRequest):
+        """
+        Resend email verification link.
+        
+        FIX DSR-005/018: Allows DSRs who haven't verified their email to
+        request a new verification link. Rate-limited to 3 per hour per IP.
+        """
+        user = await aget_user_from_token(request)
+        if not user:
+            return error_auth_required()
+
+        if user.email_verified:
+            return {"message": "Email already verified"}
+
+        # Generate new verification token
+        verification_token = secrets.token_urlsafe(32)
+        await user.aset_email_verification_token(verification_token)
+
+        frontend_url = getattr(settings, 'DEALER_FRONTEND_URL', 'http://localhost:4323')
+        verification_url = f"{frontend_url}/dsr/verify-email?token={verification_token}"
+
+        send_email_verification.delay(
+            email=user.email,
+            dsr_name=user.full_name or user.email.split('@')[0],
+            verification_url=verification_url,
+        )
+
+        return {"message": "Verification email sent. Please check your inbox."}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DSR INVITATIONS CONTROLLER
@@ -874,42 +963,79 @@ class DsrInvitationController:
     @http_get("", response={200: InvitationListOutput, 401: dict})
     async def list_invitations(self, request: HttpRequest):
         """List all invitations for the authenticated DSR."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         user = await aget_user_from_token(request)
         if not user:
+            logger.warning("[DSR INVITATIONS] aget_user_from_token returned None — no valid DSR auth")
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
+        logger.info(f"[DSR INVITATIONS] Fetching invitations for user={user.email} (id={user.id})")
 
-        # Get invitations by status
+        # Get invitations by status (DsrUser IS the DSR after model merge)
         pending = []
         accepted = []
         rejected = []
 
-        # FIX: Also check for invitations by email where dsr field is not yet set.
-        # This handles the case where a dealer invited the DSR by email before
-        # the DSR registered. The invitation has dsr_email set but dsr=None.
+        # FIX DSR-INV-001: Comprehensive invitation matching.
+        # A DSR should see invitations that belong to them via ANY of:
+        #   1. dsr FK points to this user (set when dealer invited a registered DSR)
+        #   2. dsr_email matches user's email AND dsr FK is NULL
+        #      (dealer invited by email before DSR registered)
+        #   3. dsr_phone matches user's phone AND dsr FK is NULL
+        #      (dealer invited by phone before DSR registered)
+        #
+        # Previous query missed case 3 — if the dealer invited by phone only
+        # (or the DSR registered with a different email), the invitation was
+        # invisible in the DSR panel despite being visible in the dealer panel.
         from django.db.models import Q
+
+        # Build match conditions
+        match_q = Q(dsr=user)  # Direct FK link
+
+        # Email-based match (dsr FK not yet linked)
+        if user.email:
+            match_q |= Q(dsr_email__iexact=user.email, dsr__isnull=True)
+
+        # Phone-based match (dsr FK not yet linked)
+        # This is critical for markets where phone is the primary identifier.
+        if user.phone:
+            match_q |= Q(dsr_phone=user.phone, dsr__isnull=True)
+
+        logger.info(
+            f"[DSR INVITATIONS] Query for user={user.email} phone={user.phone}: "
+            f"match_q conditions include dsr FK, email match, phone match"
+        )
+
+        # FIX DSR-INV-002: Also auto-link any unlinked matching invitations
+        # to this user's dsr FK so future queries are simpler and faster.
+        link_q = Q(pk__in=[])  # Start with empty match
+        if user.email:
+            link_q = link_q | Q(dsr_email__iexact=user.email)
+        if user.phone:
+            link_q = link_q | Q(dsr_phone=user.phone)
+        unlinked = DsrInvitation.objects.filter(
+            dsr__isnull=True,
+            status=DsrInvitation.STATUS_PENDING,
+        ).filter(link_q)
+        linked_count = await unlinked.aupdate(dsr=user)
+        if linked_count > 0:
+            logger.info(
+                f"[DSR INVITATIONS] Auto-linked {linked_count} pending "
+                f"invitation(s) to user={user.email}"
+            )
+
         async for inv in DsrInvitation.objects.filter(
-            Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True)
+            match_q
         ).select_related("dealer").order_by("-created_at"):
             inv_data = {
                 "id": inv.id,
-                # NOTE: the raw `token` IS returned here for the
-                # already-authenticated DSR. Risk is bounded because:
-                #   1. The endpoint requires a valid JWT (IsJwtAuthenticated
-                #      applied at controller level via `permissions`).
-                #   2. The filter `dsr=dsr` restricts results to the calling
-                #      user's own invitations - they can't see tokens for
-                #      invitations belonging to other DSRs.
-                #   3. The frontend needs the token to call /accept/{token}.
-                # If you later add a "accept by id" endpoint that resolves
-                # id → token server-side, the token field can be removed
-                # here without breaking the accept flow.
-                "token": inv.token,
+                # FIX DSR-009: Removed `token` field from response. Since L-9 fix,
+                # invitation.token stores a SHA-256 hash, not the raw token. Returning
+                # the hash is useless for the frontend (it can't be used for accept),
+                # and the accept-by-ID endpoint (/{invitation_id}/accept) is the
+                # correct flow — no token needed.
                 "dealer": {
                     "username": inv.dealer.username,
                     "full_name": inv.dealer.full_name,
@@ -930,34 +1056,51 @@ class DsrInvitationController:
             elif inv.status == DsrInvitation.STATUS_REJECTED:
                 rejected.append(inv_data)
 
+        logger.info(
+            f"[DSR INVITATIONS] Found {len(pending)} pending, "
+            f"{len(accepted)} accepted, {len(rejected)} rejected "
+            f"for user={user.email}"
+        )
+
         return {
             "pending": pending,
             "accepted": accepted,
             "rejected": rejected,
         }
 
-    @http_post("/{invitation_id}/accept", response={200: AcceptInvitationOutput, 400: dict, 401: dict, 404: dict, 410: dict})
+    @http_post("/{invitation_id}/accept", response={200: AcceptInvitationOutput, 400: dict, 401: dict, 403: dict, 404: dict, 410: dict})
     async def accept_invitation(self, request: HttpRequest, invitation_id: str):
-        """Accept a dealer invitation."""
+        """Accept a dealer invitation.
+        
+        FIX DSR-005/018: Requires email verification before acceptance.
+        Self-registered DSRs must verify their email first.
+        DSRs registered via invitation token are auto-verified (they proved
+        email ownership by using the invitation token sent to their email).
+        """
         user = await aget_user_from_token(request)
         if not user:
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
+        # FIX DSR-005/018: Check email verification before accepting
+        if not user.email_verified:
+            return dsr_error_response(
+                "Please verify your email address before accepting invitations.",
+                "email_not_verified",
+                403
+            )
 
-        # Get invitation
-        # FIX: Also check for invitations by email where dsr field is not yet set.
-        # This handles the case where a dealer invited the DSR by email before
-        # the DSR registered.
+        # FIX DSR-INV-001: Also check for invitations by email AND phone
+        # where dsr field is not yet set. This handles the case where a dealer
+        # invited the DSR before the DSR registered.
         from django.db.models import Q
+        ownership_q = Q(dsr=user)
+        if user.email:
+            ownership_q |= Q(dsr_email__iexact=user.email, dsr__isnull=True)
+        if user.phone:
+            ownership_q |= Q(dsr_phone=user.phone, dsr__isnull=True)
         try:
             invitation = await DsrInvitation.objects.select_related("dealer").aget(
-                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) &
-                (Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True))
+                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) & ownership_q
             )
         except DsrInvitation.DoesNotExist:
             return dsr_error_response(
@@ -974,7 +1117,7 @@ class DsrInvitationController:
 
         # Check if already assigned
         existing = await DsrDealerAssignment.objects.filter(
-            dsr=dsr,
+            dsr=user,
             dealer=invitation.dealer,
         ).aexists()
 
@@ -985,10 +1128,10 @@ class DsrInvitationController:
                 400
             )
 
-        # Create assignment
+        # Create assignment (FIX: ensure id fits 100-char PK like the sync path)
         assignment = await DsrDealerAssignment.objects.acreate(
-            id=f"ASSIGN-{dsr.id}-{invitation.dealer.username}",
-            dsr=dsr,
+            id=f"ASSIGN-{user.id}-{invitation.dealer.username}"[:100],
+            dsr=user,
             dealer=invitation.dealer,
             role=invitation.role,
             permissions=invitation.permissions,
@@ -996,15 +1139,25 @@ class DsrInvitationController:
         )
 
         # Mark invitation as accepted (use async version)
-        await invitation.aaccept(dsr)
+        await invitation.aaccept(user)
 
-        # Set as selected dealer if first assignment
-        if not user.selected_dealer:
-            user.selected_dealer = invitation.dealer
-            await user.asave(update_fields=["selected_dealer"])
+        # FIX DSR-007: No server-side selected_dealer to set.
+        # The frontend handles dealer selection entirely via localStorage.
+
+        # FIX DSR-019: Notify dealer about invitation acceptance
+        send_invitation_accepted_notification.delay(
+            dealer_email=invitation.dealer.username,
+            dealer_name=invitation.dealer.full_name or invitation.dealer.username,
+            dsr_name=user.full_name,
+            dsr_email=user.email,
+            role=invitation.role,
+        )
 
         # Generate new tokens
         access, refresh = await agenerate_tokens(user)
+
+        # FIX DSR-017: Flag if phone number is missing after first acceptance
+        phone_required = not user.phone
 
         return {
             "access": access,
@@ -1017,6 +1170,7 @@ class DsrInvitationController:
             "role": invitation.role,
             "permissions": invitation.permissions,
             "message": "Invitation accepted",
+            "phone_required": phone_required,
         }
 
     @http_post("/{invitation_id}/reject", response={200: MessageOutput, 401: dict, 404: dict})
@@ -1026,19 +1180,16 @@ class DsrInvitationController:
         if not user:
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
-
-        # Get invitation
-        # FIX: Also check for invitations by email where dsr field is not yet set.
+        # FIX DSR-INV-001: Also check for invitations by email AND phone
         from django.db.models import Q
+        ownership_q = Q(dsr=user)
+        if user.email:
+            ownership_q |= Q(dsr_email__iexact=user.email, dsr__isnull=True)
+        if user.phone:
+            ownership_q |= Q(dsr_phone=user.phone, dsr__isnull=True)
         try:
             invitation = await DsrInvitation.objects.aget(
-                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) &
-                (Q(dsr=dsr) | Q(dsr_email__iexact=dsr.email, dsr__isnull=True))
+                Q(id=invitation_id) & Q(status=DsrInvitation.STATUS_PENDING) & ownership_q
             )
         except DsrInvitation.DoesNotExist:
             return dsr_error_response(
@@ -1050,7 +1201,14 @@ class DsrInvitationController:
         # Reject invitation (use async version)
         await invitation.areject()
 
-        # TODO: Notify dealer about rejection
+        # FIX DSR-019: Notify dealer about rejection
+        send_invitation_rejected_notification.delay(
+            dealer_email=invitation.dealer.username,  # Dealer username may be their email
+            dealer_name=invitation.dealer.full_name or invitation.dealer.username,
+            dsr_name=user.full_name,
+            dsr_email=user.email,
+            role=invitation.role,
+        )
 
         return {"message": "Invitation rejected"}
 
@@ -1074,19 +1232,13 @@ class DsrAssignmentController:
         if not user:
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
-
-        # Get assignments by status
+        # Get assignments by status (DsrUser IS the DSR after model merge)
         active = []
         removed = []
         left = []
 
         async for assignment in DsrDealerAssignment.objects.filter(
-            dsr=dsr
+            dsr=user
         ).select_related("dealer").order_by("-assigned_at"):
             assignment_data = {
                 "id": assignment.id,
@@ -1122,17 +1274,11 @@ class DsrAssignmentController:
         if not user:
             return error_auth_required()
 
-        # Get DSR profile
-        try:
-            dsr = await DSR.objects.aget(user=user)
-        except DSR.DoesNotExist:
-            return error_profile_not_found()
-
-        # Get assignment
+        # Get assignment (DsrUser IS the DSR after model merge)
         try:
             assignment = await DsrDealerAssignment.objects.aget(
                 id=assignment_id,
-                dsr=dsr,
+                dsr=user,
                 status=DsrDealerAssignment.STATUS_ACTIVE,
             )
         except DsrDealerAssignment.DoesNotExist:
@@ -1148,13 +1294,13 @@ class DsrAssignmentController:
 
         # Update current DSR sales to show left status
         await SaleRecord.objects.filter(
-            dsr=dsr,
+            dsr=user,
             dealer=dealer
         ).aupdate(dsr_status='left')
 
         # Update original DSR sales to show left status
         await SaleRecord.objects.filter(
-            original_dsr=dsr,
+            original_dsr=user,
             dealer=dealer
         ).aupdate(original_dsr_status='left')
 
@@ -1162,11 +1308,16 @@ class DsrAssignmentController:
         reason = data.reason if data else None
         await assignment.adeactivate_by_dsr(reason or "")
 
-        # Clear selected dealer if this was the selected one
-        if user.selected_dealer_id == assignment.dealer.username:
-            user.selected_dealer = None
-            await user.asave(update_fields=["selected_dealer"])
+        # FIX DSR-007: No server-side selected_dealer to clear.
+        # The frontend handles dealer selection entirely via localStorage.
 
-        # TODO: Notify dealer
+        # FIX DSR-019: Notify dealer about DSR leaving
+        send_dsr_left_notification.delay(
+            dealer_email=dealer.username,
+            dealer_name=dealer.full_name or dealer.username,
+            dsr_name=user.full_name,
+            dsr_email=user.email,
+            reason=reason or "",
+        )
 
         return {"message": f"Left {assignment.dealer.full_name} successfully"}

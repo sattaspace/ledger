@@ -6,7 +6,8 @@
  * - View active DSRs with roles and permissions
  * - View pending invitations
  * - View removed/left DSRs
- * - Update DSR permissions
+ * - Update DSR permissions (FIX DSR-012: full permission editor)
+ * - Update DSR role and commission rate
  * - Remove DSR from team
  * - Revoke pending invitations
  */
@@ -25,41 +26,122 @@ import {
   Shield,
   UserX,
   UserCheck,
-  ChevronDown
+  ChevronDown,
+  RotateCcw
 } from 'lucide-vue-next';
 import apiClient from '../services/apiClient';
 
 // Types
 interface DsrAssignment {
   id: string;
-  dsr_id: string;
-  dsr_name: string;
-  dsr_phone: string;
-  dsr_email: string;
+  dsrId: string;
+  dsrName: string;
+  dsrPhone: string;
+  dsrEmail: string;
   role: string;
   permissions: Record<string, any>;
-  assigned_at: string;
-  commission_rate: number | null;
-  has_account: boolean;
+  assignedAt: string;
+  commissionRate: number | null;
+  hasAccount: boolean;
 }
 
 interface PendingInvitation {
   id: string;
-  dsr_phone: string;
-  dsr_email: string;
+  dsrPhone: string;
+  dsrEmail: string;
   role: string;
-  created_at: string;
-  expires_at: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 interface RemovedDsr {
   id: string;
-  dsr_id: string;
-  dsr_name: string;
+  dsrId: string;
+  dsrName: string;
   role: string;
-  removed_at: string;
-  removal_reason: string;
+  removedAt: string;
+  removalReason: string;
 }
+
+// ─── Permission Editor Configuration ────────────────────────────────────
+// FIX DSR-012: Full permission editor replacing "coming soon" placeholder.
+// The backend permissions JSON has this structure:
+//   { "dashboard": {"view": true}, "inventory": {"view": true, "edit": false, "delete": false}, ... }
+
+interface PermissionModule {
+  key: string;
+  label: string;
+  icon: string;
+  actions: { key: string; label: string }[];
+}
+
+const PERMISSION_MODULES: PermissionModule[] = [
+  {
+    key: 'dashboard',
+    label: 'Dashboard',
+    icon: '📊',
+    actions: [{ key: 'view', label: 'View' }],
+  },
+  {
+    key: 'inventory',
+    label: 'Inventory',
+    icon: '📦',
+    actions: [
+      { key: 'view', label: 'View' },
+      { key: 'edit', label: 'Edit' },
+      { key: 'delete', label: 'Delete' },
+    ],
+  },
+  {
+    key: 'sales',
+    label: 'Sales',
+    icon: '🧾',
+    actions: [
+      { key: 'view', label: 'View' },
+      { key: 'edit', label: 'Create/Edit' },
+      { key: 'delete', label: 'Void/Delete' },
+    ],
+  },
+  {
+    key: 'collections',
+    label: 'Collections',
+    icon: '💰',
+    actions: [
+      { key: 'view', label: 'View' },
+      { key: 'edit', label: 'Record Payments' },
+    ],
+  },
+  {
+    key: 'suppliers',
+    label: 'Suppliers',
+    icon: '🏪',
+    actions: [
+      { key: 'view', label: 'View' },
+      { key: 'edit', label: 'Edit' },
+    ],
+  },
+  {
+    key: 'reports',
+    label: 'Reports',
+    icon: '📈',
+    actions: [
+      { key: 'view', label: 'View' },
+      { key: 'export', label: 'Export' },
+    ],
+  },
+];
+
+const SIMPLE_PERMISSIONS = [
+  { key: 'print', label: 'Print Receipts/Invoices', icon: '🖨️' },
+  { key: 'manage_dsrs', label: 'Manage Team Members', icon: '👥' },
+];
+
+const ROLE_OPTIONS = [
+  { value: 'DSR', label: 'DSR' },
+  { value: 'Senior_DSR', label: 'Senior DSR' },
+  { value: 'Manager', label: 'Manager' },
+  { value: 'Collector', label: 'Order Collector' },
+];
 
 // State
 const activeDsrs = ref<DsrAssignment[]>([]);
@@ -73,6 +155,9 @@ const activeTab = ref<'active' | 'pending' | 'removed'>('active');
 const editingDsr = ref<DsrAssignment | null>(null);
 const showPermissionModal = ref(false);
 const permissionLoading = ref(false);
+const editedPermissions = ref<Record<string, any>>({});
+const editedRole = ref('');
+const editedCommissionRate = ref<number | null>(null);
 
 // Remove confirmation state
 const removingDsr = ref<DsrAssignment | null>(null);
@@ -98,23 +183,16 @@ async function fetchData() {
   error.value = '';
 
   try {
-    // FIX snake/camel: apiClient auto-converts backend snake_case keys to
-    // camelCase. Previously read `response.pending_invitations` which was
-    // always undefined after conversion → Pending tab showed 0 even with
-    // real pending invitations.
     const response = await apiClient.get<{
       active: DsrAssignment[];
       pendingInvitations: PendingInvitation[];
       removed: RemovedDsr[];
     }>('/dealer/dsr');
 
-    activeDsrs.value = response.active || [];
-    pendingInvitations.value = response.pendingInvitations || [];
-    removedDsrs.value = response.removed || [];
+    activeDsrs.value = response.data.active || [];
+    pendingInvitations.value = response.data.pendingInvitations || [];
+    removedDsrs.value = response.data.removed || [];
   } catch (err: any) {
-    // FIX error reporting: apiClient throws `ApiError` with shape
-    // `{ status, message, data }`, NOT Axios's `{ response: { data } }`.
-    // The previous code always fell through to the generic fallback.
     console.error('Failed to fetch DSR data:', err);
     const status = err?.status ?? err?.response?.status;
     const detail = err?.data?.detail ?? err?.response?.data?.detail;
@@ -143,6 +221,7 @@ function getRoleBadgeClass(role: string): string {
     case 'Senior_DSR':
       return 'bg-blue-100 text-blue-700';
     case 'Order Collector':
+    case 'Collector':
       return 'bg-amber-100 text-amber-700';
     default:
       return 'bg-emerald-100 text-emerald-700';
@@ -160,10 +239,43 @@ function formatRole(role: string): string {
   }
 }
 
-// Permission editing
+// ─── Permission Editing ───────────────────────────────────────────────
+
 function openPermissionEditor(dsr: DsrAssignment) {
   editingDsr.value = { ...dsr };
+  // Deep-clone the permissions so edits don't mutate the source
+  editedPermissions.value = JSON.parse(JSON.stringify(dsr.permissions || {}));
+  editedRole.value = dsr.role;
+  editedCommissionRate.value = dsr.commissionRate;
   showPermissionModal.value = true;
+}
+
+function getPermAction(moduleKey: string, actionKey: string): boolean {
+  const mod = editedPermissions.value[moduleKey];
+  if (mod === undefined || mod === null) return false;
+  if (typeof mod === 'boolean') return mod;
+  return !!mod[actionKey];
+}
+
+function setPermAction(moduleKey: string, actionKey: string, value: boolean) {
+  if (!editedPermissions.value[moduleKey] || typeof editedPermissions.value[moduleKey] === 'boolean') {
+    editedPermissions.value[moduleKey] = {};
+  }
+  editedPermissions.value[moduleKey][actionKey] = value;
+}
+
+function getSimplePerm(key: string): boolean {
+  return !!editedPermissions.value[key];
+}
+
+function setSimplePerm(key: string, value: boolean) {
+  editedPermissions.value[key] = value;
+}
+
+function resetToRoleDefaults() {
+  // Clear edited permissions; sending `permissions: null` tells the backend
+  // to regenerate from DEFAULT_PERMISSIONS for the current role
+  editedPermissions.value = {};
 }
 
 async function savePermissions() {
@@ -172,21 +284,41 @@ async function savePermissions() {
   permissionLoading.value = true;
   
   try {
-    await apiClient.put(`/dealer/dsr/assignments/${editingDsr.value.id}`, {
-      permissions: editingDsr.value.permissions
-    });
+    const payload: Record<string, any> = {
+      permissions: Object.keys(editedPermissions.value).length > 0
+        ? editedPermissions.value
+        : null,
+    };
+    
+    // Include role and commission if changed
+    if (editedRole.value !== editingDsr.value.role) {
+      payload.role = editedRole.value;
+    }
+    if (editedCommissionRate.value !== editingDsr.value.commissionRate) {
+      payload.commissionRate = editedCommissionRate.value;
+    }
+    
+    await apiClient.put(`/dealer/dsr/assignments/${editingDsr.value.id}`, payload);
     
     // Update local data
     const index = activeDsrs.value.findIndex(d => d.id === editingDsr.value!.id);
     if (index >= 0) {
-      activeDsrs.value[index] = { ...editingDsr.value };
+      activeDsrs.value[index] = {
+        ...editingDsr.value,
+        permissions: Object.keys(editedPermissions.value).length > 0
+          ? { ...editedPermissions.value }
+          : editingDsr.value.permissions,
+        role: editedRole.value,
+        commissionRate: editedCommissionRate.value,
+      };
     }
     
     showPermissionModal.value = false;
     editingDsr.value = null;
     emit('refresh');
   } catch (err: any) {
-    error.value = err.response?.data?.detail || 'Failed to update permissions';
+    const detail = err?.data?.detail || err?.message;
+    error.value = detail || 'Failed to update permissions';
   } finally {
     permissionLoading.value = false;
   }
@@ -214,7 +346,8 @@ async function confirmRemove() {
     removingDsr.value = null;
     emit('refresh');
   } catch (err: any) {
-    error.value = err.response?.data?.detail || 'Failed to remove DSR';
+    const detail = err?.data?.detail || err?.message;
+    error.value = detail || 'Failed to remove DSR';
   } finally {
     removeLoading.value = false;
   }
@@ -228,7 +361,8 @@ async function revokeInvitation(invitationId: string) {
     await apiClient.delete(`/dealer/dsr/invitations/${invitationId}`);
     await fetchData();
   } catch (err: any) {
-    error.value = err.response?.data?.detail || 'Failed to revoke invitation';
+    const detail = err?.data?.detail || err?.message;
+    error.value = detail || 'Failed to revoke invitation';
   }
 }
 
@@ -237,11 +371,7 @@ onMounted(() => {
   fetchData();
 });
 
-// FIX B-5: expose fetchData so the parent (App.vue) can call it directly
-// after an invite is created. Previously the parent relied on a `@refresh`
-// event from DsrManagementPanel, but that event was emitted only from
-// savePermissions() — adding a new invite via AddRepModal called
-// fetchFullDetails() which refreshed everything EXCEPT the DSR roster.
+// expose fetchData so the parent (App.vue) can call it directly
 defineExpose({ fetchData });
 </script>
 
@@ -346,15 +476,15 @@ defineExpose({ fetchData });
         <div class="flex items-center justify-between gap-4">
           <div class="flex items-center gap-3">
             <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center text-white font-semibold">
-              {{ dsr.dsr_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2) }}
+              {{ (dsr.dsrName || '?').split(' ').map((n: string) => n[0] || '').join('').slice(0, 2).toUpperCase() }}
             </div>
             <div>
-              <p class="font-semibold text-slate-800">{{ dsr.dsr_name }}</p>
+              <p class="font-semibold text-slate-800">{{ dsr.dsrName || 'Unnamed' }}</p>
               <div class="flex items-center gap-2 mt-1">
                 <span :class="['px-2 py-0.5 text-xs font-medium rounded-full', getRoleBadgeClass(dsr.role)]">
                   {{ formatRole(dsr.role) }}
                 </span>
-                <span v-if="dsr.has_account" class="text-xs text-emerald-600 flex items-center gap-1">
+                <span v-if="dsr.hasAccount" class="text-xs text-emerald-600 flex items-center gap-1">
                   <CheckCircle class="h-3 w-3" />
                   Registered
                 </span>
@@ -366,7 +496,7 @@ defineExpose({ fetchData });
             <button
               @click="openPermissionEditor(dsr)"
               class="p-2 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition"
-              title="Edit permissions"
+              title="Edit permissions & role"
             >
               <Shield class="h-4 w-4" />
             </button>
@@ -380,9 +510,9 @@ defineExpose({ fetchData });
           </div>
         </div>
         <div class="mt-2 text-xs text-slate-500 flex items-center gap-4">
-          <span>{{ dsr.dsr_phone }}</span>
-          <span v-if="dsr.dsr_email">{{ dsr.dsr_email }}</span>
-          <span>Since {{ formatDate(dsr.assigned_at) }}</span>
+          <span>{{ dsr.dsrPhone }}</span>
+          <span v-if="dsr.dsrEmail">{{ dsr.dsrEmail }}</span>
+          <span>Since {{ formatDate(dsr.assignedAt) }}</span>
         </div>
       </div>
     </div>
@@ -400,16 +530,13 @@ defineExpose({ fetchData });
               <Clock class="h-5 w-5 text-amber-600" />
             </div>
             <div>
-              <!-- FIX M-12: render dsr_email as the primary label since
-              dsr_phone is optional (the invitation flow allows email-only
-              invites). Falls back to phone if email is somehow empty. -->
-              <p class="font-semibold text-slate-800">{{ inv.dsr_email || inv.dsr_phone || 'Unknown' }}</p>
+              <p class="font-semibold text-slate-800">{{ inv.dsrEmail || inv.dsrPhone || 'Unknown' }}</p>
               <div class="flex items-center gap-2 mt-1">
                 <span :class="['px-2 py-0.5 text-xs font-medium rounded-full', getRoleBadgeClass(inv.role)]">
                   {{ formatRole(inv.role) }}
                 </span>
                 <span class="text-xs text-amber-600">
-                  Expires {{ formatDate(inv.expires_at) }}
+                  Expires {{ formatDate(inv.expiresAt) }}
                 </span>
               </div>
             </div>
@@ -438,7 +565,7 @@ defineExpose({ fetchData });
           </div>
           <div>
             <p class="font-semibold text-slate-600">
-              {{ dsr.dsr_name }}
+              {{ dsr.dsrName || 'Unnamed' }}
               <span class="text-xs text-slate-400 font-normal">(No longer active)</span>
             </p>
             <div class="flex items-center gap-2 mt-1">
@@ -446,11 +573,11 @@ defineExpose({ fetchData });
                 {{ formatRole(dsr.role) }}
               </span>
               <span class="text-xs text-slate-500">
-                Removed {{ formatDate(dsr.removed_at) }}
+                Removed {{ formatDate(dsr.removedAt) }}
               </span>
             </div>
-            <p v-if="dsr.removal_reason" class="text-xs text-slate-400 mt-1">
-              Reason: {{ dsr.removal_reason }}
+            <p v-if="dsr.removalReason" class="text-xs text-slate-400 mt-1">
+              Reason: {{ dsr.removalReason }}
             </p>
           </div>
         </div>
@@ -468,7 +595,15 @@ defineExpose({ fetchData });
       </p>
     </div>
 
-    <!-- Permission Modal -->
+    <!-- ═══════════════════════════════════════════════════════════════════
+         FIX DSR-012: PERMISSION EDITOR MODAL
+         Full permission editor with:
+         - Role selector
+         - Per-module, per-action toggle switches
+         - Simple boolean permission toggles
+         - Commission rate input
+         - "Reset to role defaults" button
+    ═══════════════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <Transition name="fade">
         <div
@@ -476,18 +611,120 @@ defineExpose({ fetchData });
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           @click.self="showPermissionModal = false"
         >
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" @click.stop>
-            <div class="px-6 py-4 bg-slate-50 border-b border-slate-100">
-              <h3 class="font-bold text-slate-800">Edit Permissions</h3>
-              <p class="text-sm text-slate-500">{{ editingDsr?.dsr_name }}</p>
+          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col" @click.stop>
+            <!-- Header -->
+            <div class="px-6 py-4 bg-slate-50 border-b border-slate-100 shrink-0">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="font-bold text-slate-800">Edit Permissions & Role</h3>
+                  <p class="text-sm text-slate-500">{{ editingDsr?.dsrName || 'Unnamed' }}</p>
+                </div>
+                <button
+                  @click="showPermissionModal = false"
+                  class="p-1 text-slate-400 hover:text-slate-600 rounded"
+                >
+                  <XCircle class="h-5 w-5" />
+                </button>
+              </div>
             </div>
-            <div class="p-6 space-y-4">
-              <!-- Permission toggles would go here -->
-              <p class="text-sm text-slate-500 text-center">
-                Permission editor coming soon. Use role-based permissions for now.
-              </p>
+
+            <!-- Scrollable content -->
+            <div class="overflow-y-auto flex-1 p-6 space-y-6">
+              <!-- Role Selector -->
+              <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-2">Role</label>
+                <select
+                  v-model="editedRole"
+                  class="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white"
+                >
+                  <option v-for="opt in ROLE_OPTIONS" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                </select>
+                <p class="text-xs text-slate-400 mt-1">
+                  Changing role will update the default permissions on save.
+                </p>
+              </div>
+
+              <!-- Commission Rate -->
+              <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-2">Commission Rate (%)</label>
+                <input
+                  v-model.number="editedCommissionRate"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  placeholder="e.g. 5.0"
+                  class="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              <!-- Reset to defaults -->
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-semibold text-slate-700">Module Permissions</span>
+                <button
+                  @click="resetToRoleDefaults"
+                  class="flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-700 font-medium"
+                  title="Reset all permissions to the defaults for this role"
+                >
+                  <RotateCcw class="h-3.5 w-3.5" />
+                  Reset to role defaults
+                </button>
+              </div>
+
+              <!-- Module permission grids -->
+              <div class="space-y-3">
+                <div
+                  v-for="module in PERMISSION_MODULES"
+                  :key="module.key"
+                  class="border border-slate-100 rounded-lg overflow-hidden"
+                >
+                  <!-- Module header -->
+                  <div class="px-4 py-2.5 bg-slate-50 flex items-center gap-2">
+                    <span class="text-base">{{ module.icon }}</span>
+                    <span class="text-sm font-medium text-slate-700">{{ module.label }}</span>
+                  </div>
+                  <!-- Action toggles -->
+                  <div class="px-4 py-3 flex flex-wrap gap-3">
+                    <label
+                      v-for="action in module.actions"
+                      :key="action.key"
+                      class="flex items-center gap-2 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="getPermAction(module.key, action.key)"
+                        @change="setPermAction(module.key, action.key, ($event.target as HTMLInputElement).checked)"
+                        class="w-4 h-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                      />
+                      <span class="text-sm text-slate-600">{{ action.label }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Simple boolean permissions -->
+              <div class="space-y-2">
+                <label
+                  v-for="perm in SIMPLE_PERMISSIONS"
+                  :key="perm.key"
+                  class="flex items-center gap-3 p-3 border border-slate-100 rounded-lg cursor-pointer hover:bg-slate-50 transition"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="getSimplePerm(perm.key)"
+                    @change="setSimplePerm(perm.key, ($event.target as HTMLInputElement).checked)"
+                    class="w-4 h-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                  />
+                  <span class="text-base">{{ perm.icon }}</span>
+                  <span class="text-sm text-slate-700">{{ perm.label }}</span>
+                </label>
+              </div>
             </div>
-            <div class="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
+
+            <!-- Footer -->
+            <div class="px-6 py-4 border-t border-slate-100 flex justify-end gap-3 shrink-0">
               <button
                 @click="showPermissionModal = false"
                 class="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50"
@@ -499,7 +736,7 @@ defineExpose({ fetchData });
                 :disabled="permissionLoading"
                 class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50"
               >
-                {{ permissionLoading ? 'Saving...' : 'Save' }}
+                {{ permissionLoading ? 'Saving...' : 'Save Changes' }}
               </button>
             </div>
           </div>
@@ -518,7 +755,7 @@ defineExpose({ fetchData });
           <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" @click.stop>
             <div class="px-6 py-4 bg-rose-50 border-b border-rose-100">
               <h3 class="font-bold text-rose-800">Remove DSR</h3>
-              <p class="text-sm text-rose-600">Are you sure you want to remove {{ removingDsr?.dsr_name }}?</p>
+              <p class="text-sm text-rose-600">Are you sure you want to remove {{ removingDsr?.dsrName || 'Unnamed' }}?</p>
             </div>
             <div class="p-6 space-y-4">
               <p class="text-sm text-slate-600">

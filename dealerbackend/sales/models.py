@@ -5,8 +5,8 @@ SaleRecord and its embedded CreditPayment records.
 
 Relationships:
   SaleRecord   → Product  (FK: product)
-  SaleRecord   → DSR      (FK: dsr, nullable — current collector)
-  SaleRecord   → DSR      (FK: original_dsr, nullable — who made the sale)
+  SaleRecord   → DsrUser   (FK: dsr, nullable — current collector)
+  SaleRecord   → DsrUser   (FK: original_dsr, nullable — who made the sale)
   CreditPayment → SaleRecord (FK: sale, on_delete=CASCADE)
   SaleReturn   → SaleRecord (FK: sale, on_delete=CASCADE)
 
@@ -73,7 +73,7 @@ class SaleRecord(models.Model):
 
     # DSR / Order Collector link — CURRENT collector (can be reassigned)
     dsr = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -91,7 +91,7 @@ class SaleRecord(models.Model):
     # Original DSR — who MADE the sale (immutable after creation)
     # This preserves the sales attribution even when collection is reassigned
     original_dsr = models.ForeignKey(
-        "dsr.DSR",
+        "users.DsrUser",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

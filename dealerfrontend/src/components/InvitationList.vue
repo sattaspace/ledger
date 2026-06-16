@@ -39,31 +39,31 @@ const emit = defineEmits<{
 
 interface ActiveRow {
   id: string;
-  dsr_id: string;
-  dsr_name: string;
-  dsr_phone: string;
-  dsr_email: string;
+  dsrId: string;
+  dsrName: string;
+  dsrPhone: string;
+  dsrEmail: string;
   role: string;
-  assigned_at: string;
-  has_account: boolean;
+  assignedAt: string;
+  hasAccount: boolean;
 }
 
 interface PendingRow {
   id: string;
-  dsr_email: string;
-  dsr_phone: string;
+  dsrEmail: string;
+  dsrPhone: string;
   role: string;
-  created_at: string;
-  expires_at: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 interface RemovedRow {
   id: string;
-  dsr_id: string;
-  dsr_name: string;
+  dsrId: string;
+  dsrName: string;
   role: string;
-  removed_at: string;
-  removal_reason: string;
+  removedAt: string;
+  removalReason: string;
 }
 
 type StatusFilter = 'all' | 'pending' | 'accepted' | 'expired' | 'revoked';
@@ -95,23 +95,23 @@ const allRows = computed(() => {
 
   for (const a of activeDsrs.value) {
     out.push({
-      id: `accepted-${a.dsr_id}`,
-      email: a.dsr_email,
-      phone: a.dsr_phone,
+      id: `accepted-${a.dsrId}`,
+      email: a.dsrEmail,
+      phone: a.dsrPhone,
       role: a.role,
       status: 'accepted',
-      createdAt: a.assigned_at,
+      createdAt: a.assignedAt,
     });
   }
   for (const p of pendingInvitations.value) {
     out.push({
       id: `pending-${p.id}`,
-      email: p.dsr_email,
-      phone: p.dsr_phone,
+      email: p.dsrEmail,
+      phone: p.dsrPhone,
       role: p.role,
       status: 'pending',
-      createdAt: p.created_at,
-      extra: p.expires_at,
+      createdAt: p.createdAt,
+      extra: p.expiresAt,
     });
   }
   for (const r of removedDsrs.value) {
@@ -121,8 +121,8 @@ const allRows = computed(() => {
       phone: '',
       role: r.role,
       status: 'revoked',
-      createdAt: r.removed_at,
-      extra: r.removal_reason,
+      createdAt: r.removedAt,
+      extra: r.removalReason,
     });
   }
 
@@ -165,9 +165,9 @@ async function fetchData() {
       removed: RemovedRow[];
     }>('/dealer/dsr');
 
-    activeDsrs.value = response.active || [];
-    pendingInvitations.value = response.pendingInvitations || [];
-    removedDsrs.value = response.removed || [];
+    activeDsrs.value = response.data.active || [];
+    pendingInvitations.value = response.data.pendingInvitations || [];
+    removedDsrs.value = response.data.removed || [];
   } catch (err: any) {
     console.error('Failed to fetch invitation data:', err);
     error.value = err?.data?.detail || err?.message || 'Failed to load invitations';

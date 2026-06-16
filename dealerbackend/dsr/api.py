@@ -20,13 +20,12 @@ BUSINESS RULES:
     (original_dsr field), for sales attribution/performance.
 """
 
-from django.db.models import Count, Q, Max
+from django.db.models import Count, Q
 
 from ninja_extra import api_controller, route
 from ninja.errors import HttpError
 
-from dealercore.async_db import async_aggregate, async_exists
-from dsr.models import DSR
+from users.models import DsrUser
 from dsr.schemas import CreateDSRIn, DSROut, UpdateDSRIn
 from dsr.invitation_models import DsrDealerAssignment
 from sales.models import SaleRecord
@@ -93,10 +92,10 @@ class DSRController:
             status=DsrDealerAssignment.STATUS_ACTIVE
         ).values_list('dsr_id', flat=True)
         
-        # Filter DSRs by the assignment
-        qs = DSR.objects.filter(
+        # Filter DsrUsers by the assignment
+        qs = DsrUser.objects.filter(
             id__in=assigned_dsr_ids
-        ).prefetch_related("subordinates").annotate(
+        ).annotate(
             active_sales_count=Count(
                 "sales",
                 filter=Q(
@@ -108,19 +107,32 @@ class DSRController:
                     ],
                 ),
             ),
-        ).order_by("name")[offset:offset+limit]
+        ).order_by("full_name")[offset:offset+limit]
         
+        # Build a map of dsr_id → {role, parent_dsr_id, parent_dsr_name} from assignments
+        assignment_info = {}
+        async for assignment in DsrDealerAssignment.objects.filter(
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related('parent_dsr'):
+            assignment_info[assignment.dsr_id] = {
+                'role': assignment.role,
+                'parent_dsr_id': str(assignment.parent_dsr_id) if assignment.parent_dsr_id else None,
+                'parent_dsr_name': (assignment.parent_dsr.full_name or assignment.parent_dsr.email) if assignment.parent_dsr else "",
+            }
+
         results = []
         async for dsr in qs:
+            info = assignment_info.get(dsr.id, {})
             results.append(
                 DSROut(
-                    id=dsr.id,
-                    name=dsr.name,
+                    id=str(dsr.id),
+                    name=dsr.full_name or dsr.email,
                     phone=dsr.phone,
                     active_sales_count=dsr.active_sales_count,
-                    role=dsr.role,
-                    parent_dsr_id=dsr.parent_dsr_id,
-                    parent_dsr_name=dsr.parent_dsr_name,
+                    role=info.get('role', "DSR"),
+                    parent_dsr_id=info.get('parent_dsr_id'),
+                    parent_dsr_name=info.get('parent_dsr_name', ""),
                 )
             )
         return results
@@ -144,7 +156,7 @@ class DSRController:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
         
         try:
-            dsr = await DSR.objects.annotate(
+            dsr = await DsrUser.objects.annotate(
                 active_sales_count=Count(
                     "sales",
                     filter=Q(
@@ -157,16 +169,23 @@ class DSRController:
                     ),
                 ),
             ).aget(id=dsr_id)
-        except DSR.DoesNotExist:
+        except DsrUser.DoesNotExist:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found")
+        # Get role and parent info from assignment
+        assignment = await DsrDealerAssignment.objects.filter(
+            dsr_id=dsr_id,
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related('parent_dsr').afirst()
+
         return DSROut(
-            id=dsr.id,
-            name=dsr.name,
+            id=str(dsr.id),
+            name=dsr.full_name or dsr.email,
             phone=dsr.phone,
             active_sales_count=dsr.active_sales_count,
-            role=dsr.role,
-            parent_dsr_id=dsr.parent_dsr_id,
-            parent_dsr_name=dsr.parent_dsr_name,
+            role=assignment.role if assignment else "DSR",
+            parent_dsr_id=str(assignment.parent_dsr_id) if assignment and assignment.parent_dsr_id else None,
+            parent_dsr_name=(assignment.parent_dsr.full_name or assignment.parent_dsr.email) if assignment and assignment.parent_dsr else "",
         )
 
     # NOTE: Manual DSR creation endpoint REMOVED.
@@ -193,31 +212,44 @@ class DSRController:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
         
         try:
-            dsr = await DSR.objects.aget(id=dsr_id)
-        except DSR.DoesNotExist:
+            dsr = await DsrUser.objects.aget(id=dsr_id)
+        except DsrUser.DoesNotExist:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found")
 
         update_data = payload.model_dump(exclude_unset=True)
 
-        # Handle parent_dsr_id → resolve parent_dsr_name
+        # Remap 'name' → 'full_name' for DsrUser model
+        if "name" in update_data:
+            update_data["full_name"] = update_data.pop("name")
+
+        # Handle parent_dsr_id → update on DsrDealerAssignment, not DsrUser
         if "parent_dsr_id" in update_data:
             parent_id = update_data["parent_dsr_id"]
+            # Find the active assignment for this DSR-dealer pair
+            assignment = await DsrDealerAssignment.objects.filter(
+                dsr_id=dsr_id,
+                dealer__username=dealer_username,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).afirst()
+            if not assignment:
+                raise HttpError(404, f"No active assignment found for DSR '{dsr_id}'")
+
             if parent_id:
-                # BUG FIX: Prevent self-referential parent assignment (circular reference)
+                # Prevent self-referential parent assignment (circular reference)
                 if parent_id == dsr_id:
                     raise HttpError(
                         400, 
                         f"DSR cannot be its own parent. Choose a different parent DSR."
                     )
-                # BUG FIX: Prevent circular hierarchy (parent cannot be a descendant)
-                if await self._is_circular_parent(dsr_id, parent_id):
+                # Prevent circular hierarchy (parent cannot be a descendant)
+                if await self._is_circular_parent(dsr_id, parent_id, dealer_username):
                     raise HttpError(
                         400,
                         f"Cannot set parent: would create circular hierarchy. "
                         f"The selected parent is already a subordinate of this DSR."
                     )
                 try:
-                    parent = await DSR.objects.aget(id=parent_id)
+                    parent = await DsrUser.objects.aget(id=parent_id)
                     # Verify parent DSR is assigned to this dealer
                     parent_is_assigned = await DsrDealerAssignment.objects.filter(
                         dsr=parent,
@@ -226,14 +258,14 @@ class DSRController:
                     ).aexists()
                     if not parent_is_assigned:
                         raise HttpError(400, f"Parent DSR with id '{parent_id}' is not assigned to you")
-                    update_data["parent_dsr_name"] = parent.name
-                    update_data["parent_dsr"] = parent
-                except DSR.DoesNotExist:
+                    assignment.parent_dsr = parent
+                except DsrUser.DoesNotExist:
                     raise HttpError(400, f"Parent DSR with id '{parent_id}' not found")
             else:
-                update_data["parent_dsr_name"] = ""
-                update_data["parent_dsr"] = None
-            # Remove raw FK id from update_data (use the model instance instead)
+                assignment.parent_dsr = None
+
+            await assignment.asave(update_fields=["parent_dsr", "updated_at"])
+            # Remove from update_data so it doesn't get set on DsrUser
             del update_data["parent_dsr_id"]
 
         for field, value in update_data.items():
@@ -248,14 +280,21 @@ class DSRController:
         ).exclude(
             collection_status=SaleRecord.STATUS_FULLY_PAID
         ).acount()
+        # Get role and parent info from assignment
+        assignment = await DsrDealerAssignment.objects.filter(
+            dsr_id=dsr_id,
+            dealer__username=dealer_username,
+            status=DsrDealerAssignment.STATUS_ACTIVE,
+        ).select_related('parent_dsr').afirst()
+
         return DSROut(
-            id=dsr.id,
-            name=dsr.name,
+            id=str(dsr.id),
+            name=dsr.full_name or dsr.email,
             phone=dsr.phone,
             active_sales_count=active_count,
-            role=dsr.role,
-            parent_dsr_id=dsr.parent_dsr_id,
-            parent_dsr_name=dsr.parent_dsr_name,
+            role=assignment.role if assignment else "DSR",
+            parent_dsr_id=str(assignment.parent_dsr_id) if assignment and assignment.parent_dsr_id else None,
+            parent_dsr_name=(assignment.parent_dsr.full_name or assignment.parent_dsr.email) if assignment and assignment.parent_dsr else "",
         )
 
     @route.delete("{dsr_id}", summary="Delete a DSR")
@@ -277,26 +316,28 @@ class DSRController:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found or not assigned to you")
         
         try:
-            dsr = await DSR.objects.aget(id=dsr_id)
-        except DSR.DoesNotExist:
+            dsr = await DsrUser.objects.aget(id=dsr_id)
+        except DsrUser.DoesNotExist:
             raise HttpError(404, f"DSR with id '{dsr_id}' not found")
         
         # Delete the assignment first
         await assignment.adelete()
         
-        # If DSR has no other assignments, delete the DSR entirely
+        # If DsrUser has no other assignments, delete the user entirely
         other_assignments = await DsrDealerAssignment.objects.filter(dsr=dsr).aexists()
         if not other_assignments:
             await dsr.adelete()
         
-        return {"message": f"DSR '{dsr.name}' removed from your team successfully"}
+        return {"message": f"DSR '{dsr.full_name or dsr.email}' removed from your team successfully"}
 
     # ─── Helpers ────────────────────────────────────────
 
-    async def _is_circular_parent(self, dsr_id: str, potential_parent_id: str) -> bool:
+    async def _is_circular_parent(self, dsr_id: str, potential_parent_id: str, dealer_username: str) -> bool:
         """Check if assigning potential_parent_id as parent of dsr_id would create
         a circular hierarchy (where the parent is already a descendant of dsr).
         
+        After DSR→DsrUser merge, parent relationships are per-dealer via
+        DsrDealerAssignment.parent_dsr, not on the user model itself.
         This prevents A → B → C → A type cycles in the DSR hierarchy.
         """
         current_id = potential_parent_id
@@ -312,40 +353,17 @@ class DSRController:
                 return True  # Already visited - cycle detected
             visited.add(current_id)
             
-            try:
-                parent = await DSR.objects.aget(id=current_id)
-                current_id = parent.parent_dsr_id
-            except DSR.DoesNotExist:
+            # Walk up the parent chain via DsrDealerAssignment for this dealer
+            parent_id = await DsrDealerAssignment.objects.filter(
+                dsr_id=current_id,
+                dealer__username=dealer_username,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).values_list('parent_dsr_id', flat=True).afirst()
+            
+            if not parent_id:
                 return False
+            current_id = str(parent_id)
         
         return False  # Hit depth limit, assume safe
 
-    async def _generate_id(self) -> str:
-        """Generate a unique DSR ID (format: dsr-{n})."""
-        prefix = "dsr"
-        max_retries = 5
-        for attempt in range(max_retries):
-            result = await async_aggregate(
-                DSR.objects.filter(id__startswith=prefix),
-                _max=Max("id"),
-            )
-            last = result.get("_max")
 
-            num = 1
-            if last:
-                try:
-                    num = int(last.split("-")[-1]) + 1
-                except (ValueError, IndexError):
-                    num = 1
-
-            num += attempt
-            candidate_id = f"{prefix}-{num}"
-
-            exists = await async_exists(
-                DSR.objects.filter(id=candidate_id),
-            )
-            if not exists:
-                return candidate_id
-
-        import time
-        return f"{prefix}-{int(time.time() * 1000)}"
