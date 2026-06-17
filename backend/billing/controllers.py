@@ -105,6 +105,7 @@ from .schemas import (
     ExchangeRateListSchema,
     ExchangeRateConvertSchema,
     CurrenciesListSchema,
+    SubscriberAccessResponseSchema,
 )
 from .admin_schemas import AdminAccessMatrixSchema
 from .services import BillingService
@@ -2346,3 +2347,101 @@ class BillingWebhookController:
             )
 
         return MessageResponse(message="Webhook processed successfully.")
+
+
+# =============================================================================
+# Billing Service-to-Service Controller — Subscriber Access
+# =============================================================================
+
+
+@api_controller(
+    "/billing/service",
+    tags=["Billing — Service-to-Service"],
+    permissions=[IsServiceAuthenticated],
+)
+class BillingServiceController:
+    """Server-to-server billing endpoints — API key authentication required.
+
+    These endpoints are called by sister domain backends (e.g., DealerBackend)
+    to look up subscriber access data. They require a valid ``X-API-Key``
+    header linked to an active ``ServiceCredential``.
+
+    The API key is validated by the ``service_credential_middleware`` (set in
+    ``common/middleware.py``), which attaches ``request.service_credential``
+    and ``request.service_domain_from_key`` before this controller runs.
+
+    Security:
+    - Only service credentials (API keys) are accepted — no JWT user auth.
+    - The API key must be linked to an active ServiceDomain.
+    - No user-specific data is returned beyond what the subscriber_id resolves.
+    """
+
+    @http_get(
+        "/subscriber/access",
+        response={200: dict, 404: dict},
+        summary="Get subscriber access matrix for a service domain",
+        description=(
+            "Server-to-service endpoint for looking up a subscriber's access "
+            "matrix for a given service domain. Used by sister domain backends "
+            "to constrain their permission systems based on what the subscriber's "
+            "plan actually allows.\n\n"
+            "Requires ``X-API-Key`` header with a valid service credential.\n\n"
+            "Query parameters:\n"
+            "- ``subscriber_id`` — The subscriber's user ID\n"
+            "- ``service_domain`` — The service domain to look up\n\n"
+            "Example response:\n"
+            "```json\n"
+            "{\n"
+            '  "subscriber_id": "1",\n'
+            '  "service_domain": "localhost:4323",\n'
+            '  "subscription_status": "active",\n'
+            '  "is_active": true,\n'
+            '  "plan_slug": "standard",\n'
+            '  "plan_name": "Standard",\n'
+            '  "access": {"dashboard": true, "reports": true, "suppliers": false, "max_dsrs": 5}\n'
+            "}```"
+        ),
+    )
+    async def get_subscriber_access(
+        self,
+        request: HttpRequest,
+        subscriber_id: str = Query(..., description="The subscriber's user ID"),
+        service_domain: str = Query(..., description="The service domain to look up access for"),
+    ):
+        """Return a subscriber's access matrix for a given service domain.
+
+        This endpoint allows sister domain backends to query what a dealer's
+        subscription plan allows, so they can:
+        1. Constrain DSR permissions based on dealer's plan (e.g., if dealer
+           has ``suppliers: false``, DSRs cannot be granted suppliers access)
+        2. Enforce plan limits (e.g., ``max_dsrs`` from the access map)
+        3. Verify dealer's subscription is still active before allowing actions
+
+        The API key's associated service domain is also validated — the
+        calling service must be an active, registered domain.
+        """
+        from users.models import User
+        from .services import BillingService
+
+        # Validate that the calling service domain matches the queried domain
+        # or allow cross-domain queries if the credential's domain is active.
+        # The calling service must be a registered, active domain.
+        calling_domain = getattr(request, "service_domain_from_key", None)
+        if calling_domain and not calling_domain.is_active:
+            return {
+                "detail": "The calling service domain is inactive.",
+                "code": "service_domain_inactive",
+            }, 403
+
+        try:
+            result = await BillingService.aget_subscriber_access(
+                subscriber_id=subscriber_id,
+                service_domain=service_domain,
+            )
+        except User.DoesNotExist:
+            return {
+                "detail": f"User with id={subscriber_id} not found.",
+                "code": "user_not_found",
+            }, 404
+
+        return result

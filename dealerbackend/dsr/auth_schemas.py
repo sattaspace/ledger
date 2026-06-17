@@ -169,11 +169,27 @@ class DealerSelectionInput(Schema):
 
 
 class DealerSelectionOutput(Schema):
-    """Dealer selection response with updated tokens."""
+    """Dealer selection response with updated tokens.
+
+    The ``effective_access`` field is the SINGLE SOURCE OF TRUTH for the
+    DSR's portal session — it's the backend-computed intersection of:
+
+    1. The dealer's plan-level access (from SattaBase's AccessEntry table)
+    2. The DSR's per-dealer assignment permissions (from DsrDealerAssignment)
+
+    The frontend should call ``setAccessMap(result.effective_access)``
+    and STOP doing any intersection logic client-side.
+
+    ``dealer_access`` (raw SattaBase access map) and ``permissions`` (raw
+    DSR assignment permissions) are kept for debugging/inspection only —
+    do NOT use them for UI gating. Use ``effective_access`` instead.
+    """
     access: str
     refresh: str
     dealer: DealerChoice
     permissions: Dict[str, Any] = {}
+    dealer_access: Dict[str, Any] = {}
+    effective_access: Dict[str, Any] = {}
     message: str = "Dealer context updated"
 
 
@@ -276,6 +292,54 @@ class TokenRefreshOutput(Schema):
     access: str
     refresh: Optional[str] = None
     message: str = "Token refreshed"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ACCESS MATRIX REFRESH SCHEMA
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RefreshAccessOutput(Schema):
+    """Response for POST /dsr/auth/refresh-access.
+
+    Re-fetches the dealer's plan-level access map from SattaBase
+    (bypassing the in-memory cache), recomputes the effective_access
+    intersection with the DSR's per-dealer permissions, and returns
+    the new effective_access map.
+
+    IMPORTANT — why this endpoint exists:
+    The backend caches SattaBase access responses for ``SATTABASE_ACCESS_CACHE_TTL``
+    seconds (default 300 = 5 minutes) to avoid hammering SattaBase on every
+    API call. When the dealer's plan is changed live in SattaBase admin
+    (e.g., disabling ``bad_debt`` for the FREE plan), DealerBackend keeps
+    serving the stale cached access map until the TTL expires.
+
+    On the frontend, the DSR's ``effective_access`` is computed ONCE at
+    ``select-dealer`` time and stored in a Vue ref (in-memory). It does
+    NOT auto-refresh when SattaBase's access matrix changes.
+
+    This endpoint breaks that staleness:
+      1. Calls ``invalidate_cache(dealer_username)`` to drop the cached
+         SattaBase response for this dealer.
+      2. Calls ``aget_dealer_access()`` again — this hits SattaBase fresh
+         and re-caches the new response.
+      3. Recomputes ``effective_access`` via ``compute_effective_access()``.
+      4. Returns the new map so the frontend can ``setAccessMap()``.
+
+    The frontend should call this endpoint:
+      - When the DSR returns from a billing-redirect flow
+        (``useBillingRedirect`` detects ``?billing_updated=1``)
+      - On an explicit "Refresh permissions" action
+      - Optionally: periodically (e.g., every 5 minutes) while the
+        DSR portal session is active
+
+    Note: this endpoint does NOT re-issue JWT tokens. The DSR's existing
+    tokens remain valid. Only the access map is refreshed.
+    """
+    effective_access: Dict[str, Any] = {}
+    dealer_access: Dict[str, Any] = {}
+    permissions: Dict[str, Any] = {}
+    cache_invalidated: bool = True
+    message: str = "Access map refreshed from SattaBase"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

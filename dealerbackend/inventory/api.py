@@ -48,6 +48,7 @@ from ninja.errors import HttpError
 
 from dealercore.async_db import aatomic, async_aggregate, async_exists
 from common.dealer_context import get_dealer_context
+from common.dsr_permissions import enforce_dsr_permission
 from dealer.models import DealerConfig
 from inventory.models import Product, RestockRecord, Brand, Category
 from inventory.schemas import (
@@ -90,6 +91,7 @@ class InventoryController:
             - Dealers: See only their own products
             - DSRs/Collectors: See products from X-Dealer-Context header
         """
+        await enforce_dsr_permission(request, "inventory", "view")
         self._validate_pagination(limit, offset)
         dealer_username = await get_dealer_context(request)
         qs = Product.objects.filter(dealer_id=dealer_username).order_by("name")[offset:offset+limit]
@@ -106,6 +108,7 @@ class InventoryController:
             limit: Max records to return (default: 100, max: 1000)
             offset: Number of records to skip (for pagination)
         """
+        await enforce_dsr_permission(request, "inventory", "view")
         self._validate_pagination(limit, offset)
         dealer_username = await get_dealer_context(request)
         results = []
@@ -130,6 +133,7 @@ class InventoryController:
     @route.get("restocks/{restock_id}", response=RestockRecordOut, summary="Get a restock record")
     async def get_restock(self, request, restock_id: str):
         """Return a single restock record by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         try:
             r = await RestockRecord.objects.select_related("product").aget(
@@ -161,6 +165,7 @@ class InventoryController:
 
         The product is automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "inventory", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
 
@@ -210,6 +215,7 @@ class InventoryController:
         
         Both the product and restock record are dealer-scoped.
         """
+        await enforce_dsr_permission(request, "inventory", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         
@@ -251,6 +257,7 @@ class InventoryController:
     @route.get("brands", response=list[BrandOut], summary="List all brands")
     async def list_brands(self, request):
         """Return all brands for the current dealer context ordered by name."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         return [b async for b in Brand.objects.filter(dealer_id=dealer_username).order_by("name")]
 
@@ -260,6 +267,7 @@ class InventoryController:
         
         The brand is automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "inventory", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         brand = await Brand.objects.acreate(
@@ -272,6 +280,7 @@ class InventoryController:
     @route.get("brands/{brand_id}", response=BrandOut, summary="Get a brand")
     async def get_brand(self, request, brand_id: str):
         """Return a single brand by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         try:
             return await Brand.objects.aget(id=brand_id, dealer_id=dealer_username)
@@ -281,6 +290,7 @@ class InventoryController:
     @route.delete("brands/{brand_id}", summary="Delete a brand")
     async def delete_brand(self, request, brand_id: str):
         """Delete a brand by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "delete")
         dealer_username = await get_dealer_context(request)
         try:
             brand = await Brand.objects.aget(id=brand_id, dealer_id=dealer_username)
@@ -294,6 +304,7 @@ class InventoryController:
     @route.get("categories", response=list[CategoryOut], summary="List all categories")
     async def list_categories(self, request):
         """Return all categories for the current dealer context ordered by name."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         return [c async for c in Category.objects.filter(dealer_id=dealer_username).order_by("name")]
 
@@ -303,6 +314,7 @@ class InventoryController:
         
         The category is automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "inventory", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         category = await Category.objects.acreate(
@@ -315,6 +327,7 @@ class InventoryController:
     @route.get("categories/{category_id}", response=CategoryOut, summary="Get a category")
     async def get_category(self, request, category_id: str):
         """Return a single category by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         try:
             return await Category.objects.aget(id=category_id, dealer_id=dealer_username)
@@ -324,6 +337,7 @@ class InventoryController:
     @route.delete("categories/{category_id}", summary="Delete a category")
     async def delete_category(self, request, category_id: str):
         """Delete a category by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "delete")
         dealer_username = await get_dealer_context(request)
         try:
             category = await Category.objects.aget(id=category_id, dealer_id=dealer_username)
@@ -337,6 +351,7 @@ class InventoryController:
     @route.get("{product_id}", response=ProductOut, summary="Get a product")
     async def get_product(self, request, product_id: str):
         """Return a single product by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "view")
         dealer_username = await get_dealer_context(request)
         try:
             return await Product.objects.aget(id=product_id, dealer_id=dealer_username)
@@ -346,6 +361,7 @@ class InventoryController:
     @route.post("{product_id}/edit", response=ProductOut, summary="Edit a product")
     async def edit_product(self, request, product_id: str, payload: EditProductIn):
         """Partial update on a product. Only provided fields are updated (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
         
@@ -375,6 +391,7 @@ class InventoryController:
     @route.delete("{product_id}", summary="Delete a product")
     async def delete_product(self, request, product_id: str):
         """Delete a product. Blocked if the product has existing sales (PROTECT FK) (dealer-scoped)."""
+        await enforce_dsr_permission(request, "inventory", "delete")
         dealer_username = await get_dealer_context(request)
         try:
             product = await Product.objects.aget(id=product_id, dealer_id=dealer_username)

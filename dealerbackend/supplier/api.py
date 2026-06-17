@@ -23,6 +23,7 @@ from ninja.errors import HttpError
 
 from dealercore.async_db import async_aggregate, async_exists
 from common.dealer_context import get_dealer_context
+from common.dsr_permissions import enforce_dsr_permission
 from dealer.models import DealerConfig
 from supplier.models import Supplier
 from supplier.schemas import SupplierOut, CreateSupplierIn, UpdateSupplierIn
@@ -54,6 +55,7 @@ class SupplierController:
             - Dealers: See only their own suppliers
             - DSRs/Collectors: See suppliers from X-Dealer-Context header
         """
+        await enforce_dsr_permission(request, "suppliers", "view")
         self._validate_pagination(limit, offset)
         dealer_username = await get_dealer_context(request)
         return [s async for s in Supplier.objects.filter(dealer_id=dealer_username).order_by("name")[offset:offset+limit]]
@@ -61,6 +63,7 @@ class SupplierController:
     @route.get("{supplier_id}", response=SupplierOut, summary="Get a supplier")
     async def get_supplier(self, request, supplier_id: str):
         """Return a single supplier by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "suppliers", "view")
         dealer_username = await get_dealer_context(request)
         try:
             return await Supplier.objects.aget(id=supplier_id, dealer_id=dealer_username)
@@ -73,6 +76,7 @@ class SupplierController:
 
         The supplier is automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "suppliers", "edit")
         dealer_username = await get_dealer_context(request)
         dealer = await DealerConfig.objects.aget(username=dealer_username)
 
@@ -94,6 +98,7 @@ class SupplierController:
     @route.patch("{supplier_id}", response=SupplierOut, summary="Update a supplier")
     async def update_supplier(self, request, supplier_id: str, payload: UpdateSupplierIn):
         """Partial update on a supplier. Only provided fields are updated (dealer-scoped)."""
+        await enforce_dsr_permission(request, "suppliers", "edit")
         dealer_username = await get_dealer_context(request)
         try:
             supplier = await Supplier.objects.aget(id=supplier_id, dealer_id=dealer_username)
@@ -108,6 +113,7 @@ class SupplierController:
     @route.delete("{supplier_id}", summary="Delete a supplier")
     async def delete_supplier(self, request, supplier_id: str):
         """Delete a supplier by ID (dealer-scoped)."""
+        await enforce_dsr_permission(request, "suppliers", "edit")
         dealer_username = await get_dealer_context(request)
         try:
             supplier = await Supplier.objects.aget(id=supplier_id, dealer_id=dealer_username)

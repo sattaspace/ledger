@@ -35,7 +35,7 @@ DSR Assignment Endpoints:
 
 import secrets
 from datetime import timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 from ninja_extra import api_controller, route, http_post, http_get, http_put, http_delete
 from ninja_extra.permissions import AllowAny, IsAuthenticated
@@ -45,6 +45,9 @@ from django.utils import timezone
 from django.conf import settings
 from django.contrib.auth import authenticate
 import jwt as pyjwt
+import logging
+
+logger = logging.getLogger(__name__)
 
 from users.models import DsrUser
 from dsr.invitation_models import DsrInvitation, DsrDealerAssignment
@@ -85,6 +88,7 @@ from dsr.auth_schemas import (
     DsrRegisterOutput,
     DealerSelectionInput,
     DealerSelectionOutput,
+    RefreshAccessOutput,
     DsrProfileOutput,
     UpdateProfileInput,
     DsrUserOutput,
@@ -618,6 +622,39 @@ class DsrAuthController:
         # Generate new tokens with dealer context
         access, refresh = await agenerate_tokens(user)
 
+        # ─── SINGLE SOURCE OF TRUTH FOR DSR ACCESS ────────────────────────
+        # Fetch the dealer's plan-level access map from SattaBase, then
+        # compute ONE flat effective_access map that intersects it with
+        # the DSR's per-dealer assignment permissions. The frontend just
+        # calls setAccessMap(result.effective_access) — no intersection
+        # logic, no hardcoded defaults, no special cases.
+        #
+        # This eliminates the entire class of bugs where the frontend's
+        # intersection logic disagrees with the backend's enforcement.
+        # The backend now computes the final authoritative map.
+        effective_access: Dict[str, Any] = {"dashboard": True, "__subscription_active": False}
+        raw_dealer_access: Dict[str, Any] = {}
+        try:
+            from common.sattabase_access import (
+                aget_dealer_access,
+                compute_effective_access,
+            )
+            # Pass dealer.username (= SattaBase user_pk as string) straight
+            # through. SattaBase's subscriber-access API does pk → username
+            # → email lookup, so the pk branch will find the user.
+            dealer_access_data = await aget_dealer_access(str(dealer.username))
+            raw_dealer_access = dealer_access_data.get("access", {})
+            effective_access = compute_effective_access(
+                dealer_access_data,
+                assignment.permissions or {},
+            )
+        except Exception as exc:
+            logger.warning(
+                "[DSR-AUTH] Could not fetch dealer access from SattaBase "
+                "for %s: %s. Falling back to dashboard-only access.",
+                dealer.username, exc,
+            )
+
         return {
             "access": access,
             "refresh": refresh,
@@ -627,6 +664,154 @@ class DsrAuthController:
                 "business_name": dealer.business_name,
             },
             "permissions": assignment.permissions,
+            "dealer_access": raw_dealer_access,
+            "effective_access": effective_access,
+        }
+
+    @http_post("/refresh-access", response={200: RefreshAccessOutput, 401: dict, 403: dict, 404: dict})
+    @rate_limit("dsr_refresh_access", limit=10, period=60, scope="user")
+    async def refresh_access(self, request: HttpRequest):
+        """Refresh the DSR's effective_access map from SattaBase.
+
+        PURPOSE
+        -------
+        SattaBase access responses are cached in-memory for
+        ``SATTABASE_ACCESS_CACHE_TTL`` seconds (default 300 = 5 min) so
+        we don't hammer SattaBase on every API call. The DSR frontend
+        also caches the ``effective_access`` map in a Vue ref after
+        ``select-dealer`` — it does NOT auto-refresh.
+
+        When the dealer's plan is changed live in SattaBase admin (e.g.
+        disabling ``bad_debt`` on the FREE plan), neither the backend
+        cache nor the frontend Vue ref knows about it. The DSR keeps
+        seeing the stale menu until either:
+          (a) the backend cache TTL expires (up to 5 min), AND
+          (b) the frontend re-calls ``select-dealer`` to get a new
+              ``effective_access`` (which only happens on logout/login).
+
+        This endpoint breaks that staleness in one shot:
+          1. Looks up the DSR's currently-selected dealer (from the
+             ``X-Dealer-Username`` header, set by the frontend after
+             ``select-dealer``).
+          2. Calls ``invalidate_cache(dealer_username)`` to drop the
+             stale SattaBase response for THIS dealer only (other
+             dealers' caches are untouched).
+          3. Re-fetches fresh access from SattaBase — this also
+             re-caches the new response so subsequent API calls by
+             this DSR (and any other DSR under the same dealer) see
+             the new matrix immediately.
+          4. Recomputes ``effective_access`` via
+             ``compute_effective_access()`` and returns it.
+
+        The frontend should call this endpoint:
+          - When the DSR returns from a billing-redirect flow
+            (``useBillingRedirect`` detects ``?billing_updated=1``)
+          - On an explicit "Refresh permissions" action in the UI
+          - Optionally: periodically (e.g., every 5 min) while the
+            DSR portal session is active
+
+        This endpoint does NOT re-issue JWT tokens. The DSR's existing
+        tokens remain valid. Only the access map is refreshed.
+
+        Returns 401 if the DSR JWT is invalid.
+        Returns 403 if the DSR has no selected dealer context.
+        Returns 404 if the selected dealer no longer exists.
+        """
+        user = await aget_user_from_token(request)
+        if not user:
+            return error_auth_required()
+
+        # Resolve the currently-selected dealer.
+        # The frontend sets X-Dealer-Username after select-dealer.
+        dealer_username = request.headers.get("X-Dealer-Username")
+        if not dealer_username:
+            # Fall back to the DSR's first active assignment
+            assignment_fallback = await DsrDealerAssignment.objects.filter(
+                dsr=user,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).select_related("dealer").afirst()
+            if not assignment_fallback or not assignment_fallback.dealer:
+                return dsr_error_response(
+                    "No dealer context selected. Call /dsr/auth/select-dealer first.",
+                    "no_dealer_context",
+                    403,
+                )
+            dealer = assignment_fallback.dealer
+            assignment = assignment_fallback
+        else:
+            try:
+                dealer = await DealerConfig.objects.aget(username=dealer_username)
+            except DealerConfig.DoesNotExist:
+                return dsr_error_response(
+                    f"Dealer '{dealer_username}' not found.",
+                    "dealer_not_found",
+                    404,
+                )
+            # Verify the DSR still has an active assignment to this dealer
+            assignment = await DsrDealerAssignment.objects.filter(
+                dsr=user,
+                dealer=dealer,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).afirst()
+            if not assignment:
+                return dsr_error_response(
+                    "You are not actively assigned to this dealer.",
+                    "not_assigned",
+                    403,
+                )
+
+        # ── Step 1: invalidate the backend cache for THIS dealer ───────
+        from common.sattabase_access import invalidate_cache
+        invalidate_cache(str(dealer.username))
+        logger.info(
+            "[DSR-AUTH] refresh-access: invalidated backend cache for "
+            "dealer_username=%s (SattaBase user_pk)",
+            dealer.username,
+        )
+
+        # ── Step 2: re-fetch fresh access from SattaBase ───────────────
+        # aget_dealer_access() will hit SattaBase (cache was just cleared)
+        # and re-cache the new response.
+        effective_access: Dict[str, Any] = {
+            "dashboard": True,
+            "__subscription_active": False,
+        }
+        raw_dealer_access: Dict[str, Any] = {}
+        try:
+            from common.sattabase_access import (
+                aget_dealer_access,
+                compute_effective_access,
+            )
+            dealer_access_data = await aget_dealer_access(str(dealer.username))
+            raw_dealer_access = dealer_access_data.get("access", {})
+            effective_access = compute_effective_access(
+                dealer_access_data,
+                assignment.permissions or {},
+            )
+            logger.info(
+                "[DSR-AUTH] refresh-access: re-fetched access from SattaBase "
+                "for dealer_username=%s — plan=%s, status=%s, "
+                "effective_access_keys=%s",
+                dealer.username,
+                dealer_access_data.get("plan_slug"),
+                dealer_access_data.get("subscription_status"),
+                sorted(effective_access.keys()),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[DSR-AUTH] refresh-access: could not fetch dealer access "
+                "from SattaBase for %s: %s. Returning dashboard-only "
+                "fallback. The backend cache WAS invalidated, so the next "
+                "API call will retry SattaBase.",
+                dealer.username, exc,
+            )
+
+        return {
+            "effective_access": effective_access,
+            "dealer_access": raw_dealer_access,
+            "permissions": assignment.permissions or {},
+            "cache_invalidated": True,
+            "message": "Access map refreshed from SattaBase",
         }
 
     @http_post("/refresh", response={200: TokenRefreshOutput, 401: dict})
@@ -1116,17 +1301,84 @@ class DsrInvitationController:
             return error_invitation_expired()
 
         # Check if already assigned
-        existing = await DsrDealerAssignment.objects.filter(
+        existing_assignment = await DsrDealerAssignment.objects.filter(
             dsr=user,
             dealer=invitation.dealer,
-        ).aexists()
+        ).afirst()
 
-        if existing:
-            return dsr_error_response(
-                "You are already assigned to this dealer",
-                "already_assigned",
-                400
-            )
+        if existing_assignment:
+            # If prior assignment exists but is not active, check limits
+            # before reactivating (Phase 2)
+            if existing_assignment.status != DsrDealerAssignment.STATUS_ACTIVE:
+                from common.sattabase_access import aget_dealer_access, get_dealer_limit
+                dealer_access = await aget_dealer_access(invitation.dealer.username)
+                max_dsrs = get_dealer_limit(dealer_access, "max_dsrs")
+                if max_dsrs is not None and max_dsrs > 0:
+                    active_count = await DsrDealerAssignment.objects.filter(
+                        dealer=invitation.dealer,
+                        status=DsrDealerAssignment.STATUS_ACTIVE,
+                    ).acount()
+                    if (active_count + 1) > max_dsrs:
+                        return dsr_error_response(
+                            "Cannot accept: the dealer has reached their "
+                            "plan limit of {} DSRs. Please ask the "
+                            "dealer to upgrade their plan.".format(max_dsrs),
+                            "plan_limit_exceeded",
+                            403,
+                        )
+                await existing_assignment.aactivate()
+                await invitation.aaccept(user)
+
+                # Notify dealer about reactivation
+                send_invitation_accepted_notification.delay(
+                    dealer_email=invitation.dealer.username,
+                    dealer_name=invitation.dealer.full_name or invitation.dealer.username,
+                    dsr_name=user.full_name,
+                    dsr_email=user.email,
+                    role=invitation.role,
+                )
+
+                access, refresh = await agenerate_tokens(user)
+                phone_required = not user.phone
+                return {
+                    "access": access,
+                    "refresh": refresh,
+                    "dealer": {
+                        "username": invitation.dealer.username,
+                        "full_name": invitation.dealer.full_name,
+                        "business_name": invitation.dealer.business_name,
+                    },
+                    "role": existing_assignment.role,
+                    "permissions": existing_assignment.permissions,
+                    "message": "Invitation accepted (reactivated)",
+                    "phone_required": phone_required,
+                }
+            else:
+                return dsr_error_response(
+                    "You are already assigned to this dealer",
+                    "already_assigned",
+                    400
+                )
+
+        # Phase 2: Check max_dsrs before creating a new assignment too.
+        # The dealer may have hit their DSR limit between sending the
+        # invitation and the DSR accepting it.
+        from common.sattabase_access import aget_dealer_access, get_dealer_limit
+        dealer_access = await aget_dealer_access(invitation.dealer.username)
+        max_dsrs = get_dealer_limit(dealer_access, "max_dsrs")
+        if max_dsrs is not None and max_dsrs > 0:
+            active_count = await DsrDealerAssignment.objects.filter(
+                dealer=invitation.dealer,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).acount()
+            if (active_count + 1) > max_dsrs:
+                return dsr_error_response(
+                    "Cannot accept: the dealer has reached their "
+                    "plan limit of {} DSRs. Please ask the "
+                    "dealer to upgrade their plan.".format(max_dsrs),
+                    "plan_limit_exceeded",
+                    403,
+                )
 
         # Create assignment (FIX: ensure id fits 100-char PK like the sync path)
         assignment = await DsrDealerAssignment.objects.acreate(

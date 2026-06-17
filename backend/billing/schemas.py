@@ -653,6 +653,62 @@ class CreditTransactionListResponse(Schema):
 
 
 # =============================================================================
+# Subscriber Access Schema (Server-to-Server)
+# =============================================================================
+
+
+class SubscriberAccessResponseSchema(Schema):
+    """Response schema for the server-to-server subscriber access endpoint.
+
+    Used by sister domains (e.g., DealerBackend) to look up a subscriber's
+    access matrix for a given service domain. This allows sister domains
+    to constrain their own permission systems (like DSR permissions) based
+    on what the subscriber's plan actually allows.
+
+    Endpoint: GET /billing/subscriber/access
+    Auth: X-API-Key header (IsServiceAuthenticated)
+    """
+
+    subscriber_id: str = Field(
+        ...,
+        description="The subscriber's user ID (matches the subscriber_id query param)",
+    )
+    service_domain: str = Field(
+        ...,
+        description="The service domain that was queried",
+    )
+    subscription_status: str = Field(
+        ...,
+        description=(
+            "Subscription status for this domain's product: "
+            "'active', 'trialing', 'past_due', 'canceled', 'expired', or 'none'"
+        ),
+    )
+    is_active: bool = Field(
+        ...,
+        description="Whether the subscription grants access (active or trialing)",
+    )
+    plan_slug: Optional[str] = Field(
+        None,
+        description="Slug of the current plan (null if no subscription)",
+    )
+    plan_name: Optional[str] = Field(
+        None,
+        description="Display name of the current plan (null if no subscription)",
+    )
+    access: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Flat key-value access map from the plan's access entries. "
+            "Sister domains SHOULD use this to constrain their own "
+            "permission systems. For example, if 'suppliers: false' is "
+            "in the access map, the dealer system should not allow DSRs "
+            "to have 'suppliers' module permissions."
+        ),
+    )
+
+
+# =============================================================================
 # Credit Request Schemas
 # =============================================================================
 

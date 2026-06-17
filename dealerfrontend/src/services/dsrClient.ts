@@ -284,20 +284,32 @@ export const dsrApi = {
 
   /**
    * Select dealer for multi-dealer DSR
+   *
+   * The backend returns `effective_access` — the SINGLE SOURCE OF TRUTH
+   * for the DSR's portal session. It's already the intersection of:
+   *   - dealer's plan-level access (from SattaBase)
+   *   - DSR's per-dealer assignment permissions
+   *
+   * The frontend should just `setAccessMap(result.effective_access)`.
+   * No intersection logic, no hardcoded defaults.
    */
-  async selectDealer(
-    dealerUsername: string,
-  ): Promise<{
+  async selectDealer(dealerUsername: string): Promise<{
     access: string;
     refresh: string;
     dealer: DealerChoice;
     permissions: Record<string, any>;
+    dealer_access?: Record<string, any>;
+    effective_access?: Record<string, any>;
+    message?: string;
   }> {
     const data = await dsrRequest<{
       access: string;
       refresh: string;
       dealer: DealerChoice;
       permissions: Record<string, any>;
+      dealer_access?: Record<string, any>;
+      effective_access?: Record<string, any>;
+      message?: string;
     }>(
       "POST",
       "/dsr/auth/select-dealer",
@@ -313,6 +325,54 @@ export const dsrApi = {
     }
 
     return data;
+  },
+
+  /**
+   * Refresh the DSR's effective_access map from SattaBase.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * The backend caches SattaBase access responses for
+   * SATTABASE_ACCESS_CACHE_TTL seconds (default 300 = 5 min). The
+   * frontend also caches the effective_access map in a Vue ref after
+   * select-dealer. When the dealer's plan is changed live in SattaBase
+   * admin, NEITHER cache knows about it — the DSR keeps seeing the
+   * stale menu until the cache TTL expires AND the DSR re-logs in.
+   *
+   * This endpoint breaks the staleness in one shot:
+   *   1. Backend invalidates its in-memory cache for the current dealer.
+   *   2. Backend re-fetches fresh access from SattaBase (and re-caches it
+   *      so subsequent API calls also see the new matrix).
+   *   3. Backend recomputes effective_access and returns it.
+   *
+   * WHEN TO CALL
+   * ------------
+   * - When the DSR returns from a billing-redirect flow
+   *   (useBillingRedirect detects ?billing_updated=1)
+   * - On an explicit "Refresh permissions" action in the UI
+   * - Optionally: periodically (every 5 min) while the DSR portal
+   *   session is active
+   *
+   * After calling this, the caller MUST do `setAccessMap(result.effective_access)`
+   * to update the in-memory Vue ref so menu visibility re-renders.
+   *
+   * Note: this does NOT re-issue JWT tokens. The DSR's existing tokens
+   * remain valid. Only the access map is refreshed.
+   */
+  async refreshAccess(): Promise<{
+    effective_access: Record<string, any>;
+    dealer_access?: Record<string, any>;
+    permissions?: Record<string, any>;
+    cache_invalidated: boolean;
+    message?: string;
+  }> {
+    return dsrRequest<{
+      effective_access: Record<string, any>;
+      dealer_access?: Record<string, any>;
+      permissions?: Record<string, any>;
+      cache_invalidated: boolean;
+      message?: string;
+    }>("POST", "/dsr/auth/refresh-access", undefined, true);
   },
 
   /**

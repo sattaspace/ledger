@@ -728,6 +728,268 @@ class BillingService:
             "access": access_map,
         }
 
+
+    # =========================================================================
+    # Subscriber Access (Server-to-Server)
+    # =========================================================================
+
+    @staticmethod
+    def get_subscriber_access(subscriber_id: str, service_domain: str) -> dict:
+        """Look up a subscriber's access matrix for a given service domain.
+
+        This is the server-to-server equivalent of ``get_auth_me_data()``.
+        Instead of taking an authenticated User object, it accepts a
+        ``subscriber_id`` (the user's primary key) and a ``service_domain``
+        string.  Used by sister domain backends (e.g., DealerBackend) to
+        query what a dealer/subscriber's plan allows, so they can constrain
+        their own permission systems accordingly.
+
+        Args:
+            subscriber_id: The subscriber's user ID (as a string).
+            service_domain: The service domain to look up access for.
+
+        Returns:
+            Dict with keys:
+            - subscriber_id (str)
+            - service_domain (str)
+            - subscription_status (str): "active", "trialing", "past_due",
+              "canceled", "expired", or "none"
+            - is_active (bool): True if subscription grants access
+            - plan_slug (str|None)
+            - plan_name (str|None)
+            - access (dict): Flat key-value access map from the plan
+
+        Raises:
+            User.DoesNotExist: If no user matches the subscriber_id.
+        """
+        from users.models import User
+
+        # Look up user by ID
+        try:
+            user = User.objects.get(pk=subscriber_id)
+        except User.DoesNotExist:
+            raise User.DoesNotExist(
+                f"User with id={subscriber_id} not found"
+            )
+
+        # Check account status
+        if getattr(user, "is_deleted", False):
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        if not getattr(user, "is_active", True):
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Look up service domain -> product
+        try:
+            domain_obj = ServiceDomain.objects.select_related("product").get(
+                domain=service_domain, is_active=True
+            )
+        except ServiceDomain.DoesNotExist:
+            logger.warning(
+                f"Unknown service domain in subscriber access: {service_domain}"
+            )
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        product = domain_obj.product
+        if not product.is_active:
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Find subscription (read-only — do NOT auto-create free subscription
+        # for server-to-server calls; the subscriber must have an explicit
+        # subscription, or we return empty access)
+        subscription = (
+            Subscription.objects.filter(user=user, product=product)
+            .select_related("plan")
+            .first()
+        )
+
+        # If no subscription, attempt to get/create the free plan subscription
+        # (same behavior as auth/me — free plan is always available)
+        if not subscription:
+            subscription = BillingService.get_or_create_free_subscription(
+                user, product
+            )
+
+        if not subscription:
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Build access map
+        prefetch_related_objects(
+            [subscription.plan],
+            Prefetch(
+                "access_entries",
+                queryset=AccessEntry.objects.all(),
+            ),
+        )
+        access_map = subscription.get_access_map()
+
+        is_active = subscription.is_effectively_active()
+
+        return {
+            "subscriber_id": str(subscriber_id),
+            "service_domain": service_domain,
+            "subscription_status": subscription.status,
+            "is_active": is_active,
+            "plan_slug": subscription.plan.slug,
+            "plan_name": subscription.plan.name,
+            "access": access_map,
+        }
+
+    @staticmethod
+    async def aget_subscriber_access(subscriber_id: str, service_domain: str) -> dict:
+        """Async version of get_subscriber_access().
+
+        Used by the async controller endpoint.
+        """
+        from users.models import User
+
+        # Look up user by ID
+        try:
+            user = await User.objects.aget(pk=subscriber_id)
+        except User.DoesNotExist:
+            raise User.DoesNotExist(
+                f"User with id={subscriber_id} not found"
+            )
+
+        # Check account status
+        if getattr(user, "is_deleted", False):
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        if not getattr(user, "is_active", True):
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Look up service domain -> product
+        try:
+            domain_obj = await ServiceDomain.objects.select_related(
+                "product"
+            ).aget(domain=service_domain, is_active=True)
+        except ServiceDomain.DoesNotExist:
+            logger.warning(
+                f"Unknown service domain in subscriber access: {service_domain}"
+            )
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        product = domain_obj.product
+        if not product.is_active:
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Find subscription
+        subscription = (
+            await Subscription.objects.filter(user=user, product=product)
+            .select_related("plan")
+            .afirst()
+        )
+
+        if not subscription:
+            subscription = await BillingService.aget_or_create_free_subscription(
+                user, product
+            )
+
+        if not subscription:
+            return {
+                "subscriber_id": str(subscriber_id),
+                "service_domain": service_domain,
+                "subscription_status": "none",
+                "is_active": False,
+                "plan_slug": None,
+                "plan_name": None,
+                "access": {},
+            }
+
+        # Build access map
+        await sync_to_async(prefetch_related_objects)(
+            [subscription.plan],
+            Prefetch(
+                "access_entries",
+                queryset=AccessEntry.objects.all(),
+            ),
+        )
+        access_map = subscription.get_access_map()
+
+        is_active = subscription.is_effectively_active()
+
+        return {
+            "subscriber_id": str(subscriber_id),
+            "service_domain": service_domain,
+            "subscription_status": subscription.status,
+            "is_active": is_active,
+            "plan_slug": subscription.plan.slug,
+            "plan_name": subscription.plan.name,
+            "access": access_map,
+        }
+
     # =========================================================================
     # Unified Access Check (Subscription + Credit)
     # =========================================================================

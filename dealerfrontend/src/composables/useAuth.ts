@@ -99,13 +99,21 @@ async function fetchAuthMe(): Promise<User | null> {
     // The backend returns user + subscription + access scoped to this domain
     sharedUser.value = data.user as unknown as User;
     sharedSubscription.value = data.subscription as unknown as Subscription;
-    sharedAccess.value = data.access as Record<
-      string,
-      string | boolean | number
-    >;
 
-    // Synchronize with useAccess composable so hasAccess() works
-    setAccessMap(data.access as Record<string, string | boolean | number>);
+    // FIX: /billing/auth/me is ONLY called by dealers (DSRs use the DSR auth
+    // flow via /dsr/auth/* endpoints). Dealers always manage their own DSRs,
+    // but 'manage_dsrs' is NOT a SattaBase plan-level access key — it's a
+    // DSR-specific permission. The dealer's access map therefore doesn't
+    // include it. We inject it here so hasAccess('manage_dsrs') returns true
+    // for dealers — this makes the Team menu and Team tab content visible.
+    // For DSRs, this is overwritten in handleDsrEnterPortal() based on their
+    // per-dealer assignment permissions.
+    const accessWithDealerPerms: Record<string, string | boolean | number> = {
+      ...(data.access as Record<string, string | boolean | number>),
+      manage_dsrs: true,
+    };
+    sharedAccess.value = accessWithDealerPerms;
+    setAccessMap(accessWithDealerPerms);
 
     sharedInitialized.value = true;
 

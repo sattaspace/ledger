@@ -49,6 +49,7 @@ from ninja.errors import HttpError
 
 from dealercore.async_db import aatomic, async_aggregate, async_exists
 from common.dealer_context import get_dealer_context
+from common.dsr_permissions import enforce_dsr_permission
 from dealer.models import DealerConfig
 from inventory.models import Product
 from users.models import DsrUser
@@ -79,6 +80,7 @@ class SalesController:
             limit: Max records to return (default: 100, max: 1000)
             offset: Number of records to skip (for pagination)
         """
+        await enforce_dsr_permission(request, "sales", "view")
         # Enforce maximum limit to prevent memory issues
         if limit > self.MAX_PAGE_LIMIT:
             raise HttpError(400, f"Limit cannot exceed {self.MAX_PAGE_LIMIT}. Use pagination with offset.")
@@ -98,6 +100,7 @@ class SalesController:
         
         The sale is automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "sales", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             return await self._process_single_sale(request, payload, dealer_username)
@@ -108,6 +111,7 @@ class SalesController:
         
         All sales are automatically associated with the current dealer context.
         """
+        await enforce_dsr_permission(request, "sales", "edit")
         dealer_username = await get_dealer_context(request)
         
         # Validate due_date required for credit sales at bulk level
@@ -141,6 +145,7 @@ class SalesController:
     @route.get("{sale_id}", response=SaleRecordOut, summary="Get a sale")
     async def get_sale(self, request, sale_id: str):
         """Return a single sale by ID with its embedded payments and returns (dealer-scoped)."""
+        await enforce_dsr_permission(request, "sales", "view")
         dealer_username = await get_dealer_context(request)
         try:
             sale = await SaleRecord.objects.prefetch_related("payments", "returns").aget(
@@ -159,6 +164,7 @@ class SalesController:
         collection requests from causing incorrect amount_paid totals.
         Collection status is recalculated against net_amount (after returns).
         """
+        await enforce_dsr_permission(request, "collections", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
@@ -214,6 +220,7 @@ class SalesController:
         Uses select_for_update() to prevent race conditions with concurrent
         collection requests on the same sale.
         """
+        await enforce_dsr_permission(request, "collections", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
@@ -252,6 +259,7 @@ class SalesController:
 
         Uses aatomic() + select_for_update() for safe concurrent access.
         """
+        await enforce_dsr_permission(request, "sales", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
@@ -355,6 +363,7 @@ class SalesController:
         This is a one-way operation — voided sales cannot be un-voided.
         Uses aatomic() + select_for_update() for safe concurrent access.
         """
+        await enforce_dsr_permission(request, "sales", "delete")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:
@@ -419,6 +428,7 @@ class SalesController:
           the new collector sees it in their active list, but sales
           attribution reports still credit the original DSR.
         """
+        await enforce_dsr_permission(request, "sales", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():
             try:

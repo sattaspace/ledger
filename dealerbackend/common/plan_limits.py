@@ -3,13 +3,17 @@ DEALERCORE — Plan Limits Enforcement
 --------------------------------------
 Server-side enforcement of subscription limits and feature flags.
 
-FIX DSR-020: Removed the X-Plan-Limits header fallback. Client-provided
-headers can be manipulated to bypass limits. Now the resolution order is:
-  1. JWT `plan_limits` claim (preferred — SattaBase should embed this)
-  2. Permissive defaults (backward-compat until #1 ships)
+Phase 2 Update: The resolution order now includes SattaBase access data:
+  1. SattaBase access map (via sattabase_access client, cached 5 min)
+  2. JWT `plan_limits` claim (SattaBase embeds this in the token)
+  3. Permissive defaults (backward-compat until #1 and #2 ship)
 
-When SattaBase starts embedding the `plan_limits` claim in the JWT, the
-fallback defaults can be removed entirely.
+The SattaBase access map is preferred because it's always fresh (up to
+cache TTL) and authoritative — it's the same data source that the
+/billing/auth/me endpoint returns to the frontend.
+
+FIX DSR-020: Removed the X-Plan-Limits header fallback. Client-provided
+headers can be manipulated to bypass limits.
 """
 
 from __future__ import annotations
@@ -23,10 +27,9 @@ from ninja.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Permissive fallback used when the JWT doesn't include plan_limits.
-# Returning a very high number (effectively "unlimited") preserves backward
-# compatibility for existing customers until SattaBase is updated to embed
-# the `plan_limits` claim in the JWT.
+# Permissive fallback used when neither SattaBase access nor JWT
+# plan_limits are available. Returning a very high number (effectively
+# "unlimited") preserves backward compatibility for existing customers.
 _FALLBACK_LIMITS = {
     "max_products": 10_000,
     "max_dsrs": 1_000,
@@ -58,33 +61,68 @@ def _read_jwt_plan_limits(request: HttpRequest) -> Optional[dict]:
     return payload.get("plan_limits")
 
 
+def _extract_sattabase_limits(request: HttpRequest) -> Optional[dict]:
+    """
+    Extract plan limits from SattaBase access data cached on the request.
+
+    During Phase 2, controllers that call `aget_dealer_access()` store the
+    result on `request._sattabase_access` so downstream plan_limits checks
+    can use it without an extra HTTP call. If not cached on the request,
+    this returns None (the SattaBase call must be done by the controller
+    explicitly, since it's async and get_plan_limits is sync).
+    """
+    access_data = getattr(request, "_sattabase_access", None)
+    if not access_data:
+        return None
+
+    access_map = access_data.get("access", {})
+    limits = {}
+    for key in ("max_dsrs", "max_products", "max_suppliers"):
+        value = access_map.get(key)
+        if isinstance(value, (int, float)):
+            limits[key] = value
+
+    return limits if limits else None
+
+
 def get_plan_limits(request: HttpRequest) -> dict:
     """
     Return the plan limits for the current request.
 
-    FIX DSR-020: Resolution order is now:
-      1. JWT `plan_limits` claim (preferred — SattaBase should embed this)
-      2. Permissive defaults (backward-compat until #1 ships)
+    Resolution order (Phase 2):
+      1. SattaBase access map (cached on request by controller)
+      2. JWT `plan_limits` claim
+      3. Permissive defaults
 
     The X-Plan-Limits header is NO LONGER trusted. Client-provided header
     values can be manipulated to bypass limits, so they must not be used
     for enforcement decisions.
     """
-    # 1. JWT claim
+    # 1. SattaBase access map (preferred — always fresh from cache)
+    limits = _extract_sattabase_limits(request)
+    source = "sattabase_access"
+    if limits:
+        logger.debug("plan_limits resolved from %s: %s", source, limits)
+        return limits
+
+    # 2. JWT claim
     limits = _read_jwt_plan_limits(request)
     source = "jwt"
-    if not limits:
-        # 2. Permissive fallback
-        limits = _FALLBACK_LIMITS
-        source = "fallback"
-        # Only warn once per process to avoid log spam.
-        if not getattr(logger, "_fallback_warned", False):
-            logger.warning(
-                "plan_limits not in JWT — "
-                "using permissive fallback. Configure SattaBase to embed "
-                "`plan_limits` in the JWT for production enforcement."
-            )
-            logger._fallback_warned = True  # type: ignore[attr-defined]
+    if limits:
+        logger.debug("plan_limits resolved from %s: %s", source, limits)
+        return limits
+
+    # 3. Permissive fallback
+    limits = _FALLBACK_LIMITS
+    source = "fallback"
+    # Only warn once per process to avoid log spam.
+    if not getattr(logger, "_fallback_warned", False):
+        logger.warning(
+            "plan_limits not available from SattaBase access or JWT — "
+            "using permissive fallback. Configure SATTABASE_API_KEY to "
+            "enable SattaBase access enforcement."
+        )
+        logger._fallback_warned = True  # type: ignore[attr-defined]
     if source != "fallback":
         logger.debug("plan_limits resolved from %s: %s", source, limits)
     return limits
@@ -94,14 +132,27 @@ def is_feature_enabled(request: HttpRequest, feature: str) -> bool:
     """
     Return True if the named boolean feature is enabled for this plan.
 
-    Resolution order matches `get_plan_limits`:
-      1. JWT `plan_limits.<feature>` (must be a boolean)
-      2. Permissive fallback = False (deny-by-default for features)
+    Resolution order:
+      1. SattaBase access map (if cached on request)
+      2. JWT `plan_limits.<feature>` (must be a boolean)
+      3. Permissive fallback = False (deny-by-default for features)
     """
-    limits = get_plan_limits(request)
-    value = limits.get(feature)
-    if isinstance(value, bool):
-        return value
+    # 1. Check SattaBase access map first
+    access_data = getattr(request, "_sattabase_access", None)
+    if access_data:
+        access_map = access_data.get("access", {})
+        value = access_map.get(feature)
+        if isinstance(value, bool):
+            return value
+
+    # 2. Check JWT plan_limits
+    limits = _read_jwt_plan_limits(request)
+    if limits:
+        value = limits.get(feature)
+        if isinstance(value, bool):
+            return value
+
+    # 3. Deny-by-default fallback
     return _FEATURE_FALSE_FALLBACK
 
 
@@ -141,3 +192,19 @@ def check_feature(request: HttpRequest, feature: str) -> None:
             f"Your plan does not include the '{feature}' feature. "
             f"Please upgrade to enable it.",
         )
+
+
+def attach_sattabase_access(request: HttpRequest, access_data: dict) -> None:
+    """Store SattaBase access data on the request for downstream use.
+
+    Controllers that fetch dealer access via `aget_dealer_access()` should
+    call this to make the data available to `get_plan_limits()` and
+    `is_feature_enabled()` without an extra HTTP round-trip.
+
+    Example::
+
+        dealer_access = await aget_dealer_access(dealer_username)
+        attach_sattabase_access(request, dealer_access)
+        # Now get_plan_limits(request) uses the SattaBase data
+    """
+    request._sattabase_access = access_data  # type: ignore[attr-defined]

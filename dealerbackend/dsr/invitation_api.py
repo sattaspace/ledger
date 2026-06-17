@@ -15,6 +15,7 @@ from django.db import transaction
 
 from dsr.invitation_models import DsrInvitation, DsrDealerAssignment
 from common.rate_limit import rate_limit
+from common.sattabase_access import aget_dealer_access, get_dealer_limit
 from users.models import DsrUser
 from dealer.models import DealerConfig
 
@@ -313,6 +314,26 @@ class DsrInvitationController:
         if existing:
             # If a prior assignment exists but is not active, reactivate it
             if existing.status != DsrDealerAssignment.STATUS_ACTIVE:
+                # Phase 2: Check max_dsrs limit before reactivating.
+                # The dealer may have filled their DSR slots since the
+                # original assignment was deactivated.
+                dealer_access = await aget_dealer_access(invitation.dealer.username)
+                max_dsrs = get_dealer_limit(dealer_access, "max_dsrs")
+                if max_dsrs is not None and max_dsrs > 0:
+                    active_count = await DsrDealerAssignment.objects.filter(
+                        dealer=invitation.dealer,
+                        status=DsrDealerAssignment.STATUS_ACTIVE,
+                    ).acount()
+                    if (active_count + 1) > max_dsrs:
+                        return {
+                            "detail": (
+                                f"Cannot reactivate: dealer has reached the "
+                                f"plan limit of {max_dsrs} DSRs. "
+                                f"Please upgrade the plan or remove an active DSR first."
+                            ),
+                            "code": "plan_limit_exceeded",
+                        }, 403
+
                 await existing.aactivate()
                 await invitation.aaccept(dsr)
                 return {
@@ -487,6 +508,8 @@ class DsrInvitationController:
     async def activate_assignment(self, request, assignment_id: str):
         """
         Reactivate a previously deactivated DSR assignment.
+
+        Phase 2: Now checks max_dsrs plan limit before reactivating.
         """
         dealer_username = getattr(request, 'dealer_username', None)
         if not dealer_username:
@@ -499,6 +522,24 @@ class DsrInvitationController:
             )
         except DsrDealerAssignment.DoesNotExist:
             return {"detail": "Assignment not found", "code": "not_found"}, 404
+
+        # Phase 2: Check max_dsrs limit before reactivating
+        dealer_access = await aget_dealer_access(dealer_username)
+        max_dsrs = get_dealer_limit(dealer_access, "max_dsrs")
+        if max_dsrs is not None and max_dsrs > 0:
+            active_count = await DsrDealerAssignment.objects.filter(
+                dealer_id=dealer_username,
+                status=DsrDealerAssignment.STATUS_ACTIVE,
+            ).acount()
+            if (active_count + 1) > max_dsrs:
+                return {
+                    "detail": (
+                        f"Cannot reactivate: plan limit of {max_dsrs} DSRs "
+                        f"reached. Please upgrade the plan or remove an active "
+                        f"DSR first."
+                    ),
+                    "code": "plan_limit_exceeded",
+                }, 403
 
         await assignment.aactivate()
 

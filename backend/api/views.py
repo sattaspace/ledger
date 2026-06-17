@@ -55,6 +55,8 @@ api = NinjaExtraAPI(
         "- `POST /billing/portal`\n\n"
         "### Webhooks (signature-verified, no JWT)\n"
         "- `POST /billing/webhooks/stripe`\n\n"
+        "### Service-to-Service (API key required)\n"
+        "- `GET /billing/service/subscriber/access` — Get subscriber access matrix\n\n"
         "## Admin Endpoints (`/api/v1/admin/`)  \n"
         "All admin endpoints require JWT authentication with ``is_staff=True``.  \n"
         "Write endpoints are rate-limited to 30 req/min; read endpoints to 120 req/min.\n\n"

@@ -240,19 +240,68 @@ AUTH_USER_MODEL = 'users.DsrUser'
 # Access token lifetime for token validation
 JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=60)
 
-# SattaBase JWT verification (FIX S-1).
-# The PermissionMiddleware needs to verify tokens issued by SattaBase.
-# SattaBase signs with RS256 by default — set SATTABASE_JWT_PUBLIC_KEY (PEM,
-# single line or with \n) to enable verification. If unset, the middleware
-# falls back to HS256 with `SATTABASE_JWT_SHARED_SECRET` (less secure; use
-# only in development). If both are unset, token verification fails closed
-# (every request is treated as unauthenticated).
+
+# SattaBase JWT verification (FIX S-1, Audit A1).
+# The PermissionMiddleware verifies SattaBase-issued JWTs using RS256 with
+# the public key below. This is the ONLY supported verification method —
+# asymmetric crypto ensures that a compromised DealerBackend cannot be used
+# to forge SattaBase JWTs for other sister domains.
+#
+# REMOVED: SATTABASE_JWT_SHARED_SECRET (HS256 fallback). This was a security
+# anti-pattern — it required copying SattaBase's signing key to DealerBackend,
+# which means a DealerBackend compromise would let an attacker forge tokens
+# for ALL sister domains. The API key (SATTABASE_API_KEY) handles
+# server-to-server auth; JWT verification must use RS256 only.
+#
+# If SATTABASE_JWT_PUBLIC_KEY is not configured, SattaBase JWT verification
+# fails closed (only local DSR JWTs will work). This is the correct default.
+#
+# To obtain the public key from SattaBase:
+#   1. SattaBase .env has SB_JWT_PUBLIC_KEY (or extract from the signing key)
+#   2. Or: curl http://localhost:8086/api/v1/auth/.well-known/jwks.json
+#   3. Set it here as a single-line PEM (replace newlines with \n)
 SATTABASE_JWT_ALGORITHM = os.getenv("SATTABASE_JWT_ALGORITHM", "RS256")
 SATTABASE_JWT_PUBLIC_KEY = os.getenv("SATTABASE_JWT_PUBLIC_KEY", "")
-SATTABASE_JWT_SHARED_SECRET = os.getenv("SATTABASE_JWT_SHARED_SECRET", "")
 # Issuer and audience validation - leave empty if SattaBase JWT doesn't include these claims
 SATTABASE_JWT_ISSUER = os.getenv("SATTABASE_JWT_ISSUER", "")
 SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "")
+
+
+
+
+# =============================================================================
+# SATTABASE ACCESS CLIENT SETTINGS
+# =============================================================================
+# Used by common/sattabase_access.py to query the SattaBase subscriber-access
+# endpoint. This is the server-to-server channel that lets DealerBackend
+# discover what the dealer's subscription plan allows, so DSR permissions can
+# be constrained accordingly.
+
+# Base URL of the SattaBase backend (no trailing slash)
+SATTABASE_API_BASE_URL = os.getenv(
+    "SATTABASE_API_BASE_URL",
+    "http://localhost:8086",
+)
+# dealercore's API key for authenticating to SattaBase. This is a "ServiceCredential"
+# API key issued by SattaBase for this sister domain (ServiceCredential).
+# Required in production — the /billing/service/subscriber/access endpoint
+# uses IsServiceAuthenticated which validates the X-API-Key header.
+SATTABASE_API_KEY = os.getenv("SATTABASE_API_KEY", "sb_live__qoUu-jmS7e1BQsmYenCAVn5c4rBY4zMpbwgBPri1Wc")
+
+# The service domain slug that identifies this product in SattaBase's
+# ServiceDomain table. Must match the `domain` field exactly.
+SATTABASE_SERVICE_DOMAIN = os.getenv(
+    "SATTABASE_SERVICE_DOMAIN",
+    "localhost:4323",
+)
+
+# Cache TTL (seconds) for dealer access lookups. 5 minutes balances
+# freshness (plan changes propagate quickly) against SattaBase load.
+SATTABASE_ACCESS_CACHE_TTL = int(os.getenv("SATTABASE_ACCESS_CACHE_TTL", "300"))
+
+
+
+
 
 
 

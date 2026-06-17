@@ -307,7 +307,7 @@ class AuthController:
     )
     async def register(self, request: HttpRequest, payload: RegisterInputSchema):
         """Register a new user and send email verification OTP."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "register",
             max_attempts=getattr(settings, "RATE_LIMIT_REGISTER_ATTEMPTS", 5),
@@ -380,7 +380,7 @@ class AuthController:
         per email. This significantly slows down targeted brute force attacks.
         """
         # AUTH-3 FIX: Per-IP rate limit (original)
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "login",
             max_attempts=getattr(settings, "RATE_LIMIT_LOGIN_ATTEMPTS", 10),
@@ -390,7 +390,7 @@ class AuthController:
         # AUTH-3 FIX: Per-email rate limit (new)
         # This prevents brute force attacks that rotate IP addresses.
         # Each email gets its own bucket: 10 attempts per 15 minutes regardless of IP.
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             f"login_email:{payload.email.lower()}",
             max_attempts=getattr(settings, "RATE_LIMIT_LOGIN_ATTEMPTS", 10),
@@ -788,7 +788,7 @@ class AuthController:
         self, request: HttpRequest, payload: PasswordResetRequestSchema
     ):
         """Request a password reset OTP via email."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "pwreset_req",
             max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
@@ -820,7 +820,7 @@ class AuthController:
         Each email has its own rate limit bucket.
         """
         # MED-03 FIX: Include email in rate limit key to prevent global exhaustion attacks
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             f"pwreset_confirm:{payload.email}",
             max_attempts=getattr(settings, "RATE_LIMIT_PASSWORD_RESET_ATTEMPTS", 5),
@@ -862,7 +862,7 @@ class AuthController:
         """
         # MED-16 FIX: Include email in rate limit key to prevent email bombing
         # Reduced from 5/5min to 3/hour per email
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             f"email_verify_req:{payload.email}",
             max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 3),
@@ -888,7 +888,7 @@ class AuthController:
         self, request: HttpRequest, payload: EmailVerifyConfirmSchema
     ):
         """Confirm email verification with OTP."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "email_verify_confirm",
             max_attempts=getattr(settings, "RATE_LIMIT_EMAIL_VERIFY_ATTEMPTS", 10),
@@ -957,7 +957,7 @@ class AuthController:
         from django.http import JsonResponse
         
         # CRIT-06 FIX: Rate limit auth code exchange to prevent brute force attacks
-        check_rate_limit_or_raise(request, "token_exchange", max_attempts=10, window_seconds=60)
+        await check_rate_limit_or_raise(request, "token_exchange", max_attempts=10, window_seconds=60)
         
         try:
             user = await AuthService.aexchange_auth_code(payload.code)
@@ -1132,7 +1132,7 @@ class UserController:
     ):
         """Change password after verifying current password."""
         # HIGH-19: Rate limit password changes to prevent abuse
-        check_rate_limit_or_raise(request, "change_password", max_attempts=5, window_seconds=3600)
+        await check_rate_limit_or_raise(request, "change_password", max_attempts=5, window_seconds=3600)
         try:
             await AuthService.achange_password(
                 request.user,
@@ -1161,7 +1161,7 @@ class UserController:
         self, request: HttpRequest, payload: PasswordConfirmSchema
     ):
         """Verify the user's current password as an identity gate."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "confirm_identity",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
@@ -1191,7 +1191,7 @@ class UserController:
         self, request: HttpRequest, payload: ChangeEmailRequestSchema
     ):
         """Request email change — sends OTP to current email."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "email_change",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 5),
@@ -1226,7 +1226,7 @@ class UserController:
         self, request: HttpRequest, payload: ChangeEmailConfirmOTPSchema
     ):
         """Confirm email change with OTP from current email."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "email_change_confirm",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 10),
@@ -1257,7 +1257,7 @@ class UserController:
         self, request: HttpRequest, payload: DeleteAccountRequestSchema
     ):
         """Soft-delete the account after password confirmation."""
-        check_rate_limit_or_raise(
+        await check_rate_limit_or_raise(
             request,
             "delete_account",
             max_attempts=getattr(settings, "RATE_LIMIT_SENSITIVE_ATTEMPTS", 3),

@@ -37,6 +37,7 @@ from dsr.api import DSRController
 #   - DealerDsrController in dealer_dsr_api.py (Dealer-side: invite/revoke/list)
 from dsr.auth_api import DsrAuthController, DsrInvitationController, DsrAssignmentController
 from dsr.dealer_dsr_api import DealerDsrController
+from dsr.permissions_api import DsrPermissionsController
 from supplier.api import SupplierController
 from dealer.api import DealerController
 from reports.api import ReportsController
@@ -61,4 +62,5 @@ api.register_controllers(
     DsrInvitationController,  # DSR-side invitation management (accept/reject)
     DsrAssignmentController,  # DSR-side assignment management (leave dealer)
     DealerDsrController,  # Dealer-side DSR management (invite/remove)
+    DsrPermissionsController,  # DSR module permissions (frontend composable)
 )

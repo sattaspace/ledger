@@ -33,6 +33,13 @@ import type { ChartData, ChartOptions } from 'chart.js';
 import type { SummaryData } from '../services/api/reports.service';
 import AddRepModal from './AddRepModal.vue';
 import InvitationList from './InvitationList.vue';
+import { useAccess } from '../composables/useAccess';
+
+const { hasAccess } = useAccess();
+// DSRs in portal mode can only see the Invitations panel if they have the
+// manage_dsrs permission. Dealers always have it (set in handleDsrEnterPortal
+// for DSRs, and dealers bypass via the navItems filter in App.vue).
+const canManageDsrs = hasAccess('manage_dsrs');
 
 
 
@@ -846,8 +853,9 @@ const revenueTrendOptions = computed(() => ({
         </div>
 
         <div class="flex flex-wrap gap-2">
-          <!-- Unified Add Rep Button -->
+          <!-- Unified Add Rep Button (only shown if user can manage DSRs) -->
           <button 
+            v-if="canManageDsrs"
             id="btn-add-rep"
             @click="showAddRepModal = true"
             class="py-2.5 px-4 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg flex items-center gap-2 hover:from-violet-700 hover:to-purple-700 transition cursor-pointer font-semibold text-sm shadow-sm"
@@ -856,9 +864,9 @@ const revenueTrendOptions = computed(() => ({
             <span>Add Rep</span>
           </button>
 
-          <!-- Toggle Invitation List -->
+          <!-- Toggle Invitation List (only shown if user can manage DSRs) -->
           <button 
-            v-if="!showInvitationList"
+            v-if="canManageDsrs && !showInvitationList"
             @click="showInvitationList = true"
             class="py-2.5 px-4 bg-white text-slate-600 border border-slate-200 rounded-lg flex items-center gap-2 hover:bg-slate-50 transition cursor-pointer font-semibold text-sm shadow-sm"
             title="View pending invitations"
@@ -867,7 +875,7 @@ const revenueTrendOptions = computed(() => ({
             <span>Invitations</span>
           </button>
           <button 
-            v-else
+            v-else-if="canManageDsrs && showInvitationList"
             @click="showInvitationList = false"
             class="py-2.5 px-4 bg-violet-100 text-violet-700 border border-violet-200 rounded-lg flex items-center gap-2 hover:bg-violet-50 transition cursor-pointer font-semibold text-sm"
           >
@@ -1900,7 +1908,7 @@ const revenueTrendOptions = computed(() => ({
     />
 
     <!-- ========== INVITATION LIST (Toggle) ========== -->
-    <div v-if="showInvitationList" class="mt-4">
+    <div v-if="showInvitationList && canManageDsrs" class="mt-4">
       <InvitationList @refresh="emit('refreshData')" />
     </div>
   </div>

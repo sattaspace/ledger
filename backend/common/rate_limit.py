@@ -2,6 +2,7 @@
 
 import time
 import logging
+from asgiref.sync import sync_to_async
 from django.core.cache import cache
 from django.conf import settings
 
@@ -13,6 +14,9 @@ def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> bool:
 
     Stores a list of timestamps in the cache under ``rl:{key}``. Stale
     timestamps outside the window are pruned on each check.
+
+    This is the **synchronous** variant.  For use inside async views prefer
+    :func:`acheck_rate_limit` which uses the async cache API.
 
     Args:
         key: Unique identifier for the rate limit bucket
@@ -35,6 +39,27 @@ def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> bool:
 
     attempts.append(now)
     cache.set(cache_key, attempts, timeout=window_seconds)
+    return True
+
+
+async def acheck_rate_limit(key: str, max_attempts: int, window_seconds: int) -> bool:
+    """Async variant of :func:`check_rate_limit`.
+
+    Uses ``cache.aget()`` / ``cache.aset()`` so no synchronous I/O is
+    performed — safe to call from async Django views (Django 4.1+).
+    """
+    now = time.time()
+    window_start = now - window_seconds
+    cache_key = f"rl:{key}"
+    attempts = await cache.aget(cache_key, [])
+    attempts = [ts for ts in attempts if ts > window_start]
+
+    if len(attempts) >= max_attempts:
+        logger.warning(f"Rate limit exceeded for key: {key}")
+        return False
+
+    attempts.append(now)
+    await cache.aset(cache_key, attempts, timeout=window_seconds)
     return True
 
 
@@ -63,13 +88,29 @@ def _get_sdk_rate_limit_params(request):
     return (f"sdk:{prefix}", max_attempts, window_seconds)
 
 
-def check_rate_limit_or_raise(
+def _resolve_user_id_sync(request) -> str:
+    """Resolve ``request.user.id`` synchronously.
+
+    Must **only** be called inside :func:`sync_to_async` when running in
+    an async context, because accessing ``request.user`` on a
+    ``SimpleLazyObject`` triggers Django's session backend which performs
+    a synchronous database query.
+    """
+    user = getattr(request, "user", None)
+    if user is not None and hasattr(user, "id") and not getattr(user, "is_anonymous", True):
+        return str(user.id)
+    return "anon"
+
+
+async def check_rate_limit_or_raise(
     request,
     key_prefix: str,
     max_attempts: int = None,
     window_seconds: int = None,
 ) -> None:
     """Check rate limit and raise ``TooManyRequestsException`` if exceeded.
+
+    **This function is now async** — all callers must ``await`` it.
 
     Builds the rate limit key from the request's user ID (if authenticated)
     and either the client IP (direct/browser traffic) or the API key prefix
@@ -80,6 +121,12 @@ def check_rate_limit_or_raise(
     This prevents a sister domain backend that proxies many users through
     a single IP from exhausting the shared bucket.  SDK traffic also uses
     higher default limits (``RATE_LIMIT_SDK_ATTEMPTS`` / ``RATE_LIMIT_SDK_WINDOW``).
+
+    ``request.user`` is accessed via ``sync_to_async`` to avoid the
+    ``SynchronousOnlyOperation`` error that occurs when Django's
+    ``SimpleLazyObject`` (set by ``AuthenticationMiddleware``) tries to
+    resolve the user through a synchronous session DB lookup inside an
+    async context.
 
     Args:
         request: Django HttpRequest. If ``request.user`` is authenticated,
@@ -100,17 +147,13 @@ def check_rate_limit_or_raise(
 
         @http_post("/subscriptions/{slug}/cancel")
         async def cancel(self, request, slug):
-            check_rate_limit_or_raise(request, "cancel_sub")
+            await check_rate_limit_or_raise(request, "cancel_sub")
             # ... business logic
     """
     from common.exceptions import TooManyRequestsException
 
-    user_id = (
-        getattr(request, "user", None)
-        and hasattr(request.user, "id")
-        and str(request.user.id)
-        or "anon"
-    )
+    # Resolve request.user in a thread to avoid SynchronousOnlyOperation
+    user_id = await sync_to_async(_resolve_user_id_sync)(request)
 
     # SDK traffic: use API key prefix as bucket with higher limits
     sdk_params = _get_sdk_rate_limit_params(request)
@@ -128,7 +171,7 @@ def check_rate_limit_or_raise(
             settings, "RATE_LIMIT_SENSITIVE_WINDOW", 3600
         )
 
-    if not check_rate_limit(rl_key, _max, _window):
+    if not await acheck_rate_limit(rl_key, _max, _window):
         raise TooManyRequestsException()
 
 

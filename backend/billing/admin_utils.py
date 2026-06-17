@@ -135,11 +135,11 @@ def log_admin_access(func):
 # =============================================================================
 
 
-def _apply_rate_limit(request: HttpRequest, key_prefix: str, max_attempts: int, window_seconds: int) -> None:
+async def _apply_rate_limit(request: HttpRequest, key_prefix: str, max_attempts: int, window_seconds: int) -> None:
     """Internal helper — check rate limit and raise TooManyRequestsException."""
     from common.rate_limit import check_rate_limit_or_raise
 
-    check_rate_limit_or_raise(
+    await check_rate_limit_or_raise(
         request,
         key_prefix=key_prefix,
         max_attempts=max_attempts,
@@ -174,7 +174,7 @@ def admin_write_rate_limit(func=None, *, max_attempts: int = 30, window_seconds:
     def decorator(fn):
         @wraps(fn)
         async def wrapper(self, request, *args, **kwargs):
-            _apply_rate_limit(
+            await _apply_rate_limit(
                 request,
                 key_prefix="admin_write",
                 max_attempts=max_attempts,
@@ -210,7 +210,7 @@ def admin_read_rate_limit(func=None, *, max_attempts: int = 120, window_seconds:
     def decorator(fn):
         @wraps(fn)
         async def wrapper(self, request, *args, **kwargs):
-            _apply_rate_limit(
+            await _apply_rate_limit(
                 request,
                 key_prefix="admin_read",
                 max_attempts=max_attempts,

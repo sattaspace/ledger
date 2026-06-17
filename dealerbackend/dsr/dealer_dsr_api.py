@@ -43,6 +43,12 @@ from common.tasks import (
     send_dsr_removed_notification,
 )
 from common.rate_limit import rate_limit
+from common.sattabase_access import (
+    aget_dealer_access,
+    constrain_dsr_permissions as _constrain_dsr_permissions,
+    get_dealer_limit,
+    get_access_client,
+)
 
 
 def get_dealer_from_request(request: HttpRequest) -> Optional[DealerConfig]:
@@ -225,14 +231,46 @@ class DealerDsrController:
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
 
+        # ── Phase 2: Fetch dealer's access from SattaBase ─────────────
+        # This replaces the old JWT-only plan_limits approach with a
+        # live query to SattaBase's subscriber-access endpoint.
+        dealer_access = await aget_dealer_access(dealer.username)
+        client = get_access_client()
+
+        # Attach to request so plan_limits.py can use it without
+        # making another HTTP call.
+        from common.plan_limits import attach_sattabase_access
+        attach_sattabase_access(request, dealer_access)
+
+        # Check dealer subscription is active before allowing invites
+        if not client.is_dealer_subscription_active(dealer_access):
+            return 403, {
+                "detail": (
+                    "Your subscription is not active. "
+                    "Please activate or upgrade your plan to invite DSRs."
+                ),
+                "code": "subscription_inactive",
+            }
+
         # FIX A-1 (Phase A — CRIT-1): server-side enforcement of
-        # `max_dsrs` plan limit. Counts active assignments for this dealer
-        # and refuses to create more if the plan cap is reached.
-        from common.plan_limits import check_plan_limit
+        # `max_dsrs` plan limit. Now uses the value from SattaBase's
+        # access map (fetched above) instead of JWT fallback.
         active_count = await DsrDealerAssignment.objects.filter(
             dealer=dealer,
             status=DsrDealerAssignment.STATUS_ACTIVE,
         ).acount()
+        # Check against SattaBase access map first, fall back to JWT
+        max_dsrs = get_dealer_limit(dealer_access, "max_dsrs")
+        if max_dsrs is not None and max_dsrs > 0 and (active_count + 1) > max_dsrs:
+            return 403, {
+                "detail": (
+                    f"Plan limit reached: you have {active_count} of "
+                    f"{max_dsrs} DSRs allowed. Please upgrade your plan."
+                ),
+                "code": "plan_limit_exceeded",
+            }
+        # Also keep the old JWT-based check as a secondary enforcement
+        from common.plan_limits import check_plan_limit
         check_plan_limit(request, "max_dsrs", active_count + 1)
 
         # Normalize email
@@ -307,6 +345,22 @@ class DealerDsrController:
         permissions = data.permissions
         if not permissions and data.role in DEFAULT_PERMISSIONS:
             permissions = DEFAULT_PERMISSIONS[data.role].copy()
+
+        # ── Phase 2: Constrain DSR permissions against dealer's access ──
+        # If the dealer's plan doesn't allow a module (e.g. suppliers: false),
+        # the DSR cannot be granted that permission either. This ensures
+        # DSR permissions never exceed what the dealer's subscription allows.
+        if permissions:
+            constrained = _constrain_dsr_permissions(permissions, dealer_access)
+            # Log any differences for audit
+            if constrained != permissions:
+                violations = client.get_violations(permissions, dealer_access)
+                logger.info(
+                    "[DSR INVITE] Permissions constrained for dealer %s: "
+                    "original=%s → constrained=%s, violations=%s",
+                    dealer.username, permissions, constrained, violations,
+                )
+            permissions = constrained
         
         invitation = await DsrInvitation.objects.acreate(
             id=invitation_id,
@@ -511,7 +565,12 @@ class DealerDsrController:
     
     @http_put("/assignments/{assignment_id}", response={200: dict, 400: dict, 403: dict, 404: dict})
     async def update_dsr(self, request: HttpRequest, assignment_id: str, data: UpdateDsrPermissionsInput):
-        """Update DSR permissions/role. DEALER ONLY."""
+        """Update DSR permissions/role. DEALER ONLY.
+        
+        Phase 2: Permissions are now constrained against the dealer's
+        subscription access matrix. Any permission the dealer's plan
+        doesn't allow will be silently stripped from the DSR's assignment.
+        """
         # Dealer-only check
         if not getattr(request, 'is_dealer', False):
             return 403, {"detail": "Only dealers can update DSR permissions", "code": "dealer_only"}
@@ -519,6 +578,24 @@ class DealerDsrController:
         dealer = await aget_dealer_from_request(request)
         if not dealer:
             return 400, {"detail": "Dealer context required", "code": "dealer_required"}
+
+        # ── Phase 2: Fetch dealer's access from SattaBase ─────────────
+        dealer_access = await aget_dealer_access(dealer.username)
+        _client = get_access_client()
+
+        # Attach to request so plan_limits.py can use it
+        from common.plan_limits import attach_sattabase_access
+        attach_sattabase_access(request, dealer_access)
+
+        # Check dealer subscription is still active
+        if not _client.is_dealer_subscription_active(dealer_access):
+            return 403, {
+                "detail": (
+                    "Your subscription is not active. "
+                    "Please activate or upgrade your plan to manage DSRs."
+                ),
+                "code": "subscription_inactive",
+            }
         
         try:
             assignment = await DsrDealerAssignment.objects.aget(
@@ -546,7 +623,19 @@ class DealerDsrController:
                 assignment.permissions = DEFAULT_PERMISSIONS[data.role].copy()
         
         if data.permissions is not None:
-            assignment.permissions = data.permissions
+            # ── Phase 2: Constrain proposed permissions against dealer access ──
+            constrained = _constrain_dsr_permissions(data.permissions, dealer_access)
+            if constrained != data.permissions:
+                import logging
+                logger = logging.getLogger(__name__)
+                violations = _client.get_violations(data.permissions, dealer_access)
+                logger.info(
+                    "[DSR UPDATE] Permissions constrained for dealer %s, "
+                    "assignment %s: original=%s → constrained=%s, violations=%s",
+                    dealer.username, assignment_id,
+                    data.permissions, constrained, violations,
+                )
+            assignment.permissions = constrained
         
         if data.commission_rate is not None:
             assignment.commission_rate = data.commission_rate

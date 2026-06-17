@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { 
   Package, 
   ShoppingCart, 
@@ -835,69 +835,47 @@ const handleDsrEnterPortal = async (assignment: any) => {
     const { setAccessMap } = await import('./composables/useAccess');
 
     // Select the dealer context — backend returns DSR-scoped JWT tokens
-    // that include the dealer context. The middleware will recognize these
-    // and set the correct permissions.
+    // AND the SINGLE SOURCE OF TRUTH `effective_access` map.
+    //
+    // The backend already intersected:
+    //   1. The dealer's plan-level access (from SattaBase, dynamic)
+    //   2. The DSR's per-dealer assignment permissions
+    // into one flat `effective_access` map. The frontend just calls
+    // setAccessMap() and renders. No intersection logic, no hardcoded
+    // defaults, no special cases. This eliminates the entire class of
+    // bugs where frontend intersection disagreed with backend enforcement.
+    //
+    // NOTE on naming: `assignment.dealer.username` is actually the
+    // SattaBase user_pk as a string (e.g. "1") — the `username` column
+    // was renamed in spirit but not in code. The backend's select-dealer
+    // endpoint accepts this value and passes it straight through to
+    // SattaBase's pk-lookup branch, which finds the user correctly.
     const result = await dsrApi.selectDealer(assignment.dealer.username);
 
     // Store dealer selection
     setDsrSelectedDealer(result.dealer);
 
-    // FIX DSR-013: Convert the DSR's per-dealer permissions into the flat
-    // access map format used by hasAccess() / PermissionGuard.
-    // The backend returns nested permissions like:
-    //   { "dashboard": {"view": true}, "sales": {"view": true, "edit": true} }
-    // But hasAccess() expects flat boolean keys like:
-    //   { "dashboard": true, "sales": true, ... }
-    // A module is accessible if its "view" permission is true (or the whole
-    // value is a boolean true). We also add default entries for features
-    // that DSRs should always be able to access in portal mode.
-    const dsrAccessMap: Record<string, boolean | number | string> = {};
-    const perms = result.permissions || {};
-    for (const [module, actions] of Object.entries(perms)) {
-      if (typeof actions === 'boolean') {
-        dsrAccessMap[module] = actions;
-      } else if (typeof actions === 'object' && actions !== null) {
-        // Module is accessible if "view" is true
-        dsrAccessMap[module] = !!(actions as Record<string, any>).view;
-      }
-    }
-
-    // Ensure core features are always available in DSR portal mode.
-    // DSRs need dashboard, inventory, sales, collections, reports at minimum.
-    // If the permissions map didn't explicitly deny them, grant access.
-    const coreFeatures = ['dashboard', 'inventory', 'sales', 'collections', 'reports', 'bad_debt'];
-    for (const feature of coreFeatures) {
-      if (dsrAccessMap[feature] === undefined) {
-        dsrAccessMap[feature] = true;
-      }
-    }
-
-    // Suppliers and team are typically restricted for DSRs; only enable if
-    // explicitly granted in their permissions.
-    if (dsrAccessMap['suppliers'] === undefined) {
-      dsrAccessMap['suppliers'] = false;
-    }
-
-    // Set numeric limits to "unlimited" (0) for DSR portal mode so they
-    // don't hit plan-based restrictions that apply to the dealer.
-    dsrAccessMap['max_products'] = 0;
-    dsrAccessMap['max_dsrs'] = 0;
-    dsrAccessMap['max_suppliers'] = 0;
+    // Single source of truth — set the access map directly from the
+    // backend-computed intersection. If the backend couldn't fetch
+    // from SattaBase, it returns a dashboard-only fallback.
+    const effectiveAccess = result.effective_access || { dashboard: true, __subscription_active: false };
+    setAccessMap(effectiveAccess);
 
     if (import.meta.env.DEV) {
-      console.log('%c[APP] DSR portal access map', 'color: #8b5cf6; font-weight: bold', {
-        rawPermissions: perms,
-        accessMap: dsrAccessMap,
+      console.log('%c[APP] DSR portal effective access (backend-computed)', 'color: #8b5cf6; font-weight: bold', {
+        effectiveAccess,
+        rawDealerAccess: result.dealer_access,
+        rawPermissions: result.permissions,
       });
     }
 
-    setAccessMap(dsrAccessMap);
-
-    // FIX DSR-013: Enter the dealer portal in DSR mode.
-    // Instead of just showing a toast, we now actually switch to the
-    // main dealer app UI using the DSR's scoped JWT.
+    // Enter the dealer portal in DSR mode.
     dsrPortalDealer.value = result.dealer;
     dsrInPortalMode.value = true;
+
+    // Start the periodic access-refresh timer so menu visibility stays
+    // in sync with SattaBase's access matrix without requiring a re-login.
+    startDsrAccessRefreshTimer();
 
     // Load dealer data (products, sales, etc.) using the DSR-scoped JWT.
     // The apiClient will automatically attach the DSR JWT and
@@ -918,6 +896,9 @@ const handleDsrExitPortal = () => {
   dsrPortalDealer.value = null;
   activeTab.value = 'overview';
 
+  // Stop the periodic access-refresh timer — no longer in portal mode.
+  stopDsrAccessRefreshTimer();
+
   // Clear the DSR portal access map so it doesn't leak into the
   // DSR dashboard view. The access map will be repopulated if the
   // DSR enters portal mode again or if a dealer logs in.
@@ -925,6 +906,91 @@ const handleDsrExitPortal = () => {
     clearAccessMap();
   });
 };
+
+// ─── DSR Access Refresh ───────────────────────────────────────────────────
+//
+// The DSR's effective_access map is computed ONCE at select-dealer time
+// and stored in a Vue ref. The backend also caches the SattaBase access
+// response for 5 minutes (SATTABASE_ACCESS_CACHE_TTL).
+//
+// When the dealer's plan is changed live in SattaBase admin, NEITHER
+// cache knows about it. The DSR keeps seeing the stale menu until the
+// cache TTL expires AND the DSR re-logs in.
+//
+// refreshDsrAccess() breaks that staleness: it calls the backend's
+// /dsr/auth/refresh-access endpoint, which invalidates the backend cache
+// for the current dealer, re-fetches fresh access from SattaBase, and
+// returns the new effective_access. We then update the Vue ref so the
+// menu re-renders.
+//
+// Triggers:
+//   1. handleBillingReturned() — DSR returns from a billing-redirect flow
+//   2. Periodic timer (every 5 min) while in DSR portal mode
+//   3. (Future) explicit "Refresh permissions" button in the UI
+const refreshingDsrAccess = ref(false);
+
+async function refreshDsrAccess(silent = true): Promise<boolean> {
+  // Only meaningful when the DSR is in portal mode (has a selected dealer).
+  if (!dsrInPortalMode.value || !dsrPortalDealer.value) return false;
+  if (refreshingDsrAccess.value) return false; // dedupe concurrent calls
+
+  refreshingDsrAccess.value = true;
+  try {
+    const { dsrApi } = await import('./services/dsrClient');
+    const { setAccessMap } = await import('./composables/useAccess');
+
+    const result = await dsrApi.refreshAccess();
+    const newAccess = result.effective_access || { dashboard: true, __subscription_active: false };
+    setAccessMap(newAccess);
+
+    if (import.meta.env.DEV) {
+      console.log('%c[APP] DSR access refreshed from SattaBase', 'color: #10b981; font-weight: bold', {
+        cache_invalidated: result.cache_invalidated,
+        effective_access_keys: Object.keys(newAccess),
+        effective_access: newAccess,
+      });
+    }
+
+    if (!silent) {
+      triggerToast('Permissions refreshed. Menu visibility is now up-to-date.');
+    }
+    return true;
+  } catch (error: any) {
+    console.error('[APP] refreshDsrAccess failed:', error);
+    if (!silent) {
+      triggerErrorToast('Could not refresh permissions. Please re-login to see the latest access.');
+    }
+    return false;
+  } finally {
+    refreshingDsrAccess.value = false;
+  }
+}
+
+// Periodic refresh: every 5 minutes while in DSR portal mode.
+// This matches the backend's default SATTABASE_ACCESS_CACHE_TTL (300s).
+// If the dealer's plan changes mid-session, the DSR's menu will reflect
+// it within 5 minutes without requiring a re-login.
+let dsrAccessRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function startDsrAccessRefreshTimer() {
+  stopDsrAccessRefreshTimer();
+  // 5 minutes = 300,000 ms. Matches the backend default cache TTL.
+  dsrAccessRefreshTimer = setInterval(() => {
+    if (dsrInPortalMode.value) {
+      refreshDsrAccess(true).catch(() => {});
+    } else {
+      // DSR exited portal mode — stop the timer
+      stopDsrAccessRefreshTimer();
+    }
+  }, 5 * 60 * 1000);
+}
+
+function stopDsrAccessRefreshTimer() {
+  if (dsrAccessRefreshTimer !== null) {
+    clearInterval(dsrAccessRefreshTimer);
+    dsrAccessRefreshTimer = null;
+  }
+}
 
 const handleSessionRestored = async () => {
   await loadAll();
@@ -934,15 +1000,36 @@ const handleSessionRestored = async () => {
 // <SessionGuard> when useBillingRedirect detects a return from the
 // SattaBase billing flow. We always run loadAll() first so the new
 // subscription is reflected in the UI before the toast appears.
+//
+// IMPORTANT: For DSRs in portal mode, loadAll() does NOT refresh the
+// access map — it only reloads products/sales/etc. We must explicitly
+// call refreshDsrAccess() to invalidate the backend cache and pull the
+// new effective_access map. Without this, the DSR keeps seeing stale
+// menu visibility even though the dealer's plan was just changed.
 const handleBillingReturned = async (success: boolean | null) => {
   if (success === null) return; // not a billing return
   await loadAll();
+
+  // If a DSR is in portal mode, also refresh their access map — the
+  // dealer (who may be a different person on a different device) just
+  // changed the billing plan, which may have changed the access matrix.
+  if (dsrInPortalMode.value) {
+    await refreshDsrAccess(true);
+  }
+
   if (success) {
     triggerToast('Billing updated successfully. Your plan changes are now active.');
   } else {
     triggerErrorToast('Billing update failed or was cancelled. Your plan is unchanged.');
   }
 };
+
+// FIX: Clean up the periodic access-refresh timer when the component
+// unmounts. Without this, the interval keeps firing in the background
+// even after the user navigates away from the dealerfrontend SPA.
+onUnmounted(() => {
+  stopDsrAccessRefreshTimer();
+});
 
 const formatCurrency = (amt: number) => {
   const cur = activeDealer.value?.defaultCurrency || 'INR';
@@ -960,7 +1047,7 @@ const { hasAccess, getLimit } = useAccess();
 // Navigation items with access keys for permission filtering
 const allNavItems = [
   { id: 'overview', name: 'Dashboard', icon: '📦', accessKey: 'dashboard' },
-  { id: 'team', name: 'Team', icon: '👥', accessKey: 'dashboard' },
+  { id: 'team', name: 'Team', icon: '👥', accessKey: 'manage_dsrs' },
   { id: 'inventory', name: 'Inventory/Restock', icon: '🏢', accessKey: 'inventory' },
   { id: 'suppliers', name: 'Suppliers', icon: '🏪', accessKey: 'suppliers' },
   { id: 'sales', name: 'Sales Entry', icon: '🧾', accessKey: 'sales' },
@@ -969,9 +1056,22 @@ const allNavItems = [
   { id: 'reports', name: 'Financial Reports', icon: '📊', accessKey: 'reports' }
 ];
 
-// Filter nav items based on user's access permissions
+// Filter nav items based on user's access permissions.
+// For DEALERS: use hasAccess() against the plan-level access map from SattaBase.
+//   The 'team' menu uses accessKey 'manage_dsrs' which is a DSR-specific key —
+//   dealers always have it (they manage their own DSRs), so we bypass the check.
+// For DSRs in portal mode: use hasAccess() against the intersected map that was
+//   built in handleDsrEnterPortal() (dealer's plan ∩ DSR's permissions).
 const navItems = computed(() => {
-  return allNavItems.filter(item => hasAccess(item.accessKey).value);
+  return allNavItems.filter(item => {
+    // Dealers always see the Team menu — they manage their own DSRs.
+    // 'manage_dsrs' is not a SattaBase plan key, so hasAccess() would return
+    // false for dealers, which would incorrectly hide Team.
+    if (item.accessKey === 'manage_dsrs' && !dsrInPortalMode.value) {
+      return true;
+    }
+    return hasAccess(item.accessKey).value;
+  });
 });
 
 // Access limits for enforcement
@@ -1274,7 +1374,7 @@ const maxSuppliers = getLimit('max_suppliers', 0);
             </PermissionGuard>
 
             <!-- Team Management Tab -->
-            <PermissionGuard feature="dashboard">
+            <PermissionGuard feature="manage_dsrs">
               <div v-if="activeTab === 'team'" class="p-4 md:p-6 space-y-6">
                 <div class="flex items-center justify-between mb-4">
                   <div>
@@ -1713,7 +1813,7 @@ const maxSuppliers = getLimit('max_suppliers', 0);
           </PermissionGuard>
 
           <!-- Team Management Tab -->
-          <PermissionGuard feature="dashboard">
+          <PermissionGuard feature="manage_dsrs">
             <div v-if="activeTab === 'team'" class="p-4 md:p-6 space-y-6">
               <div class="flex items-center justify-between mb-4">
                 <div>

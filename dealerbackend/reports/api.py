@@ -35,6 +35,7 @@ from ninja.errors import HttpError
 
 from dealercore.async_db import async_aggregate
 from common.dealer_context import get_dealer_context
+from common.dsr_permissions import enforce_dsr_permission
 from dealer.models import DealerConfig
 from inventory.models import Product, RestockRecord
 from sales.models import SaleRecord, CreditPayment
@@ -134,6 +135,8 @@ class ReportsController:
         Dealer Context:
             Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+
+        await enforce_dsr_permission(request, "reports", "view")
         # Get dealer context from request (set by middleware)
         dealer_username = await get_dealer_context(request)
 
@@ -310,6 +313,8 @@ class ReportsController:
         Dealer Context:
             Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        await enforce_dsr_permission(request, "reports", "view")
+
         # Get dealer context from request
         dealer_username = await get_dealer_context(request)
 
@@ -407,6 +412,8 @@ class ReportsController:
         Dealer Context:
             Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        await enforce_dsr_permission(request, "reports", "view")
+
         # Get dealer context from request
         dealer_username = await get_dealer_context(request)
 
@@ -504,6 +511,8 @@ class ReportsController:
         Dealer Context:
             Uses X-Dealer-Username header to scope all data to the current dealer.
         """
+        await enforce_dsr_permission(request, "reports", "view")
+
         # Get dealer context from request
         dealer_username = await get_dealer_context(request)
 
@@ -634,6 +643,8 @@ class ReportsController:
         # FIX A-1 (Phase A — CRIT-1): server-side enforcement of the
         # `ai_insights` feature flag. Frontend-only checks were bypassable
         # via direct API calls.
+
+        await enforce_dsr_permission(request, "reports", "export")
         from common.plan_limits import check_feature
         check_feature(request, "ai_insights")
 
