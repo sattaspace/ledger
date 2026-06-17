@@ -1,0 +1,18 @@
+---
+/**
+ * AppLayoutPortal — variant of AppLayout for DSR portal mode.
+ *
+ * Adds a `margin-top: 40px` to the main-wrapper so content doesn't go
+ * under the fixed-position portal banner. Used by /dashboard, /inventory,
+ * etc. when a DSR is in portal mode.
+ *
+ * Actually — to keep things simple, we use a single AppLayout and let
+ * the AppSidebar + AppHeader conditionally apply the portal margin via
+ * inline styles. This file is just a thin re-export for clarity.
+ */
+import AppLayout from "./AppLayout.astro";
+---
+
+<AppLayout>
+  <slot />
+</AppLayout>

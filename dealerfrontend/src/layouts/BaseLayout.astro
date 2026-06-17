@@ -1,0 +1,87 @@
+---
+/**
+ * BaseLayout — root HTML shell shared by all pages.
+ *
+ * Provides:
+ *   - <head> with fonts, charset, viewport
+ *   - Body wrapper with Tailwind classes
+ *
+ * NOTE: We intentionally do NOT include Astro's <ClientRouter /> for view
+ * transitions. With multi-root Vue island components (AppSidebar has a
+ * v-if banner + a sidebar aside), Astro's transition:persist emits
+ * `data-astro-transition-persist` on the component invocation, which Vue
+ * cannot auto-inherit because of the multi-root template (Vue warns:
+ * "Extraneous non-props attributes... could not be automatically
+ * inherited because component renders fragment or text or teleport root
+ * nodes"). Worse, Astro's view-transitions swap fails at runtime in some
+ * browser/Node combinations with "Cannot read properties of null (reading
+ * 'moveBefore')", which blanked the page after a sidebar click.
+ *
+ * Without ClientRouter, navigation is a full page reload. That is the
+ * correct MPA behavior for this app — the shell re-mounts each time but
+ * no client-side state needs to survive across navigations beyond what
+ * the httpOnly cookie preserves server-side.
+ *
+ * This is the lowest-level layout. AuthLayout and AppLayout build on top of it.
+ */
+import "../index.css";
+
+interface Props {
+  title?: string;
+  bodyClass?: string;
+}
+
+const {
+  title = "DEALERCORE v3.0 — Dealer Management System",
+  bodyClass = "bg-slate-50 min-h-screen selection:bg-blue-100 antialiased overflow-hidden m-0 p-0 font-sans text-slate-900",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class={bodyClass}>
+    <div id="root">
+      <slot />
+    </div>
+    <script is:inline define:vars={{ initialAccessToken: Astro.locals.accessToken }}>
+      // Hand the server-minted access token to the client before any
+      // Vue island mounts. The Astro middleware (src/middleware.ts)
+      // validates the sb_refresh_token cookie on every page request and
+      // mints a fresh access token via /auth/token/refresh-cookie. Without
+      // this handoff, the client has no Bearer token in memory on first
+      // mount → first /billing/auth/me call returns 401 → client calls
+      // refresh-cookie again → second call succeeds. That double-fetch
+      // pattern is what shows up as "checking authentication" in the
+      // console. By setting window.__INITIAL_AUTH_TOKEN__ here, api.ts
+      // can hydrate _accessToken synchronously on module load.
+      if (initialAccessToken) {
+        window.__INITIAL_AUTH_TOKEN__ = initialAccessToken;
+      }
+    </script>
+    <script is:inline>
+      // Apply DSR portal mode body class before page renders to prevent layout flash.
+      // The portal banner is fixed-position; main content needs margin-top to avoid overlap.
+      (function () {
+        try {
+          if (localStorage.getItem("dealercore:dsr_portal_mode") === "true") {
+            document.documentElement.classList.add("dsr-portal-mode");
+            document.body.classList.add("dsr-portal-mode");
+          }
+        } catch (e) {
+          /* localStorage unavailable */
+        }
+      })();
+    </script>
+  </body>
+</html>

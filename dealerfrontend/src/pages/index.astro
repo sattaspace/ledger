@@ -1,28 +1,64 @@
 ---
-import App from "../App.vue";
-import "../index.css";
+/**
+ * / — root redirect page.
+ *
+ * Server-side, we don't know auth state (tokens are in localStorage/sessionStorage).
+ * So we ship a tiny inline script that decides:
+ *   - If dealer refresh token exists → /dashboard
+ *   - Else if DSR portal mode flag is set → /dashboard
+ *   - Else if DSR access token exists → /dsr/dashboard
+ *   - Else → /login
+ *
+ * The script runs synchronously in <head> to avoid any flash.
+ */
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const title = "DEALERCORE v3.0 — Dealer Management System";
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DEALERCORE v3.0 — Dealer Management System</title>
-    <!-- space grotesk and jetbrains fonts setup -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-  </head>
-  <body
-    class="bg-slate-50 min-h-screen selection:bg-blue-100 antialiased overflow-hidden m-0 p-0 font-sans text-slate-900"
+<BaseLayout title={title}>
+  <div
+    style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF8F5;"
   >
-    <div id="root">
-      <!-- client:only prevents hydration mismatch during auth state changes -->
-      <App client:only="vue" />
+    <div style="text-align:center;">
+      <div
+        style="width:48px;height:48px;border:4px solid #FBE4D7;border-top-color:#E25212;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"
+      >
+      </div>
+      <p style="color:#736B60;font-family:Inter,sans-serif;font-size:14px;">Loading DEALERCORE…</p>
     </div>
-  </body>
-</html>
+  </div>
+  <style is:inline>
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+  <script is:inline>
+    (function () {
+      try {
+        var dealerRefresh =
+          sessionStorage.getItem("dealercore:refresh_token") ||
+          localStorage.getItem("dealercore:refresh_token");
+        var dsrAccess = localStorage.getItem("dsr_access_token");
+        var portalMode = localStorage.getItem("dealercore:dsr_portal_mode") === "true";
+
+        var target = "/login";
+        if (portalMode || dealerRefresh) {
+          target = "/dashboard";
+        } else if (dsrAccess) {
+          target = "/dsr/dashboard";
+        }
+
+        // Only redirect if we're actually at "/" — avoids redirect loop on /
+        if (window.location.pathname === "/") {
+          window.location.replace(target);
+        }
+      } catch (e) {
+        // On any error, fall through to /login
+        window.location.replace("/login");
+      }
+    })();
+  </script>
+</BaseLayout>

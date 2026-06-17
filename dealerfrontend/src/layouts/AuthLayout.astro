@@ -1,0 +1,19 @@
+---
+/**
+ * AuthLayout — minimal layout for authentication pages (login, register, etc.).
+ *
+ * Uses BaseLayout but adds no app shell (no sidebar/topbar). Auth pages are
+ * standalone full-screen views.
+ */
+import BaseLayout from "./BaseLayout.astro";
+
+interface Props {
+  title?: string;
+}
+
+const { title } = Astro.props;
+---
+
+<BaseLayout title={title}>
+  <slot />
+</BaseLayout>

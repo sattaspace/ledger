@@ -13,10 +13,7 @@ const props = defineProps<{
   token: string;
 }>();
 
-const emit = defineEmits<{
-  (e: 'registered'): void;
-  (e: 'showLogin'): void;
-}>();
+// No emits — navigation is via window.location.href (MPA pattern).
 
 // Form state
 const name = ref('');
@@ -97,8 +94,8 @@ async function handleRegister() {
       password.value
     );
     
-    // Emit success event - parent will handle navigation
-    emit('registered');
+    // Navigate to DSR dashboard on success
+    window.location.href = '/dsr/dashboard';
   } catch (error: any) {
     // FIX M-21: read from the ApiError shape produced by dealerApi.
     // Previously used `error?.response?.data?.detail` (Axios pattern) which
@@ -186,7 +183,7 @@ async function handleRegister() {
               <h2 class="text-2xl font-bold text-slate-800 mb-2">Invalid Invitation</h2>
               <p class="text-slate-500 mb-6">{{ errorMessage }}</p>
               <button 
-                @click="emit('showLogin')" 
+                @click="window.location.href = '/dsr/login'" 
                 class="text-emerald-600 hover:text-emerald-700 font-semibold"
               >
                 Go to login

@@ -4,11 +4,6 @@ import { Store, TrendingUp, Shield, Zap } from 'lucide-vue-next';
 import LoginForm from './LoginForm.vue';
 import { redirectToBase } from '../lib/auth';
 
-const emit = defineEmits<{
-  (e: 'login'): void;
-  (e: 'showDsrLogin'): void;
-}>();
-
 const showForgotPassword = ref(false);
 
 // Redirect to SattaBase for account creation
@@ -19,6 +14,16 @@ function handleCreateAccount() {
 // Redirect to SattaBase for password reset
 function handleForgotPassword() {
   redirectToBase('/auth/forgot-password');
+}
+
+// After successful login, navigate to /dashboard
+function handleLoginSuccess() {
+  window.location.href = '/dashboard';
+}
+
+// DSR login lives at /dsr/login
+function showDsrLogin() {
+  window.location.href = '/dsr/login';
 }
 </script>
 
@@ -82,7 +87,7 @@ function handleForgotPassword() {
             </p>
           </div>
           
-          <LoginForm @success="$emit('login')" />
+          <LoginForm @success="handleLoginSuccess" />
           
           <div class="mt-6 text-center space-y-2">
             <p class="text-sm text-slate-500">
@@ -105,7 +110,7 @@ function handleForgotPassword() {
             <p class="text-sm text-slate-500 pt-2 border-t border-slate-100 mt-3">
               Are you a DSR (Sales Representative)?
               <button 
-                @click="$emit('showDsrLogin')"
+                @click="showDsrLogin"
                 class="text-emerald-600 hover:text-emerald-700 font-semibold"
               >
                 Login here

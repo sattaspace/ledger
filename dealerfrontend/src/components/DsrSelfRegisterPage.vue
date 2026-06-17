@@ -11,10 +11,7 @@ import { ref, computed } from 'vue';
 import { Store, CheckCircle, UserPlus, AlertCircle, Mail, ShieldCheck } from 'lucide-vue-next';
 import { dsrApi } from '../services/dsrClient';
 
-const emit = defineEmits<{
-  (e: 'registered'): void;
-  (e: 'showDsrLogin'): void;
-}>();
+// No emits — navigation is via window.location.href (MPA pattern).
 
 // Form state
 const fullName = ref('');
@@ -68,9 +65,9 @@ async function handleRegister() {
     successMessage.value = 'Account created successfully!';
     showVerificationNotice.value = true;
     
-    // Emit registered event after a longer delay so user can read the verification notice
+    // Navigate to DSR dashboard after a delay so the user can read the verification notice
     setTimeout(() => {
-      emit('registered');
+      window.location.href = '/dsr/dashboard';
     }, 5000);
   } catch (error: any) {
     console.error('[DSR REGISTER] Registration failed:', error);
@@ -287,7 +284,7 @@ async function handleRegister() {
             <p class="text-sm text-slate-500">
               Already have an account?
               <button 
-                @click="$emit('showDsrLogin')"
+                @click="window.location.href = '/dsr/login'"
                 class="text-emerald-600 hover:text-emerald-700 font-semibold"
               >
                 Sign in

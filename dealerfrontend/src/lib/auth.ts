@@ -10,9 +10,17 @@
  *   2. Sister domain calls POST /auth/authorize → gets one-time code
  *   3. Sister domain redirects to base domain's callback with ?code=XXX
  *   4. Base domain exchanges code for tokens, stores them, redirects to target page
+ *
+ * AUTH COOKIE FLOW (post-migration):
+ *   login()  → POST /api/auth/login   (Astro proxy → sets httpOnly cookie)
+ *   logout() → POST /api/auth/logout  (Astro proxy → clears httpOnly cookie)
+ *   The refresh token NEVER enters JavaScript — it lives only in the
+ *   `sb_refresh_token` httpOnly Secure cookie managed by the browser.
+ *   See src/middleware.ts and src/pages/api/auth/* for the server side.
  */
 
 import { apiClient, authHelpers, clearTokens } from "./api";
+import { clearDsrPortalState } from "../composables/useDsrPortal";
 import type {
   ApiError,
   AuthMeResponse,
@@ -21,56 +29,111 @@ import type {
 } from "./types";
 import config from "../../sattabase.config";
 
+/**
+ * POST to a same-origin Astro endpoint (the /api/auth/* proxy).
+ *
+ * We use raw fetch here instead of apiClient because apiClient prepends
+ * `API_BASE_URL` (the Sattabase URL) to every path. The login/logout
+ * proxies live on this origin (dealerfrontend), not Sattabase — they
+ * exist specifically to land the httpOnly cookie on this origin.
+ *
+ * credentials: 'include' is REQUIRED so the browser auto-sends the
+ * sb_refresh_token cookie when present (e.g. logout needs it so
+ * Sattabase can blacklist the token).
+ */
+async function postSameOrigin<T = unknown>(
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: "include",
+  });
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}`;
+    try {
+      const errBody = await response.json();
+      if (errBody?.detail) message = errBody.detail;
+    } catch {
+      /* not JSON */
+    }
+    const err: ApiError = { status: response.status, message };
+    throw err;
+  }
+  // Some endpoints (logout) return 204 with no body — handle gracefully.
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
 // ─── Login ───────────────────────────────────────────────────────────────────
 
 /**
- * Login — POST /auth/login → store tokens
+ * Login — POST /api/auth/login (Astro proxy) → store access token.
+ *
+ * The proxy forwards credentials to Sattabase /auth/login, which:
+ *   - Sets the refresh token in an `sb_refresh_token` httpOnly cookie
+ *     (propagated onto the dealerfrontend origin by the proxy).
+ *   - Returns the short-lived access token in the JSON response body.
+ *
+ * This function POSTs to the relative /api/auth/login path so the
+ * browser hits the Astro server (not Sattabase directly). That way
+ * the Set-Cookie response from Sattabase lands on the dealerfrontend
+ * origin (where the Astro middleware can read it) instead of on the
+ * Sattabase origin.
  *
  * @param email - User email address
  * @param password - User password
- * @param remember - If true, tokens persist in localStorage (30 days).
- *                   If false/omitted, tokens use sessionStorage (tab-only).
+ * @param remember - If true, Sattabase issues a persistent refresh
+ *                   cookie (30 days). If false, it's a session cookie.
  */
 export async function login(
   email: string,
   password: string,
   remember = false,
-): Promise<TokenPair> {
-  const data = await apiClient.post<TokenPair>("/auth/login", {
-    email,
-    password,
-    remember,
-  });
-  authHelpers.setTokens(data.access, data.refresh, remember);
+): Promise<{ access: string }> {
+  const data = await postSameOrigin<{ access: string }>(
+    "/api/auth/login",
+    { email, password, remember },
+  );
+  // Persist access token in memory only (refresh lives in httpOnly cookie).
+  authHelpers.setTokens(data.access);
+  // Defensive: a dealer login must never inherit a stale DSR portal flag
+  // (e.g. user was a DSR in portal mode, closed the tab, now logging in
+  // as dealer on the same browser). Clearing the flag prevents the
+  // "DSR Portal Mode" banner from showing on the dealer UI.
+  clearDsrPortalState();
   return data;
 }
 
 // ─── Logout ──────────────────────────────────────────────────────────────────
 
 /**
- * Logout — blacklist refresh token + clear local tokens
+ * Logout — POST /api/auth/logout (Astro proxy) → clear cookie + memory.
  *
- * Blacklists the refresh token server-side before clearing local state.
- * If blacklisting fails (network error, etc.) we still clear locally.
+ * The proxy forwards the request to Sattabase /auth/logout with the
+ * refresh cookie in a Cookie header so Sattabase can blacklist the
+ * token (AUTH-2 CSRF protection), then propagates the clearing
+ * Set-Cookie headers back to the browser.
+ *
+ * If the request fails (network error, etc.) we still clear local
+ * state and redirect to /login — the user is effectively logged out
+ * at the browser level even if the server blacklist was missed.
  */
 export async function logout(): Promise<void> {
   try {
-    const refreshToken = authHelpers.getRefreshToken();
-    if (refreshToken) {
-      await apiClient.post("/auth/token/blacklist", { refresh: refreshToken });
-    }
+    await postSameOrigin<void>("/api/auth/logout");
   } catch {
-    // Continue with local cleanup even if blacklist fails
+    // Even if the proxy fails, clear local state — the user wants out.
   }
-  try {
-    await apiClient.post("/users/me/logout");
-  } catch {
-    // Even if the API call fails, clear local tokens
-  }
-  authHelpers.clearTokens();
+  clearTokens();
+  // Clear any stale DSR portal state so the next dealer login doesn't
+  // inherit the banner (and so the next DSR login starts cleanly).
+  clearDsrPortalState();
   if (typeof window !== "undefined") {
-    // Reload to root - the App.vue will show LoginPage when not authenticated
-    window.location.href = "/";
+    // Redirect to the dedicated /login page (MPA refactor).
+    window.location.href = "/login";
   }
 }
 
@@ -224,8 +287,8 @@ export function checkAuth(): boolean {
 export function requireAuth(): boolean {
   if (!checkAuth()) {
     if (typeof window !== "undefined") {
-      // Reload to root - the App.vue will show LoginPage when not authenticated
-      window.location.href = "/";
+      // Redirect to the dedicated /login page (MPA refactor).
+      window.location.href = "/login";
     }
     return false;
   }

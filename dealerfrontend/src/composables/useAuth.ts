@@ -42,13 +42,21 @@ let fetchPromise: Promise<User | null> | null = null;
 
 // ─── Auto-invalidation on billing updates ──────────────────────────────────
 //
-// When a billing_updated param is detected (via useBillingRedirect),
-// it dispatches this custom event. useAuth picks it up and silently refetches
-// so that subscription and access are fresh.
+// When a billing_updated param is detected (via AppFooter's billing-return
+// checker), it dispatches this custom event. useAuth picks it up and silently
+// refetches so that subscription and access are fresh.
+//
+// The listener is registered lazily (not at module top-level) so it can be
+// cleanly torn down if needed. Multiple registrations are deduplicated.
 
 const BILLING_EVENT = "sattabase:billing-updated";
+let _billingListenerRegistered = false;
 
-if (typeof window !== "undefined") {
+function registerBillingListener() {
+  if (typeof window === "undefined") return;
+  if (_billingListenerRegistered) return;
+  _billingListenerRegistered = true;
+
   window.addEventListener(BILLING_EVENT, () => {
     if (sharedInitialized.value) {
       // Clear everything so the next fetch hits the API
@@ -62,6 +70,9 @@ if (typeof window !== "undefined") {
     }
   });
 }
+
+// Register on first import (idempotent)
+registerBillingListener();
 
 // ─── Internal fetch ─────────────────────────────────────────────────────────
 

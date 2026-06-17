@@ -1,0 +1,20 @@
+---
+/**
+ * /dsr/dashboard — DSR portal home page.
+ *
+ * Shows invitations, assignments, profile editing, and "Enter Portal" button.
+ * Authenticated as a DSR (via dsr_access_token in localStorage).
+ *
+ * If the user is also a dealer, we still allow this page — the dealer can
+ * switch between dealer app and DSR portal.
+ */
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import DsrDashboard from "../../components/DsrDashboard.vue";
+import "../../styles/app-shell.css";
+
+const title = "DSR Dashboard — DEALERCORE";
+---
+
+<BaseLayout title={title}>
+  <DsrDashboard client:load />
+</BaseLayout>

@@ -1,0 +1,13 @@
+---
+/**
+ * /dsr/login — DSR login page.
+ */
+import AuthLayout from "../../layouts/AuthLayout.astro";
+import DsrLoginPage from "../../components/DsrLoginPage.vue";
+
+const title = "DSR Login — DEALERCORE";
+---
+
+<AuthLayout title={title}>
+  <DsrLoginPage client:load />
+</AuthLayout>

@@ -19,65 +19,53 @@ import type { ApiError } from "./types";
 export const API_BASE_URL = config.apiBaseUrl;
 export const DEALER_API_URL = config.dealerApiBaseUrl;
 
-const TOKEN_KEY_ACCESS = `${config.tokenKeyPrefix}access_token`;
-const TOKEN_KEY_REFRESH = `${config.tokenKeyPrefix}refresh_token`;
-const REMEMBER_KEY = `${config.tokenKeyPrefix}remember_me`;
+// Type augmentation for the server-injected token set by BaseLayout.
+declare global {
+  interface Window {
+    /** Short-lived JWT access token minted by the Astro middleware. */
+    __INITIAL_AUTH_TOKEN__?: string;
+  }
+}
+
+// Cookie name for the refresh token. Must match the backend cookie name
+// (backend/users/controllers.py:98 REFRESH_TOKEN_COOKIE_NAME).
+const REFRESH_COOKIE_NAME = "sb_refresh_token";
 const DEALER_CONTEXT_KEY = "dealercore:selected_dealer";
 
 // ─── In-memory token cache ───────────────────────────────────────────────────
 
-let _accessToken: string | null = null;
-let _refreshToken: string | null = null;
-
-// ─── Token Persistence ───────────────────────────────────────────────────────
-
 /**
- * Token persistence strategy:
- *   - Access token: kept IN MEMORY ONLY (`_accessToken`). Never written to
- *     sessionStorage or localStorage. On page reload, the in-memory copy is
- *     gone; the client either uses a refresh token from storage to mint a
- *     new one, or redirects to login. This is the L-6 fix: an XSS payload
- *     that exfiltrates storage gets the refresh token (long-lived) but NOT
- *     a working access token it can reuse directly without another request.
- *   - Refresh token: persisted to sessionStorage by default (cleared when
- *     the tab/window closes). With "remember me" it goes to localStorage so
- *     the user stays signed in across browser restarts.
- *   - The proper hardening (L-6) is to move the refresh token into an
- *     httpOnly Secure cookie set by SattaBase. That requires SattaBase-side
- *     changes and is tracked as out of scope in the bug report.
+ * Access token is kept IN MEMORY ONLY (`_accessToken`). Never written to
+ * sessionStorage or localStorage. On page reload the in-memory copy is
+ * gone; the page either renders with a fresh access token injected by
+ * the Astro middleware (see BaseLayout), or the client calls
+ * /auth/token/refresh-cookie to mint a new one from the httpOnly
+ * refresh cookie. An XSS payload that exfiltrates storage therefore
+ * cannot steal a working access token (L-6 / HIGH-03 hardening).
+ *
+ * Refresh token is NOT stored on the client at all. It lives in an
+ * httpOnly Secure cookie (`sb_refresh_token`) set by the
+ * /api/auth/login Astro proxy and forwarded by the browser
+ * automatically (credentials: 'include') to Sattabase endpoints.
+ *
+ * Handoff from server middleware: src/middleware.ts validates the
+ * refresh cookie on every page request and stores the freshly minted
+ * access token on `Astro.locals.accessToken`. BaseLayout injects that
+ * value into the page as `window.__INITIAL_AUTH_TOKEN__`. We hydrate
+ * `_accessToken` from it synchronously on module load so the FIRST
+ * /billing/auth/me call after page mount has a valid Bearer token —
+ * no 401 → refresh-cookie → retry dance.
  */
+let _accessToken: string | null = null;
 
-/** Pick the correct storage backend based on "remember me" preference. */
-function tokenStorage(): Storage {
-  if (typeof window === "undefined") return sessionStorage;
-  try {
-    return localStorage.getItem(REMEMBER_KEY) === "true"
-      ? localStorage
-      : sessionStorage;
-  } catch {
-    return sessionStorage;
+// Hydrate from server-injected token (set by BaseLayout before this
+// module evaluates). Synchronous, runs once per page load.
+if (typeof window !== "undefined") {
+  const initial = window.__INITIAL_AUTH_TOKEN__;
+  if (initial) {
+    _accessToken = initial;
   }
 }
-
-/** Recover tokens from storage into memory (called on module init). */
-function initTokens(): void {
-  if (typeof window === "undefined") return;
-  try {
-    // FIX L-6 (partial): we deliberately do NOT hydrate _accessToken from
-    // either storage. The access token is memory-only. On a fresh page
-    // load, the first API call will trigger refreshAccessToken() if a
-    // refresh token is available, otherwise the user lands on login.
-    const refresh =
-      sessionStorage.getItem(TOKEN_KEY_REFRESH) ||
-      localStorage.getItem(TOKEN_KEY_REFRESH);
-    if (refresh) _refreshToken = refresh;
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-// Recover tokens immediately so they're available before middleware runs
-initTokens();
 
 // ─── Token Accessors ─────────────────────────────────────────────────────────
 
@@ -86,62 +74,58 @@ export function getAccessToken(): string | null {
   return _accessToken;
 }
 
-/** Get the current refresh token from memory. */
-function getRefreshToken(): string | null {
-  return _refreshToken;
+/**
+ * Check whether the browser currently holds the refresh cookie.
+ *
+ * This is a best-effort client-side check — httpOnly cookies are not
+ * readable from JavaScript. We use `document.cookie` to look for any
+ * non-httpOnly cookie (`sb_remember_me`) as a proxy signal: if the
+ * remember-me flag is set, the refresh cookie is also set. If neither
+ * is set, the user almost certainly has no active session.
+ *
+ * The authoritative check is server-side (Astro middleware calls
+ * /auth/token/refresh-cookie). This function exists so the
+ * SessionGuard and bootstrap logic can short-circuit when no
+ * session is plausible.
+ */
+export function hasRefreshCookie(): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    // httpOnly cookies are invisible to JS. We can only detect cookies
+    // whose httpOnly flag is false (e.g. sb_remember_me). For
+    // httpOnly sb_refresh_token itself we have to fall back to the
+    // remember-me marker.
+    const cookies = document.cookie || "";
+    // Note: this returns true if EITHER sb_refresh_token (impossible
+    // for httpOnly) OR sb_remember_me is set. In practice the latter
+    // is what we can observe; the former is invisible.
+    return /sb_refresh_token=|sb_remember_me=/.test(cookies);
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Store tokens in memory AND persist the refresh token to storage.
+ * Store the access token in memory.
  *
- * FIX L-6 (partial): the access token is no longer persisted to
- * sessionStorage / localStorage. Only the refresh token is stored.
- * The access token lives in `_accessToken` for the lifetime of the
- * page; on reload, `initTokens()` does not rehydrate it and the
- * next API call triggers a refresh via the stored refresh token.
- *
- * @param remember - true → localStorage (30-day persistence), false → sessionStorage
+ * The refresh token is no longer accepted as a parameter — it is set
+ * by the server as an httpOnly cookie via /api/auth/login and is not
+ * readable by JavaScript.
  */
-export function setTokens(
-  access: string,
-  refresh: string,
-  remember = false,
-): void {
+export function setTokens(access: string): void {
   _accessToken = access;
-  _refreshToken = refresh;
-
-  if (typeof window === "undefined") return;
-  try {
-    const storage = remember ? localStorage : sessionStorage;
-    // Clear any old access tokens that may have been persisted by older
-    // code versions, so a downgrade doesn't leave them lingering.
-    sessionStorage.removeItem(TOKEN_KEY_ACCESS);
-    if (!remember) localStorage.removeItem(TOKEN_KEY_ACCESS);
-    storage.setItem(TOKEN_KEY_REFRESH, refresh);
-    localStorage.setItem(REMEMBER_KEY, String(remember));
-  } catch {
-    /* storage unavailable */
-  }
 }
 
-/** Clear tokens from memory AND both storage backends. */
+/**
+ * Clear the access token from memory. The refresh cookie is cleared
+ * by POSTing to /api/auth/logout (which the caller must do); this
+ * function only handles the in-memory access token.
+ */
 export function clearTokens(): void {
   _accessToken = null;
-  _refreshToken = null;
-
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.removeItem(TOKEN_KEY_ACCESS);
-    sessionStorage.removeItem(TOKEN_KEY_REFRESH);
-    localStorage.removeItem(TOKEN_KEY_ACCESS);
-    localStorage.removeItem(TOKEN_KEY_REFRESH);
-    localStorage.removeItem(REMEMBER_KEY);
-  } catch {
-    /* storage unavailable */
-  }
 }
 
-/** Check if the user is authenticated (has a non-expired access token). */
+/** Check if the user has a non-expired access token in memory. */
 export function isAuthenticated(): boolean {
   return !!_accessToken;
 }
@@ -263,23 +247,36 @@ function buildHeaders(
 let refreshPromise: Promise<string | null> | null = null;
 
 /**
- * Refresh the access token using the stored refresh token.
- * Deduplicates concurrent refresh calls so only one request is made.
+ * Refresh the access token using the httpOnly refresh cookie.
+ *
+ * Calls Sattabase POST /auth/token/refresh-cookie with
+ * credentials: 'include' so the browser automatically sends the
+ * `sb_refresh_token` cookie. The backend reads the cookie, rotates it,
+ * and returns a fresh access token (in the response body) + the
+ * rotated refresh cookie (in Set-Cookie).
+ *
+ * Returns the new access token on success, null on failure.
+ * Deduplicates concurrent calls so only one refresh request flies.
  */
 export async function refreshAccessToken(): Promise<string | null> {
-  // Deduplicate concurrent refresh calls
+  // Deduplicate concurrent refresh calls.
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
     try {
-      const refresh = getRefreshToken();
-      if (!refresh) return null;
-
-      const response = await fetch(`${API_BASE_URL}/auth/token/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh }),
-      });
+      const response = await fetch(
+        `${API_BASE_URL}/auth/token/refresh-cookie`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include", // browser sends sb_refresh_token cookie
+          // Sattabase's refresh-cookie endpoint declares an empty
+          // CookieRefreshInputSchema, so Django Ninja rejects requests
+          // with no body. Send "{}" to satisfy the schema validator;
+          // the refresh token itself is read from the cookie header.
+          body: "{}",
+        },
+      );
 
       if (!response.ok) {
         clearTokens();
@@ -289,26 +286,14 @@ export async function refreshAccessToken(): Promise<string | null> {
       const data = await response.json();
       if (data.access) {
         _accessToken = data.access;
-        if (data.refresh) {
-          _refreshToken = data.refresh;
-        }
-        // FIX L-6 (partial): persist only the refresh token. The access
-        // token lives in memory only — see setTokens() for the rationale.
-        if (typeof window !== "undefined") {
-          try {
-            const storage = tokenStorage();
-            sessionStorage.removeItem(TOKEN_KEY_ACCESS);
-            if (storage === localStorage) {
-              // remember_me=true case: clear any previously stored access
-              // token in localStorage as well.
-              localStorage.removeItem(TOKEN_KEY_ACCESS);
-            }
-            if (data.refresh)
-              storage.setItem(TOKEN_KEY_REFRESH, _refreshToken!);
-          } catch {
-            /* storage unavailable */
-          }
-        }
+        // The rotated refresh cookie arrives in Set-Cookie; the browser
+        // stores it automatically because of credentials: 'include' on
+        // this fetch. We don't need to read it from JS — we just trust
+        // the cookie is set on the dealerfrontend origin (because the
+        // middleware/proxy ensures the proxy response carries
+        // Set-Cookie, and refresh-cookie is called directly from the
+        // client to sattabase, which also sets the cookie on its own
+        // origin for cross-tab SSO).
         return data.access;
       }
 
@@ -377,7 +362,11 @@ async function request<T>(
   let response = await fetch(url, fetchOptions);
 
   // ── 401 → try token refresh (only for SattaBase API) ──
-  if (response.status === 401 && !useDealerBackend && getRefreshToken()) {
+  // Always attempt refresh on 401 — if the refresh cookie exists,
+  // /auth/token/refresh-cookie will succeed; if not, it returns 401
+  // and we redirect to /login. The refresh-cookie endpoint is the
+  // authoritative check for cookie presence server-side.
+  if (response.status === 401 && !useDealerBackend) {
     const newToken = await refreshAccessToken();
     if (newToken) {
       const retryHeaders = buildHeaders(
@@ -385,15 +374,16 @@ async function request<T>(
         useDealerBackend,
       );
       retryHeaders["Authorization"] = `Bearer ${newToken}`;
-      response = await fetch(url, { ...fetchOptions, headers: retryHeaders });
+      response = await fetch(url, {
+        ...fetchOptions,
+        headers: retryHeaders,
+        credentials: "include",
+      });
     } else {
-      // Refresh failed — clear tokens and redirect to login.
-      // FIX B-10: previously redirected to "/auth/login", but the SPA
-      // login page lives at "/" (no /auth/* routes on this domain).
-      // The redirect landed users on a 404 instead of the login screen.
+      // Refresh failed — clear in-memory token and redirect to login.
       clearTokens();
       if (typeof window !== "undefined") {
-        window.location.href = "/";
+        window.location.href = "/login";
       }
       throw createApiError(response, "Session expired. Please sign in again.");
     }
@@ -608,9 +598,20 @@ export function getMediaUrl(path: string | null | undefined): string | null {
 // ─── Auth Helpers ────────────────────────────────────────────────────────────
 
 export const authHelpers = {
+  /** Store the access token in memory. Refresh token lives in httpOnly cookie. */
   setTokens,
+  /** Clear the in-memory access token. Refresh cookie is cleared via /api/auth/logout. */
   clearTokens,
+  /** Get the current access token from memory. */
   getAccessToken,
-  getRefreshToken,
+  /**
+   * Legacy API — returns null after the cookie migration. The refresh
+   * token is no longer readable from JavaScript.
+   * @deprecated Use hasRefreshCookie() or rely on server-side middleware.
+   */
+  getRefreshToken: (): string | null => null,
+  /** Check if the user has an in-memory access token. */
   isAuthenticated,
+  /** Check if the browser plausibly holds a refresh cookie. */
+  hasRefreshCookie,
 };

@@ -42,11 +42,12 @@ import {
   type DealerChoice, 
   type DsrUser 
 } from '../services/dsrClient';
+import { setAccessMap } from '../composables/useAccess';
+import { useDsrPortal } from '../composables/useDsrPortal';
+import { useDsrAccessRefresh } from '../composables/useDsrAccessRefresh';
+import { useToasts } from '../composables/useToasts';
 
-const emit = defineEmits<{
-  (e: 'logout'): void;
-  (e: 'enterDealerPortal', dealer: any): void;
-}>();
+// No emits — navigation is via window.location.href (MPA pattern).
 
 // State
 const user = ref<DsrUser | null>(null);
@@ -130,7 +131,8 @@ async function loadDashboard() {
     
     if (err?.status === 401) {
       clearDsrAuth();
-      emit('logout');
+      // Redirect to DSR login
+      window.location.href = '/dsr/login';
     }
   } finally {
     isLoading.value = false;
@@ -186,8 +188,13 @@ async function rejectInvitation(invitationId: string) {
 }
 
 async function handleLogout() {
-  await dsrApi.logout();
-  emit('logout');
+  try {
+    await dsrApi.logout();
+  } catch (e) {
+    console.warn('[DSR DASHBOARD] Server logout failed, clearing local state:', e);
+    clearDsrAuth();
+  }
+  window.location.href = '/dsr/login';
 }
 
 // ─── FIX DSR-INV-005: Email verification handler ────────────────────────
@@ -207,11 +214,51 @@ async function handleResendVerification() {
   }
 }
 
-function handleEnterPortal(assignment: any) {
-  const dealer = assignment.dealer;
-  if (dealer) {
-    selectedDealer.value = dealer;
-    emit('enterDealerPortal', { ...assignment, dealer });
+async function handleEnterPortal(assignment: any) {
+  const dealer = assignment?.dealer;
+  if (!dealer?.username) {
+    console.error('[DSR DASHBOARD] No dealer username in assignment');
+    return;
+  }
+
+  const { triggerToast, triggerErrorToast } = useToasts();
+  const { enterPortalMode } = useDsrPortal();
+  const { startDsrAccessRefreshTimer } = useDsrAccessRefresh();
+
+  try {
+    // Select the dealer context — backend returns DSR-scoped JWT tokens AND
+    // the single-source-of-truth `effective_access` map.
+    const { dsrApi: dsr, setDsrSelectedDealer } = await import('../services/dsrClient');
+    const result = await dsr.selectDealer(dealer.username);
+
+    // Store dealer selection
+    setDsrSelectedDealer(result.dealer);
+    selectedDealer.value = result.dealer;
+
+    // Set the access map directly from the backend-computed intersection
+    const effectiveAccess =
+      result.effective_access || { dashboard: true, __subscription_active: false };
+    setAccessMap(effectiveAccess);
+
+    // Enter portal mode (persists to localStorage so it survives the navigation)
+    enterPortalMode({
+      username: result.dealer.username,
+      full_name: result.dealer.full_name,
+      business_name: result.dealer.business_name,
+    });
+
+    // Start the periodic access-refresh timer
+    startDsrAccessRefreshTimer();
+
+    const dealerLabel =
+      result.dealer.full_name || result.dealer.business_name || 'dealer';
+    triggerToast(`Connected to ${dealerLabel}. You're now in the dealer portal.`);
+
+    // Navigate to /dashboard — AppShell will detect portal mode and show the banner
+    window.location.href = '/dashboard';
+  } catch (error: any) {
+    console.error('[DSR DASHBOARD] Failed to enter portal:', error);
+    triggerErrorToast('Failed to connect to dealer portal. Please try again.');
   }
 }
 

@@ -1,26 +1,15 @@
 ---
-import App from "../../App.vue";
-import "../../index.css";
+/**
+ * /dsr/verify-email — DSR email verification page.
+ *
+ * Reads ?token=xxx from URL, calls dsrApi.verifyEmail, shows status.
+ */
+import AuthLayout from "../../layouts/AuthLayout.astro";
+import VerifyEmail from "../../components/VerifyEmail.vue";
+
+const title = "Verify Email — DEALERCORE";
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Verify Email — DEALERCORE</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-  </head>
-  <body
-    class="bg-slate-50 min-h-screen selection:bg-blue-100 antialiased overflow-hidden m-0 p-0 font-sans text-slate-900"
-  >
-    <div id="root">
-      <App client:only="vue" />
-    </div>
-  </body>
-</html>
+<AuthLayout title={title}>
+  <VerifyEmail client:load />
+</AuthLayout>

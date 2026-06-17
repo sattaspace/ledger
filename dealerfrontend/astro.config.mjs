@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config";
+import { fileURLToPath } from "node:url";
 import vue from "@astrojs/vue";
 import node from "@astrojs/node";
 import tailwindcss from "@tailwindcss/vite";
@@ -12,11 +13,11 @@ export default defineConfig({
   integrations: [vue()],
   vite: {
     plugins: [tailwindcss()],
-    // resolve: {
-    //   alias: {
-    //     "@": path.resolve(__dirname, "./src"),
-    //   },
-    // },
+    resolve: {
+      alias: {
+        "@": fileURLToPath(new URL("./src", import.meta.url)),
+      },
+    },
   },
   server: {
     port: 4323,

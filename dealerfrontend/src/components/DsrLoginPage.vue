@@ -11,14 +11,10 @@ import { ref, computed } from 'vue';
 import { Store, TrendingUp, Shield, Zap, Users } from 'lucide-vue-next';
 import { 
   dsrApi, 
-  type DealerChoice 
+  type DealerChoice
 } from '../services/dsrClient';
 
-const emit = defineEmits<{
-  (e: 'login'): void;
-  (e: 'showDealerLogin'): void;
-  (e: 'showDsrRegister'): void;
-}>();
+// No emits — navigation is via window.location.href (MPA pattern).
 
 // Form state
 const email = ref('');
@@ -57,7 +53,7 @@ async function handleLogin() {
     // Check if DSR is awaiting invitation (no dealer assignments)
     if (response.awaiting_invitation) {
       console.log('[DSR LOGIN PAGE] Awaiting invitation - no dealer assignments');
-      emit('login');
+      window.location.href = '/dsr/dashboard';
       return;
     }
     
@@ -66,8 +62,8 @@ async function handleLogin() {
       dealers.value = response.dealers;
       showDealerSelection.value = true;
     } else {
-      // Auto-selected, emit login success
-      emit('login');
+      // Auto-selected, navigate to dashboard
+      window.location.href = '/dsr/dashboard';
     }
   } catch (error: any) {
     // FIX M-2: do not surface distinct error codes that would let an
@@ -102,7 +98,7 @@ async function handleSelectDealer() {
   
   try {
     await dsrApi.selectDealer(selectedDealerUsername.value);
-    emit('login');
+    window.location.href = '/dsr/dashboard';
   } catch (error: any) {
     console.error('Dealer selection failed:', error);
     errorMessage.value = error?.message || 'Failed to select dealer. Please try again.';
@@ -306,16 +302,13 @@ function goBackToLogin() {
             <div class="mt-6 text-center space-y-2">
               <p class="text-sm text-slate-500">
                 Don't have an account?
-                <button 
-                  @click="$emit('showDsrRegister')"
-                  class="text-emerald-600 hover:text-emerald-700 font-semibold"
-                >
+                <a href="/dsr/register" class="text-emerald-600 hover:text-emerald-700 font-semibold">
                   Register as DSR
-                </button>
+                </a>
               </p>
               <p class="text-sm text-slate-500">
                 Are you a dealer?
-                <a href="/" @click.prevent="$emit('showDealerLogin')" class="text-blue-600 hover:text-blue-800 font-semibold">
+                <a href="/login" class="text-blue-600 hover:text-blue-800 font-semibold">
                   Login here
                 </a>
               </p>

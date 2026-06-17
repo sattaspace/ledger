@@ -1,0 +1,23 @@
+---
+/**
+ * /dsr/register/[token] — DSR registration via invitation token.
+ *
+ * The token is extracted from the URL path and passed as a prop to
+ * DsrRegisterPage.vue. Replaces the old ?token=... query param pattern.
+ */
+import AuthLayout from "../../../layouts/AuthLayout.astro";
+import DsrRegisterPage from "../../../components/DsrRegisterPage.vue";
+
+const { token } = Astro.params;
+
+// Validate token presence — if missing, redirect to self-registration
+if (!token) {
+  return Astro.redirect("/dsr/register");
+}
+
+const title = "Accept Invitation — DEALERCORE";
+---
+
+<AuthLayout title={title}>
+  <DsrRegisterPage client:load token={token} />
+</AuthLayout>

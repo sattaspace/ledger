@@ -1,0 +1,13 @@
+---
+/**
+ * /dsr/register — DSR self-registration page (no invite required).
+ */
+import AuthLayout from "../../layouts/AuthLayout.astro";
+import DsrSelfRegisterPage from "../../components/DsrSelfRegisterPage.vue";
+
+const title = "DSR Registration — DEALERCORE";
+---
+
+<AuthLayout title={title}>
+  <DsrSelfRegisterPage client:load />
+</AuthLayout>

@@ -1,0 +1,16 @@
+---
+/**
+ * /login — Dealer login page.
+ *
+ * Mounts LoginPage.vue. After successful login, the form navigates
+ * to /dashboard via window.location.href.
+ */
+import AuthLayout from "../layouts/AuthLayout.astro";
+import LoginPage from "../components/LoginPage.vue";
+
+const title = "Dealer Login — DEALERCORE";
+---
+
+<AuthLayout title={title}>
+  <LoginPage client:load />
+</AuthLayout>

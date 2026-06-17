@@ -1,0 +1,18 @@
+---
+/**
+ * /dashboard — Overview / home page.
+ *
+ * Renders the OverviewPage component directly. Auth is enforced by the
+ * Astro middleware (src/middleware.ts) before this page is served. The
+ * shell (AppSidebar/Header/Footer) is mounted via client:only="vue" in
+ * AppLayout and bootstraps its own auth state on mount. Permission
+ * checks for specific features are done inside each page component
+ * (or skipped for fully-authorized dealers).
+ */
+import AppLayout from "../layouts/AppLayout.astro";
+import OverviewPage from "../components/pages/OverviewPage.vue";
+---
+
+<AppLayout>
+  <OverviewPage client:load />
+</AppLayout>

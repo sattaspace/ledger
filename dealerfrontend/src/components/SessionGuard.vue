@@ -2,86 +2,89 @@
 /**
  * Session Guard Component
  *
- * Wraps protected routes and ensures user is authenticated.
- * Also handles billing return detection for automatic profile refresh.
+ * Wraps protected app pages and ensures the user is authenticated before
+ * rendering content. On auth failure, redirects to /login (or /dsr/login
+ * if the user appears to be a DSR in portal mode).
  *
- * Usage:
- * ```vue
- * <SessionGuard require-auth @auth-required="handleLogout" @session-restored="handleRestore">
- *   <ProtectedContent />
- * </SessionGuard>
- * ```
+ * NOTE: billing-redirect detection (?billing_updated=) is now handled
+ * globally by AppFooter.vue so we don't re-trigger it on every page.
  */
-import { onMounted, onUnmounted, ref, watch } from 'vue';
-import { useAuth } from '../composables/useAuth';
-import { useBillingRedirect } from '../composables/useBillingRedirect';
+import { onMounted, onUnmounted, ref, watch } from "vue";
+import { useAuth } from "../composables/useAuth";
+import { useDsrPortal } from "../composables/useDsrPortal";
+import { authHelpers } from "../lib/api";
 
 const props = defineProps<{
   requireAuth?: boolean;
 }>();
 
-const emit = defineEmits<{
-  (e: 'auth-required'): void;
-  (e: 'session-restored'): void;
-  // FIX L-17: surface billing return result so the parent can show a
-  // success/failure toast. Previously billingSuccess was silently
-  // discarded after useAuth refetched the profile.
-  (e: 'billing-returned', success: boolean | null): void;
-}>();
-
-const { isAuthenticated, refreshUser } = useAuth();
-const { checkBillingRedirect, isBillingReturn, billingSuccess } = useBillingRedirect();
+const { isAuthenticated, refreshUser, initialized } = useAuth();
+const { dsrInPortalMode } = useDsrPortal();
 const isChecking = ref(true);
 const hasChecked = ref(false);
 
-// Check auth status on mount
-onMounted(async () => {
-  // Check for billing return first
-  checkBillingRedirect();
+function redirectToLogin() {
+  if (typeof window === "undefined") return;
+  // If in DSR portal mode, send them back to DSR dashboard
+  if (dsrInPortalMode.value || localStorage.getItem("dsr_access_token")) {
+    window.location.href = "/dsr/dashboard";
+  } else {
+    window.location.href = "/login";
+  }
+}
 
-  if (props.requireAuth && !isAuthenticated.value) {
-    // Try to restore session.
-    // FIX B-8: previously wrapped refreshUser() in try/catch, but
-    // refreshUser() swallows its own errors and returns null on failure,
-    // so the catch block was dead code — `session-restored` was emitted
-    // even on auth failure. Now check the return value explicitly.
-    const user = await refreshUser();
-    if (user) {
-      emit('session-restored');
-    } else {
-      emit('auth-required');
+onMounted(async () => {
+  if (!props.requireAuth) {
+    isChecking.value = false;
+    hasChecked.value = true;
+    return;
+  }
+
+  // Already authenticated — fast path
+  if (isAuthenticated.value || dsrInPortalMode.value) {
+    isChecking.value = false;
+    hasChecked.value = true;
+    return;
+  }
+
+  // Try to restore session via refresh token
+  if (authHelpers.getRefreshToken()) {
+    try {
+      const user = await refreshUser();
+      if (!user && !dsrInPortalMode.value) {
+        redirectToLogin();
+        return;
+      }
+    } catch {
+      redirectToLogin();
+      return;
     }
+  } else if (!dsrInPortalMode.value) {
+    // No refresh token and not in portal mode → redirect
+    redirectToLogin();
+    return;
   }
 
   isChecking.value = false;
   hasChecked.value = true;
 
   // Listen for session expiry events
-  window.addEventListener('auth:session-expired', handleSessionExpired);
+  window.addEventListener("auth:session-expired", handleSessionExpired);
 });
 
 onUnmounted(() => {
-  window.removeEventListener('auth:session-expired', handleSessionExpired);
+  window.removeEventListener("auth:session-expired", handleSessionExpired);
 });
 
 function handleSessionExpired() {
-  emit('auth-required');
+  redirectToLogin();
 }
 
-// Watch for auth state changes
+// Watch for auth state changes — if user logs out, redirect
 watch(isAuthenticated, (newVal, oldVal) => {
-  if (hasChecked.value && oldVal && !newVal) {
-    // User just logged out or session expired
-    emit('auth-required');
+  if (hasChecked.value && oldVal && !newVal && !dsrInPortalMode.value) {
+    redirectToLogin();
   }
-});
-
-// FIX L-17: when useBillingRedirect detects a return from the SattaBase
-// billing flow, surface it as an event the parent can render as a toast.
-// Without this watcher, the user is silently redirected back into the
-// app with no acknowledgement of what just happened.
-watch(billingSuccess, (success) => {
-  if (success !== null) emit('billing-returned', success);
 });
 </script>
 
@@ -93,11 +96,13 @@ watch(billingSuccess, (success) => {
       class="min-h-screen flex items-center justify-center bg-slate-50"
     >
       <div class="flex flex-col items-center gap-4">
-        <div class="w-12 h-12 border-4 border-amber-200 border-t-amber-500 rounded-full animate-spin"></div>
-        <p class="text-slate-500 text-sm">Checking authentication...</p>
+        <div
+          class="w-12 h-12 border-4 border-amber-200 border-t-amber-500 rounded-full animate-spin"
+        ></div>
+        <p class="text-slate-500 text-sm">Checking authentication…</p>
       </div>
     </div>
-    
+
     <!-- Content -->
     <slot v-else />
   </div>

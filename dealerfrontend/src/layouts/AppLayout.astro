@@ -1,0 +1,40 @@
+---
+/**
+ * AppLayout — full app shell layout for authenticated pages.
+ *
+ * Renders three Vue islands (sidebar, header, footer) plus a slot for
+ * page-specific content. The islands use `client:only="vue"` because
+ * they read window.location / localStorage and depend on useAccess()
+ * / useAuth() state that is only available after the client-side auth
+ * bootstrap completes — rendering them SSR-first would cause hydration
+ * mismatches and blank the page.
+ *
+ * We intentionally do NOT use `transition:persist` here. Astro's view
+ * transitions require <ClientRouter /> (now removed from BaseLayout)
+ * and emit `data-astro-transition-persist` attributes that conflict
+ * with multi-root Vue templates. With view transitions disabled, each
+ * navigation is a full page reload; the shell re-mounts each time,
+ * which is correct MPA behavior.
+ *
+ * The .app-shell + .main-wrapper CSS classes come from app-shell.css
+ * (extracted from the original App.vue).
+ */
+import BaseLayout from "./BaseLayout.astro";
+import AppSidebar from "../components/AppSidebar.vue";
+import AppHeader from "../components/AppHeader.vue";
+import AppFooter from "../components/AppFooter.vue";
+import "../styles/app-shell.css";
+---
+
+<BaseLayout>
+  <div class="app-shell">
+    <AppSidebar client:only="vue" />
+    <div class="main-wrapper" :class="{ 'main-wrapper--portal': false }">
+      <AppHeader client:only="vue" />
+      <main class="main-body">
+        <slot />
+      </main>
+      <AppFooter client:only="vue" />
+    </div>
+  </div>
+</BaseLayout>
