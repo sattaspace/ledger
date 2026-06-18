@@ -40,19 +40,27 @@ async function handleLogin() {
   errorMessage.value = '';
   
   try {
-    console.log('[DSR LOGIN PAGE] Attempting login for:', email.value);
+    // Audit fix H6/L3: gate all login diagnostics behind DEV mode
+    // to avoid leaking email PII in production browser consoles.
+    if (import.meta.env.DEV) {
+      console.log('[DSR LOGIN PAGE] Attempting login for:', email.value);
+    }
     
     const response = await dsrApi.login(email.value, password.value);
     
-    console.log('[DSR LOGIN PAGE] Login response:', {
-      awaitingInvitation: response.awaiting_invitation,
-      requireDealerSelection: response.require_dealer_selection,
-      dealerCount: response.dealers?.length || 0
-    });
+    if (import.meta.env.DEV) {
+      console.log('[DSR LOGIN PAGE] Login response:', {
+        awaitingInvitation: response.awaiting_invitation,
+        requireDealerSelection: response.require_dealer_selection,
+        dealerCount: response.dealers?.length || 0
+      });
+    }
     
     // Check if DSR is awaiting invitation (no dealer assignments)
     if (response.awaiting_invitation) {
-      console.log('[DSR LOGIN PAGE] Awaiting invitation - no dealer assignments');
+      if (import.meta.env.DEV) {
+        console.log('[DSR LOGIN PAGE] Awaiting invitation - no dealer assignments');
+      }
       window.location.href = '/dsr/dashboard';
       return;
     }

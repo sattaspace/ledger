@@ -105,6 +105,20 @@ async function loadDashboard() {
     user.value = getDsrUser();
     selectedDealer.value = getDsrSelectedDealer();
     
+    // Audit fix C1+C3: bootstrap the DSR session by minting a fresh
+    // access token from the httpOnly refresh cookie. Previously the
+    // dashboard tried to call /dsr/auth/me directly with a localStorage
+    // token — but that token is gone on a fresh page load (it lives in
+    // memory only now). bootstrapDsrSession calls the refresh-cookie
+    // proxy and populates the in-memory access token; if the cookie is
+    // absent/expired, it redirects to /dsr/login.
+    const { bootstrapDsrSession } = await import('../services/dsrClient');
+    const token = await bootstrapDsrSession();
+    if (!token) {
+      // bootstrapDsrSession already redirected to /dsr/login
+      return;
+    }
+    
     // Fetch profile from API
     const profile = await dsrApi.getProfile();
     
@@ -130,8 +144,9 @@ async function loadDashboard() {
     error.value = err?.message || 'Failed to load dashboard. Please try again.';
     
     if (err?.status === 401) {
+      // The refresh interceptor in dsrClient should have handled this,
+      // but if we still get here, the session is truly expired.
       clearDsrAuth();
-      // Redirect to DSR login
       window.location.href = '/dsr/login';
     }
   } finally {

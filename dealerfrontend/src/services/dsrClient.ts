@@ -1,23 +1,53 @@
 /**
- * DSR API Client — Isolated client for DSR authentication
+ * DSR API Client — Isolated client for DSR authentication.
  *
- * This is a SEPARATE client from the dealer apiClient.
- * It does NOT use SattaBase tokens or any dealer auth logic.
+ * This is a SEPARATE client from the dealer apiClient. It does NOT use
+ * SattaBase tokens or any dealer auth logic.
  *
- * DSRs have their own JWT tokens stored in localStorage under:
- * - dsr_access_token
- * - dsr_refresh_token
+ * ─── AUDIT FIX C1 (localStorage tokens → httpOnly cookie) ──────────────
+ * The DSR refresh token is NO LONGER stored in localStorage. It lives in
+ * an httpOnly, Secure, SameSite=Lax cookie set by the Astro proxy at
+ * /api/dsr/auth/login (and rotated by /api/dsr/auth/refresh-cookie). The
+ * browser sends the cookie automatically on every /api/dsr/auth/* call
+ * (credentials: 'include'). JavaScript cannot read it, so XSS cannot
+ * exfiltrate it.
+ *
+ * The short-lived DSR access token (~5 min default) lives in JavaScript
+ * memory only (`_dsrAccessToken`), mirroring the dealer-side pattern in
+ * lib/api.ts. It is hydrated from the proxy response body and discarded
+ * on logout.
+ *
+ * ─── AUDIT FIX C2 (logout never blacklisted) ───────────────────────────
+ * Logout now POSTs to /api/dsr/auth/logout (Astro proxy). The proxy
+ * forwards the httpOnly cookie to the dealerbackend, which reads it and
+ * blacklists the token via RefreshToken.blacklist(). The proxy then
+ * clears the cookie on the browser.
+ *
+ * ─── AUDIT FIX C3 (no token refresh) ───────────────────────────────────
+ * dsrRequest now has a 401 → refresh-cookie → retry interceptor, mirroring
+ * the dealer-side refreshAccessToken() in lib/api.ts. Concurrent 401s are
+ * deduplicated via a shared `dsrRefreshPromise`. On refresh failure, the
+ * in-memory token is cleared and the user is redirected to /dsr/login.
+ *
+ * ─── AUDIT FIX H6 (PII in console) ─────────────────────────────────────
+ * All diagnostic console.log calls are gated behind import.meta.env.DEV.
  */
 
-// Storage keys - separate from dealer auth
-const DSR_ACCESS_KEY = "dsr_access_token";
-const DSR_REFRESH_KEY = "dsr_refresh_token";
+// Storage keys — only the access token's USER PROFILE and selected dealer
+// are kept in localStorage. The refresh token is in an httpOnly cookie.
 const DSR_USER_KEY = "dsr_user";
 const DSR_SELECTED_DEALER_KEY = "dsr_selected_dealer";
 
-// Base URL for DSR API — resolved from environment variables (same source
-// as the dealer apiClient). Previously hardcoded to localhost which broke
-// every non-local deployment.
+// In-memory access token. NEVER written to localStorage. Mirrors the
+// dealer-side _accessToken in lib/api.ts.
+let _dsrAccessToken: string | null = null;
+
+// Base URL for the Astro DSR auth proxy endpoints (same-origin).
+const DSR_AUTH_PROXY_BASE = "/api/dsr/auth";
+
+// Base URL for DSR business API endpoints — resolved from environment
+// variables (same source as the dealer apiClient). Previously hardcoded
+// to localhost which broke every non-local deployment.
 function resolveDsrApiBase(): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const env =
@@ -47,7 +77,7 @@ export interface DsrUser {
   user_type: string;
   full_name: string;
   avatar_url?: string;
-  email_verified?: boolean; // FIX DSR-INV-005: Needed for verification banner
+  email_verified?: boolean;
   phone_verified?: boolean;
   has_dsr_profile?: boolean;
 }
@@ -60,6 +90,8 @@ export interface DealerChoice {
 
 export interface DsrLoginResponse {
   access: string;
+  // refresh is now always "" — the real refresh token lives in an
+  // httpOnly cookie set by the /api/dsr/auth/login proxy.
   refresh: string;
   user: DsrUser;
   dealers: DealerChoice[];
@@ -79,7 +111,7 @@ export interface DsrProfileResponse {
 
 export interface DsrRegisterViaInviteResponse {
   access: string;
-  refresh: string;
+  refresh: string; // "" — httpOnly cookie only
   user: DsrUser;
   dealer: DealerChoice;
   message?: string;
@@ -87,53 +119,233 @@ export interface DsrRegisterViaInviteResponse {
 
 // ─── Token Management ────────────────────────────────────────────────────────
 
+/**
+ * Get the in-memory DSR access token. Returns null if not set.
+ *
+ * Note: the access token is hydrated by login() / selectDealer() /
+ * refreshToken() — never from localStorage. On a fresh page load, it is
+ * null until the bootstrap code calls /api/dsr/auth/refresh-cookie to
+ * mint a fresh one from the httpOnly refresh cookie.
+ */
 export function getDsrAccessToken(): string | null {
-  return localStorage.getItem(DSR_ACCESS_KEY);
+  return _dsrAccessToken;
 }
 
+/**
+ * Set the in-memory DSR access token. Called by login, select-dealer, and
+ * refresh after a successful response.
+ */
+export function setDsrAccessToken(access: string): void {
+  _dsrAccessToken = access;
+}
+
+/**
+ * Clear the in-memory DSR access token. Called by logout() and on refresh
+ * failure. The httpOnly refresh cookie is cleared by the proxy endpoint.
+ */
+export function clearDsrAccessToken(): void {
+  _dsrAccessToken = null;
+}
+
+/**
+ * Backwards-compatible alias. Old callers stored both tokens via
+ * setDsrTokens(access, refresh). The refresh arg is now silently
+ * ignored — the refresh token is set by the proxy via httpOnly cookie.
+ *
+ * @deprecated Use setDsrAccessToken(access) instead.
+ */
+export function setDsrTokens(access: string, _refresh?: string): void {
+  _dsrAccessToken = access;
+}
+
+/**
+ * Backwards-compatible alias. Always returns null — the refresh token is
+ * in an httpOnly cookie and is not readable from JavaScript.
+ *
+ * @deprecated Use hasDsrSession() to check if the cookie is plausibly set.
+ */
 export function getDsrRefreshToken(): string | null {
-  return localStorage.getItem(DSR_REFRESH_KEY);
+  return null;
 }
 
-export function setDsrTokens(access: string, refresh: string): void {
-  localStorage.setItem(DSR_ACCESS_KEY, access);
-  localStorage.setItem(DSR_REFRESH_KEY, refresh);
-}
+// ─── User / Dealer Profile in localStorage ───────────────────────────────────
+//
+// The user object and selected dealer are NOT security-sensitive (they're
+// already in the JWT, just base64-encoded), so localStorage is fine for
+// them. Only the refresh token needed to leave localStorage.
 
 export function getDsrUser(): DsrUser | null {
+  if (typeof localStorage === "undefined") return null;
   const userStr = localStorage.getItem(DSR_USER_KEY);
   return userStr ? JSON.parse(userStr) : null;
 }
 
 export function setDsrUser(user: DsrUser): void {
+  if (typeof localStorage === "undefined") return;
   localStorage.setItem(DSR_USER_KEY, JSON.stringify(user));
 }
 
 export function getDsrSelectedDealer(): DealerChoice | null {
+  if (typeof localStorage === "undefined") return null;
   const dealerStr = localStorage.getItem(DSR_SELECTED_DEALER_KEY);
   return dealerStr ? JSON.parse(dealerStr) : null;
 }
 
 export function setDsrSelectedDealer(dealer: DealerChoice): void {
+  if (typeof localStorage === "undefined") return;
   localStorage.setItem(DSR_SELECTED_DEALER_KEY, JSON.stringify(dealer));
 }
 
+/**
+ * Clear ALL DSR auth state from the browser.
+ *
+ * - In-memory access token → cleared
+ * - localStorage user + selected dealer → cleared
+ * - dealercore:dsr_portal_mode flag → cleared (audit fix M4)
+ * - The httpOnly refresh cookie is cleared separately by the logout proxy.
+ */
 export function clearDsrAuth(): void {
-  localStorage.removeItem(DSR_ACCESS_KEY);
-  localStorage.removeItem(DSR_REFRESH_KEY);
+  _dsrAccessToken = null;
+  if (typeof localStorage === "undefined") return;
   localStorage.removeItem(DSR_USER_KEY);
   localStorage.removeItem(DSR_SELECTED_DEALER_KEY);
+  // Audit fix M4: also clear portal mode so the banner doesn't persist
+  // into a new DSR session.
+  localStorage.removeItem("dealercore:dsr_portal_mode");
+}
+
+// ─── Refresh Token (via httpOnly cookie) ─────────────────────────────────────
+
+let dsrRefreshPromise: Promise<string | null> | null = null;
+
+/**
+ * Refresh the DSR access token using the httpOnly refresh cookie.
+ *
+ * Calls the Astro proxy /api/dsr/auth/refresh-cookie with
+ * credentials: 'include' so the browser automatically sends the
+ * dsr_refresh_token cookie. The proxy reads the cookie, calls the
+ * dealerbackend's /dsr/auth/refresh, and returns { access } in the body.
+ * The rotated refresh cookie (if any) arrives in Set-Cookie and is
+ * stored by the browser automatically.
+ *
+ * Returns the new access token on success, null on failure.
+ * Deduplicates concurrent calls so only one refresh request flies.
+ *
+ * This mirrors the dealer-side refreshAccessToken() in lib/api.ts.
+ */
+export async function refreshDsrAccessToken(): Promise<string | null> {
+  if (dsrRefreshPromise) return dsrRefreshPromise;
+
+  dsrRefreshPromise = (async () => {
+    try {
+      const response = await fetch(`${DSR_AUTH_PROXY_BASE}/refresh-cookie`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include", // browser sends dsr_refresh_token cookie
+        body: "{}",
+      });
+
+      if (!response.ok) {
+        // Diagnostic: log the failure status + body so the user can see
+        // WHY the refresh failed (CSRF 403? cookie missing 401? backend 502?)
+        if (import.meta.env.DEV) {
+          let detail = "";
+          try {
+            const errBody = await response.clone().json();
+            detail =
+              errBody?.detail || errBody?.message || JSON.stringify(errBody);
+          } catch {
+            try {
+              detail = await response.clone().text();
+            } catch {
+              detail = "(unreadable body)";
+            }
+          }
+          console.warn("[DSR REFRESH] refresh-cookie failed", {
+            status: response.status,
+            statusText: response.statusText,
+            detail,
+            hint:
+              response.status === 401
+                ? "No dsr_refresh_token cookie was sent (cookie not stored, or expired, or credentials:'include' not set)"
+                : response.status === 403
+                  ? "CSRF guard rejected the request (Origin/Referer header mismatch)"
+                  : response.status === 502
+                    ? "Dealerbackend unreachable or returned an error"
+                    : "Unknown error",
+          });
+        }
+        clearDsrAccessToken();
+        return null;
+      }
+
+      const data = await response.json();
+      if (data.access) {
+        _dsrAccessToken = data.access;
+        return data.access;
+      }
+
+      if (import.meta.env.DEV) {
+        console.warn(
+          "[DSR REFRESH] refresh-cookie returned 200 but no access token in body",
+          data,
+        );
+      }
+      return null;
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.error("[DSR REFRESH] refresh-cookie network error:", err);
+      }
+      clearDsrAccessToken();
+      return null;
+    } finally {
+      dsrRefreshPromise = null;
+    }
+  })();
+
+  return dsrRefreshPromise;
 }
 
 // ─── API Request Helper ──────────────────────────────────────────────────────
+
+//
+// Auth endpoints (login, logout, refresh-cookie, select-dealer) are
+// proxied via /api/dsr/auth/* so we can manage the httpOnly cookie.
+// All other /dsr/* endpoints (profile, invitations, assignments, etc.)
+// go directly to the dealerbackend with Bearer auth.
+//
+// The individual `dsrApi` methods below explicitly pass `useProxy: true`
+// when calling dsrRequest for the four auth endpoints — no central
+// routing decision is needed.
+
+interface DsrRequestOptions {
+  /** Send the in-memory DSR access token as Bearer. */
+  useAuth?: boolean;
+  /** Route through the same-origin /api/dsr/auth proxy instead of the
+   *  cross-origin dealerbackend. Used by login/logout/refresh/select-dealer
+   *  so the httpOnly cookie can be set/read. */
+  useProxy?: boolean;
+  /**
+   * Internal: skip the 401-refresh-retry logic to avoid infinite loops
+   * when the request itself IS the refresh call.
+   */
+  _skipRefreshRetry?: boolean;
+}
 
 async function dsrRequest<T>(
   method: string,
   endpoint: string,
   body?: any,
-  useAuth: boolean = false,
+  options: DsrRequestOptions = {},
 ): Promise<T> {
-  const url = `${DSR_API_BASE}${endpoint}`;
+  const {
+    useAuth = false,
+    useProxy = false,
+    _skipRefreshRetry = false,
+  } = options;
+
+  const baseUrl = useProxy ? "" : DSR_API_BASE;
+  const url = useProxy ? endpoint : `${baseUrl}${endpoint}`;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -148,29 +360,53 @@ async function dsrRequest<T>(
     }
   }
 
-  // FIX M-5: removed `credentials: "include"`. The DSR API uses Bearer-token
-  // auth in the Authorization header; sending ambient cookies widens the
-  // CORS attack surface for no benefit and can cause subtle CSRF/CSWSH
-  // issues when the backend is later configured with cookie sessions.
   const config: RequestInit = {
     method,
     headers,
+    // Always include credentials so the browser sends the httpOnly
+    // dsr_refresh_token cookie to the same-origin proxy. For cross-origin
+    // dealerbackend calls, the cookie isn't sent (different origin), which
+    // is fine — those endpoints use Bearer auth, not cookies.
+    credentials: useProxy ? "include" : "same-origin",
   };
 
-  if (body) {
+  if (body !== undefined && body !== null) {
     config.body = JSON.stringify(body);
   }
 
-  // FIX: gate request diagnostics behind DEV mode to avoid leaking
-  // API call details in production console.
   if (import.meta.env.DEV) {
     console.log(`[DSR CLIENT] ${method} ${endpoint}`, {
       useAuth,
+      useProxy,
       hasBody: !!body,
     });
   }
 
-  const response = await fetch(url, config);
+  let response = await fetch(url, config);
+
+  // ── 401 → try token refresh → retry once ─────────────────────────────
+  // Audit fix C3: previously the DSR client had no refresh interceptor,
+  // so DSRs were silently logged out every ~5 min when their access
+  // token expired. We now mirror the dealer-side refresh pattern.
+  if (response.status === 401 && useAuth && !_skipRefreshRetry) {
+    const newToken = await refreshDsrAccessToken();
+    if (newToken) {
+      // Retry the original request with the fresh token.
+      headers["Authorization"] = `Bearer ${newToken}`;
+      response = await fetch(url, { ...config, headers });
+    } else {
+      // Refresh failed — clear local state and redirect to /dsr/login.
+      clearDsrAuth();
+      if (typeof window !== "undefined") {
+        window.location.href = "/dsr/login";
+      }
+      const err: DsrApiError = {
+        status: 401,
+        message: "DSR session expired. Please sign in again.",
+      };
+      throw err;
+    }
+  }
 
   // Parse response
   let data: any = null;
@@ -202,6 +438,11 @@ async function dsrRequest<T>(
     throw error;
   }
 
+  // 204 No Content
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   return data;
 }
 
@@ -209,17 +450,27 @@ async function dsrRequest<T>(
 
 export const dsrApi = {
   /**
-   * Login as DSR with email and password
+   * Login as DSR with email and password.
+   *
+   * Posts to the Astro proxy /api/dsr/auth/login. The proxy:
+   *   - forwards credentials to dealerbackend /dsr/auth/login
+   *   - strips the refresh token from the response body
+   *   - sets the refresh token as an httpOnly cookie on the dealerfrontend origin
+   *
+   * The returned DsrLoginResponse.refresh is always "" — the real token is
+   * in the cookie.
    */
   async login(email: string, password: string): Promise<DsrLoginResponse> {
-    const data = await dsrRequest<DsrLoginResponse>("POST", "/dsr/auth/login", {
-      email,
-      password,
-    });
+    const data = await dsrRequest<DsrLoginResponse>(
+      "POST",
+      `${DSR_AUTH_PROXY_BASE}/login`,
+      { email, password },
+      { useProxy: true },
+    );
 
-    // Store tokens and user
-    if (data.access && data.refresh) {
-      setDsrTokens(data.access, data.refresh);
+    // Store access token in memory only.
+    if (data.access) {
+      setDsrAccessToken(data.access);
     }
     if (data.user) {
       setDsrUser(data.user);
@@ -234,6 +485,14 @@ export const dsrApi = {
       console.log("[DSR API] Login successful:", {
         hasToken: !!getDsrAccessToken(),
         awaitingInvitation: data.awaiting_invitation,
+        // Diagnostic: confirm the login proxy set the httpOnly cookie.
+        // We can't read the httpOnly cookie from JS, but we CAN check if
+        // document.cookie contains the non-httpOnly companion cookie (if
+        // one existed). For now, just log that login returned successfully
+        // and the refresh token should be in the httpOnly cookie.
+        cookieHint:
+          "The httpOnly dsr_refresh_token cookie should now be set on the dealerfrontend origin. " +
+          "Check the Application > Cookies tab in DevTools to verify.",
       });
     }
 
@@ -241,7 +500,11 @@ export const dsrApi = {
   },
 
   /**
-   * Self-register as DSR
+   * Self-register as DSR.
+   *
+   * This endpoint doesn't return tokens in the new flow (the backend's
+   * register flow requires email verification before login). The caller
+   * should redirect to /dsr/login after success.
    */
   async register(
     email: string,
@@ -249,6 +512,8 @@ export const dsrApi = {
     password: string,
     phone?: string,
   ): Promise<DsrLoginResponse> {
+    // Register goes directly to the dealerbackend (no token returned yet —
+    // email verification is required first).
     const data = await dsrRequest<DsrLoginResponse>(
       "POST",
       "/dsr/auth/register",
@@ -260,8 +525,12 @@ export const dsrApi = {
       },
     );
 
-    if (data.access && data.refresh) {
-      setDsrTokens(data.access, data.refresh);
+    // If the backend DID return tokens (some flows do), store them via
+    // the login proxy pattern. But since we don't go through the proxy
+    // here, we can't set the httpOnly cookie. The caller must redirect
+    // to /dsr/login for the user to authenticate via the proxy.
+    if (data.access) {
+      setDsrAccessToken(data.access);
     }
     if (data.user) {
       setDsrUser(data.user);
@@ -271,27 +540,25 @@ export const dsrApi = {
   },
 
   /**
-   * Get DSR profile
+   * Get DSR profile. Requires Bearer access token.
    */
   async getProfile(): Promise<DsrProfileResponse> {
-    return dsrRequest<DsrProfileResponse>(
-      "GET",
-      "/dsr/auth/me",
-      undefined,
-      true,
-    );
+    return dsrRequest<DsrProfileResponse>("GET", "/dsr/auth/me", undefined, {
+      useAuth: true,
+    });
   },
 
   /**
-   * Select dealer for multi-dealer DSR
+   * Select dealer for multi-dealer DSR.
    *
-   * The backend returns `effective_access` — the SINGLE SOURCE OF TRUTH
-   * for the DSR's portal session. It's already the intersection of:
-   *   - dealer's plan-level access (from SattaBase)
-   *   - DSR's per-dealer assignment permissions
+   * Posts to the Astro proxy /api/dsr/auth/select-dealer. The proxy:
+   *   - forwards the dealer_username + (optional) Bearer access token
+   *     to dealerbackend /dsr/auth/select-dealer
+   *   - strips the new refresh token from the response body
+   *   - rotates the httpOnly cookie with the new refresh token
    *
-   * The frontend should just `setAccessMap(result.effective_access)`.
-   * No intersection logic, no hardcoded defaults.
+   * The returned object's `refresh` is always "" — the real token is in
+   * the cookie.
    */
   async selectDealer(dealerUsername: string): Promise<{
     access: string;
@@ -312,13 +579,16 @@ export const dsrApi = {
       message?: string;
     }>(
       "POST",
-      "/dsr/auth/select-dealer",
-      { dealer_username: dealerUsername },
-      true,
+      `${DSR_AUTH_PROXY_BASE}/select-dealer`,
+      {
+        dealer_username: dealerUsername,
+        access_token: getDsrAccessToken() || undefined,
+      },
+      { useProxy: true },
     );
 
-    if (data.access && data.refresh) {
-      setDsrTokens(data.access, data.refresh);
+    if (data.access) {
+      setDsrAccessToken(data.access);
     }
     if (data.dealer) {
       setDsrSelectedDealer(data.dealer);
@@ -329,35 +599,8 @@ export const dsrApi = {
 
   /**
    * Refresh the DSR's effective_access map from SattaBase.
-   *
-   * WHY THIS EXISTS
-   * ---------------
-   * The backend caches SattaBase access responses for
-   * SATTABASE_ACCESS_CACHE_TTL seconds (default 300 = 5 min). The
-   * frontend also caches the effective_access map in a Vue ref after
-   * select-dealer. When the dealer's plan is changed live in SattaBase
-   * admin, NEITHER cache knows about it — the DSR keeps seeing the
-   * stale menu until the cache TTL expires AND the DSR re-logs in.
-   *
-   * This endpoint breaks the staleness in one shot:
-   *   1. Backend invalidates its in-memory cache for the current dealer.
-   *   2. Backend re-fetches fresh access from SattaBase (and re-caches it
-   *      so subsequent API calls also see the new matrix).
-   *   3. Backend recomputes effective_access and returns it.
-   *
-   * WHEN TO CALL
-   * ------------
-   * - When the DSR returns from a billing-redirect flow
-   *   (useBillingRedirect detects ?billing_updated=1)
-   * - On an explicit "Refresh permissions" action in the UI
-   * - Optionally: periodically (every 5 min) while the DSR portal
-   *   session is active
-   *
-   * After calling this, the caller MUST do `setAccessMap(result.effective_access)`
-   * to update the in-memory Vue ref so menu visibility re-renders.
-   *
-   * Note: this does NOT re-issue JWT tokens. The DSR's existing tokens
-   * remain valid. Only the access map is refreshed.
+   * (See the docstring in the previous version — this endpoint stays the
+   * same; it's a business-data call that uses the in-memory access token.)
    */
   async refreshAccess(): Promise<{
     effective_access: Record<string, any>;
@@ -372,47 +615,55 @@ export const dsrApi = {
       permissions?: Record<string, any>;
       cache_invalidated: boolean;
       message?: string;
-    }>("POST", "/dsr/auth/refresh-access", undefined, true);
+    }>("POST", "/dsr/auth/refresh-access", undefined, { useAuth: true });
   },
 
   /**
-   * Logout DSR
+   * Logout DSR.
+   *
+   * Posts to the Astro proxy /api/dsr/auth/logout. The proxy:
+   *   - forwards the httpOnly cookie to dealerbackend /dsr/auth/logout
+   *   - the backend blacklists the refresh token (this previously NEVER
+   *     happened because the frontend stored it in localStorage — audit C2)
+   *   - clears the cookie on the browser
+   *
+   * We then clear all local DSR state (in-memory token, localStorage
+   * user/dealer/portal-mode).
    */
   async logout(): Promise<void> {
     try {
-      await dsrRequest("POST", "/dsr/auth/logout", undefined, true);
+      await dsrRequest("POST", `${DSR_AUTH_PROXY_BASE}/logout`, undefined, {
+        useProxy: true,
+      });
     } catch (err) {
-      console.error("[DSR API] Logout API error:", err);
+      if (import.meta.env.DEV) {
+        console.error("[DSR API] Logout API error:", err);
+      }
     } finally {
       clearDsrAuth();
     }
   },
 
   /**
-   * Refresh DSR token
+   * Refresh DSR access token via the httpOnly cookie.
+   *
+   * Exposed for callers that want to proactively refresh (e.g., before a
+   * long-running operation). The 401 interceptor in dsrRequest calls this
+   * automatically; most code should NOT call this directly.
    */
-  async refreshToken(): Promise<{ access: string; refresh?: string }> {
-    const refreshToken = getDsrRefreshToken();
-    if (!refreshToken) {
-      throw new Error("No refresh token available");
+  async refreshToken(): Promise<{ access: string }> {
+    const access = await refreshDsrAccessToken();
+    if (!access) {
+      throw {
+        status: 401,
+        message: "DSR session expired. Please sign in again.",
+      } as DsrApiError;
     }
-
-    const data = await dsrRequest<{ access: string; refresh?: string }>(
-      "POST",
-      "/dsr/auth/refresh",
-      { refresh: refreshToken },
-    );
-
-    if (data.access) {
-      setDsrTokens(data.access, data.refresh || refreshToken);
-    }
-
-    return data;
+    return { access };
   },
 
   /**
-   * Get DSR invitations
-   * Backend returns: { pending: [...], accepted: [...], rejected: [...] }
+   * Get DSR invitations.
    */
   async getInvitations(): Promise<{
     pending: any[];
@@ -423,12 +674,10 @@ export const dsrApi = {
       pending: any[];
       accepted: any[];
       rejected: any[];
-    }>("GET", "/dsr/invitations", undefined, true);
-    // Handle both old and new format
+    }>("GET", "/dsr/invitations", undefined, { useAuth: true });
     if (data.pending !== undefined) {
       return data;
     }
-    // Fallback for other formats
     return { pending: [], accepted: [], rejected: [] };
   },
 
@@ -440,7 +689,7 @@ export const dsrApi = {
       "POST",
       `/dsr/invitations/${invitationId}/accept`,
       undefined,
-      true,
+      { useAuth: true },
     );
   },
 
@@ -452,13 +701,12 @@ export const dsrApi = {
       "POST",
       `/dsr/invitations/${invitationId}/reject`,
       undefined,
-      true,
+      { useAuth: true },
     );
   },
 
   /**
    * Get DSR assignments
-   * Backend returns: { active: [...], removed: [...], left: [...] }
    */
   async getAssignments(): Promise<{
     active: any[];
@@ -469,21 +717,15 @@ export const dsrApi = {
       active: any[];
       removed: any[];
       left: any[];
-    }>("GET", "/dsr/assignments", undefined, true);
-    // Handle both old and new format
+    }>("GET", "/dsr/assignments", undefined, { useAuth: true });
     if (data.active !== undefined) {
       return data;
     }
-    // Fallback for other formats
     return { active: [], removed: [], left: [] };
   },
 
   /**
    * Register DSR via invitation token.
-   *
-   * FIX: Previously this method lived in dsrAuth.service.ts and went through
-   * the dealer apiClient (wrong auth context). Now consolidated into the
-   * isolated DSR client.
    */
   async registerViaInvitation(
     token: string,
@@ -501,8 +743,14 @@ export const dsrApi = {
       },
     );
 
-    if (data.access && data.refresh) {
-      setDsrTokens(data.access, data.refresh);
+    // After invitation registration, the backend returns tokens. But we
+    // didn't go through the proxy, so we can't set the httpOnly cookie
+    // here. The caller should redirect the user to /dsr/login to
+    // authenticate via the proxy and get the cookie set properly.
+    // For backwards compatibility, we still store the access token
+    // in memory (which will be lost on the next page load — fine).
+    if (data.access) {
+      setDsrAccessToken(data.access);
     }
     if (data.user) {
       setDsrUser(data.user);
@@ -524,7 +772,9 @@ export const dsrApi = {
     avatar_url?: string;
     bio?: string;
   }): Promise<DsrProfileResponse> {
-    return dsrRequest<DsrProfileResponse>("PUT", "/dsr/auth/me", updates, true);
+    return dsrRequest<DsrProfileResponse>("PUT", "/dsr/auth/me", updates, {
+      useAuth: true,
+    });
   },
 
   /**
@@ -541,7 +791,7 @@ export const dsrApi = {
         current_password: currentPassword,
         new_password: newPassword,
       },
-      true,
+      { useAuth: true },
     );
   },
 
@@ -576,7 +826,6 @@ export const dsrApi = {
    * Verify email address
    */
   async verifyEmail(token: string): Promise<{ message: string }> {
-    // Backend expects `token` as a query parameter (?token=xxx), not in the body.
     return dsrRequest<{ message: string }>(
       "POST",
       `/dsr/auth/verify-email?token=${encodeURIComponent(token)}`,
@@ -584,15 +833,14 @@ export const dsrApi = {
   },
 
   /**
-   * Resend email verification
-   * FIX DSR-INV-005: Now requires auth (backend validates via JWT token).
+   * Resend email verification (requires auth).
    */
   async resendVerification(email?: string): Promise<{ message: string }> {
     return dsrRequest<{ message: string }>(
       "POST",
       "/dsr/auth/resend-verification",
       email ? { email } : {},
-      true, // FIX: requires auth — backend gets user from JWT
+      { useAuth: true },
     );
   },
 
@@ -604,7 +852,7 @@ export const dsrApi = {
       "POST",
       "/dsr/auth/set-phone",
       { phone },
-      true,
+      { useAuth: true },
     );
   },
 
@@ -619,15 +867,61 @@ export const dsrApi = {
       "POST",
       `/dsr/assignments/${assignmentId}/leave`,
       { reason },
-      true,
+      { useAuth: true },
     );
   },
 };
 
 // ─── Auth State Check ────────────────────────────────────────────────────────
 
+/**
+ * Check if the DSR has an in-memory access token.
+ *
+ * Note: this returns false on a fresh page load even if the httpOnly cookie
+ * is still valid, because the access token is hydrated asynchronously by
+ * the bootstrap code (which calls /api/dsr/auth/refresh-cookie).
+ *
+ * For a "is the user plausibly logged in" check that survives page loads,
+ * use hasDsrSession() instead.
+ */
 export function isDsrAuthenticated(): boolean {
-  return !!getDsrAccessToken();
+  return !!_dsrAccessToken;
+}
+
+/**
+ * Check if the DSR has a non-empty user object in localStorage.
+ *
+ * This is a hint that the user *was* logged in on this tab. The actual
+ * session validity is determined server-side by the httpOnly cookie.
+ */
+export function hasDsrSession(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return !!localStorage.getItem(DSR_USER_KEY);
+}
+
+/**
+ * Bootstrap the DSR session on page load.
+ *
+ * Call this from the DSR dashboard's onMounted() to silently refresh the
+ * access token from the httpOnly cookie. If the cookie is absent or
+ * expired, the user is redirected to /dsr/login.
+ *
+ * Returns the new access token on success, or null (and redirects) on
+ * failure.
+ */
+export async function bootstrapDsrSession(): Promise<string | null> {
+  // If we already have an in-memory token (e.g., user just logged in),
+  // no need to refresh.
+  if (_dsrAccessToken) return _dsrAccessToken;
+
+  const token = await refreshDsrAccessToken();
+  if (!token) {
+    if (typeof window !== "undefined") {
+      window.location.href = "/dsr/login";
+    }
+    return null;
+  }
+  return token;
 }
 
 export default dsrApi;

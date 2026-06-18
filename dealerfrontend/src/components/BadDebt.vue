@@ -101,7 +101,7 @@ const handleExport = async () => {
   try {
     const headers = ['Date', 'Customer', 'Phone', 'Product', 'Qty', 'Total Amount', 'Balance Due', 'DSR', 'Vehicle'];
     const rows = filteredSales.value.map(s => [
-      new Date(s.date).toLocaleDateString(),
+      new Date(s.date).toLocaleDateString('en-IN'),
       s.customerName,
       s.customerPhone || 'N/A',
       s.productName,
@@ -229,7 +229,7 @@ const { formatCurrency } = useFormatters({ formatCurrency: props.formatCurrency 
               class="border-b border-slate-100 hover:bg-slate-50 transition"
             >
               <td class="px-4 py-3 text-slate-600 whitespace-nowrap">
-                {{ new Date(sale.date).toLocaleDateString() }}
+                {{ new Date(sale.date).toLocaleDateString('en-IN') }}
               </td>
               <td class="px-4 py-3">
                 <div class="font-medium text-slate-800">{{ sale.customerName }}</div>

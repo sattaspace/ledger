@@ -9,6 +9,37 @@
  *
  * State is persisted to localStorage so portal mode survives page
  * navigations in the MPA. On logout/exit, the flag is cleared.
+ *
+ * ─── HYDRATION WARNING (audit fix HYDRATION M-1) ───────────────────────
+ *
+ * This composable reads localStorage AT MODULE LOAD TIME (lines 23-33).
+ * That means:
+ *
+ *   - On SSR, `dsrInPortalMode.value = false` and `dsrPortalDealer.value = null`
+ *   - On the client, refs are populated from localStorage BEFORE any Vue
+ *     component setup runs.
+ *
+ * This pattern is ONLY safe if no `client:load` Vue island renders
+ * `dsrInPortalMode` or `dsrPortalDealer` directly in its template. Today
+ * (2026-06) only `AppSidebar.vue`, `AppHeader.vue`, and `AppFooter.vue`
+ * bind to these refs in their templates — and all three are mounted with
+ * `client:only="vue"` in `AppLayout.astro`, which skips SSR entirely.
+ *
+ * If you ever change one of those three islands to `client:load`, or add
+ * a NEW `client:load` component that binds to `dsrInPortalMode` in its
+ * template, you WILL trigger a Vue hydration warning (server renders
+ * without the banner, client renders with it). To avoid this:
+ *
+ *   Option A (preferred): keep the consuming component as `client:only="vue"`.
+ *   Option B: move the localStorage read into `onMounted` and expose a
+ *     `ready` ref that the template gates on with `v-if="ready"`.
+ *   Option C: read the portal-mode flag from a cookie (sent on every SSR
+ *     request) instead of localStorage.
+ *
+ * The `BaseLayout.astro:72-85` inline script ALSO reads the same localStorage
+ * key and applies a `dsr-portal-mode` class to `<html>` and `<body>` BEFORE
+ * Vue mounts. This is intentional and does NOT cause a hydration conflict
+ * because the class is on `<body>` (managed by Astro, not Vue).
  */
 
 import { ref, computed } from "vue";
@@ -17,7 +48,11 @@ const PORTAL_FLAG_KEY = "dealercore:dsr_portal_mode";
 const PORTAL_DEALER_KEY = "dsr_selected_dealer"; // shares key with dsrClient
 
 const dsrInPortalMode = ref(false);
-const dsrPortalDealer = ref<{ username: string; full_name: string; business_name: string } | null>(null);
+const dsrPortalDealer = ref<{
+  username: string;
+  full_name: string;
+  business_name: string;
+} | null>(null);
 
 // Hydrate from localStorage on module load (runs once per tab)
 if (typeof window !== "undefined") {
@@ -32,7 +67,11 @@ if (typeof window !== "undefined") {
   }
 }
 
-function enterPortalMode(dealer: { username: string; full_name: string; business_name: string }): void {
+function enterPortalMode(dealer: {
+  username: string;
+  full_name: string;
+  business_name: string;
+}): void {
   dsrInPortalMode.value = true;
   dsrPortalDealer.value = dealer;
   if (typeof window !== "undefined") {

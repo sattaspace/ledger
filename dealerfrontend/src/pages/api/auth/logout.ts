@@ -27,6 +27,56 @@ export const prerender = false;
 const REFRESH_TOKEN_COOKIE_NAME = "sb_refresh_token";
 const REMEMBER_ME_COOKIE_NAME = "sb_remember_me";
 
+/**
+ * Audit fix H7: CSRF guard. Rejects any POST whose Origin or Referer
+ * header is not the dealerfrontend origin. Prevents logout-CSRF attacks
+ * (where an attacker logs the victim out by cross-site POSTing).
+ */
+function rejectCrossOriginPost(request: Request): Response | null {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const allowed = new Set<string>([config.thisDomainUrl]);
+  if (import.meta.env.DEV) {
+    try {
+      const u = new URL(config.thisDomainUrl);
+      allowed.add(`http://${u.host}`);
+      allowed.add(`https://${u.host}`);
+      allowed.add("http://localhost:4323");
+      allowed.add("http://127.0.0.1:4323");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (origin) {
+    return allowed.has(origin)
+      ? null
+      : new Response(
+          JSON.stringify({ detail: "Cross-origin requests are not allowed" }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+  }
+  if (referer) {
+    try {
+      const r = new URL(referer);
+      return allowed.has(`${r.protocol}//${r.host}`)
+        ? null
+        : new Response(
+            JSON.stringify({ detail: "Cross-origin requests are not allowed" }),
+            { status: 403, headers: { "Content-Type": "application/json" } },
+          );
+    } catch {
+      return new Response(
+        JSON.stringify({ detail: "Malformed Referer header" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+  return new Response(
+    JSON.stringify({ detail: "Missing Origin/Referer header" }),
+    { status: 403, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 /** Split a collapsed fetch() Set-Cookie header back into individual cookies. */
 function splitSetCookies(combined: string | null): string[] {
   if (!combined) return [];
@@ -37,14 +87,18 @@ function splitSetCookies(combined: string | null): string[] {
 }
 
 export const POST: APIRoute = async ({ request, cookies }) => {
+  // ── Audit fix H7: CSRF check ────────────────────────────────────────────
+  const csrf = rejectCrossOriginPost(request);
+  if (csrf) return csrf;
+
   const refreshCookie = cookies.get(REFRESH_TOKEN_COOKIE_NAME)?.value;
 
   // No cookie → nothing to log out; return 401 so caller can redirect.
   if (!refreshCookie) {
-    return new Response(
-      JSON.stringify({ detail: "No active session" }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ detail: "No active session" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // ── Forward to Sattabase so it can blacklist the refresh token ────────

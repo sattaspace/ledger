@@ -57,13 +57,18 @@ const passwordTooShort = computed(() => {
 // in any cross-origin deployment, this raw fetch hit the wrong host and
 // always returned 404, making the invite-link flow unworkable. We now
 // go through dealerApi so the configured DEALER_API_URL is used.
+//
+// Audit fix M10: pass skipAuth:true so a logged-in dealer's JWT isn't
+// sent along. The /invitations/{token} endpoint is public — the backend
+// ignores auth for it. Skipping the Authorization header is cleaner and
+// avoids suggesting in the Network tab that the request requires auth.
 onMounted(async () => {
   try {
     const data = await dealerApi.get<{
       email: string;
       role: string;
       dealer?: { full_name?: string };
-    }>(`/invitations/${encodeURIComponent(props.token)}`);
+    }>(`/invitations/${encodeURIComponent(props.token)}`, { skipAuth: true });
 
     invitationValid.value = true;
     invitationData.value = {

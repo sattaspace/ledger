@@ -18,6 +18,10 @@
  */
 
 import { getAccessToken, getSelectedDealerUsername } from "../lib/api";
+// Audit fix C1: import the in-memory DSR access token instead of reading
+// localStorage directly. The DSR access token is no longer in localStorage
+// — it lives in memory only (mirroring the dealer-side _accessToken).
+import { getDsrAccessToken } from "./dsrClient";
 
 // ─── snake_case → camelCase Transformer ─────────────────────────────────────
 
@@ -131,6 +135,12 @@ export interface RequestConfig extends RequestInit {
   skipErrorHandler?: boolean;
   /** Custom headers to merge with defaults */
   headers?: Record<string, string>;
+  /**
+   * Internal: marks this request as a retry so the 401-refresh-retry
+   * logic in the request method doesn't loop indefinitely.
+   * @internal
+   */
+  _isRetry?: boolean;
 }
 
 // ─── Interceptor Types ───────────────────────────────────────────────────────
@@ -239,7 +249,11 @@ class ApiClient {
     // 3. No auth (public endpoints): Neither token is injected.
     const isDsrPath = endpoint.startsWith("/dsr/");
     const dealerToken = getAccessToken();
-    const dsrToken = localStorage.getItem("dsr_access_token");
+    // Audit fix C1: read the DSR access token from memory (via dsrClient's
+    // getDsrAccessToken) instead of localStorage. The token is no longer
+    // persisted to localStorage — it lives in memory only, hydrated from
+    // the httpOnly refresh cookie via bootstrapDsrSession.
+    const dsrToken = getDsrAccessToken();
 
     let authToken: string | null = null;
     if (!config.headers?.Authorization) {
@@ -316,19 +330,84 @@ class ApiClient {
     config.signal = controller.signal;
 
     try {
-      // DEBUG: Log all API requests
-      console.log(
-        `%c[API] ${method} ${endpoint}`,
-        "color: #6366f1; font-weight: bold",
-        {
-          url,
-          dealerUsername: config.headers?.["X-Dealer-Username"] || "none",
-          hasToken: !!authToken,
-          body: body ? "(has body)" : "none",
-        },
-      );
+      // Audit fix H6: gate all request/response logging behind DEV mode
+      // to avoid leaking PII (dealer username, response previews, etc.)
+      // in production browser consoles.
+      if (import.meta.env.DEV) {
+        console.log(
+          `%c[API] ${method} ${endpoint}`,
+          "color: #6366f1; font-weight: bold",
+          {
+            url,
+            dealerUsername: config.headers?.["X-Dealer-Username"] || "none",
+            hasToken: !!authToken,
+            body: body ? "(has body)" : "none",
+          },
+        );
+      }
 
       const response = await fetch(url, config as RequestInit);
+
+      // ── Audit fix C3: 401 → refresh → retry (mirror lib/api.ts) ──
+      // Previously this client had no refresh interceptor, so dealer
+      // sessions silently failed after the in-memory JWT expired (~60 min).
+      // We now attempt a single refresh on 401 before throwing.
+      if (response.status === 401 && !customConfig?._isRetry) {
+        if (import.meta.env.DEV) {
+          console.log(
+            `%c[API] 401 on ${method} ${endpoint} — attempting token refresh`,
+            "color: #f59e0b; font-weight: bold",
+          );
+        }
+
+        let newToken: string | null = null;
+        try {
+          // Prefer refreshing the DSR token if we were using one (DSR
+          // portal mode), otherwise refresh the dealer token.
+          if (authToken === dsrToken && dsrToken) {
+            // DSR token expired — call the dsrClient refresh path.
+            const { refreshDsrAccessToken } = await import("./dsrClient");
+            newToken = await refreshDsrAccessToken();
+          } else if (dealerToken) {
+            // Dealer token expired — use lib/api.ts's refreshAccessToken.
+            const { refreshAccessToken } = await import("../lib/api");
+            newToken = await refreshAccessToken();
+          }
+        } catch (refreshErr) {
+          if (import.meta.env.DEV) {
+            console.error("[API] Token refresh failed:", refreshErr);
+          }
+        }
+
+        if (newToken) {
+          // Retry the original request with the fresh token.
+          const retryHeaders = {
+            ...config.headers,
+            Authorization: `Bearer ${newToken}`,
+          };
+          const retryConfig: RequestConfig = {
+            ...customConfig,
+            ...config,
+            headers: retryHeaders,
+            // Mark as retry so we don't loop on persistent 401s.
+            _isRetry: true,
+          };
+          return this.request<T>(method, endpoint, body, retryConfig);
+        }
+
+        // Refresh failed — clear the appropriate token and redirect.
+        if (authToken === dsrToken && typeof window !== "undefined") {
+          // DSR session expired — go to DSR login.
+          const { clearDsrAccessToken } = await import("./dsrClient");
+          clearDsrAccessToken();
+          window.location.href = "/dsr/login";
+        } else if (typeof window !== "undefined") {
+          // Dealer session expired — go to dealer login.
+          const { clearAccessToken } = await import("../lib/tokenStore");
+          clearAccessToken();
+          window.location.href = "/login";
+        }
+      }
 
       // Run response interceptors
       for (const interceptor of this.responseInterceptors) {
@@ -350,16 +429,18 @@ class ApiClient {
       }
 
       if (!response.ok) {
-        // DEBUG: Log error responses
-        console.error(
-          `%c[API ERROR] ${method} ${endpoint}`,
-          "color: #ef4444; font-weight: bold",
-          {
-            status: response.status,
-            statusText: response.statusText,
-            data,
-          },
-        );
+        // Audit fix H6: gate error logging behind DEV too.
+        if (import.meta.env.DEV) {
+          console.error(
+            `%c[API ERROR] ${method} ${endpoint}`,
+            "color: #ef4444; font-weight: bold",
+            {
+              status: response.status,
+              statusText: response.statusText,
+              data,
+            },
+          );
+        }
 
         const apiError = new ApiError(
           response.status,
@@ -381,20 +462,22 @@ class ApiClient {
       // can consume data using JavaScript/TypeScript naming conventions
       const transformedData = transformKeysToCamelCase<T>(data);
 
-      // DEBUG: Log successful responses
-      console.log(
-        `%c[API SUCCESS] ${method} ${endpoint}`,
-        "color: #10b981; font-weight: bold",
-        {
-          status: response.status,
-          dataType: Array.isArray(transformedData)
-            ? `Array(${transformedData.length})`
-            : typeof transformedData,
-          preview: Array.isArray(transformedData)
-            ? transformedData.slice(0, 2)
-            : transformedData,
-        },
-      );
+      // Audit fix H6: gate success logging behind DEV too.
+      if (import.meta.env.DEV) {
+        console.log(
+          `%c[API SUCCESS] ${method} ${endpoint}`,
+          "color: #10b981; font-weight: bold",
+          {
+            status: response.status,
+            dataType: Array.isArray(transformedData)
+              ? `Array(${transformedData.length})`
+              : typeof transformedData,
+            preview: Array.isArray(transformedData)
+              ? transformedData.slice(0, 2)
+              : transformedData,
+          },
+        );
+      }
 
       return {
         ok: true,

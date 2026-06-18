@@ -1225,7 +1225,7 @@ const handleConfirmDeleteProduct = async () => {
                 </div>
               </div>
               <div class="text-right shrink-0">
-                <p class="text-sm text-slate-500">{{ new Date(restock.date).toLocaleDateString() }}</p>
+                <p class="text-sm text-slate-500">{{ new Date(restock.date).toLocaleDateString('en-IN') }}</p>
                 <p class="text-xs text-slate-400 mt-0.5">by {{ restock.receivedBy }}</p>
               </div>
             </div>

@@ -13,66 +13,40 @@
 
 import config from "../../sattabase.config";
 import type { ApiError } from "./types";
+// Audit fix H2: token state now lives in a leaf module so useAccess can
+// import getAccessToken without creating a circular dependency on useAuth.
+import { getAccessToken, setAccessToken, clearAccessToken } from "./tokenStore";
+// Audit fix H2: access-map state lives in its own leaf module so the
+// X-Plan-Limits header injection below doesn't need to require() useAccess.
+import { getAccessMap } from "./accessMapStore";
+
+// Re-export for backwards compat (existing imports of getAccessToken from
+// "lib/api" keep working).
+export { getAccessToken };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 export const API_BASE_URL = config.apiBaseUrl;
 export const DEALER_API_URL = config.dealerApiBaseUrl;
 
-// Type augmentation for the server-injected token set by BaseLayout.
-declare global {
-  interface Window {
-    /** Short-lived JWT access token minted by the Astro middleware. */
-    __INITIAL_AUTH_TOKEN__?: string;
-  }
-}
-
-// Cookie name for the refresh token. Must match the backend cookie name
-// (backend/users/controllers.py:98 REFRESH_TOKEN_COOKIE_NAME).
-const REFRESH_COOKIE_NAME = "sb_refresh_token";
+// Audit fix TS-4: removed unused `REFRESH_COOKIE_NAME` constant. The
+// refresh token cookie is managed entirely by the Astro middleware
+// (src/middleware.ts) and the auth proxy endpoints (src/pages/api/auth/*).
+// lib/api.ts only deals with the in-memory access token (lib/tokenStore.ts)
+// and the rotated refresh cookie (forwarded automatically by the browser
+// via credentials: 'include'). No constant is needed here.
 const DEALER_CONTEXT_KEY = "dealercore:selected_dealer";
 
-// ─── In-memory token cache ───────────────────────────────────────────────────
-
-/**
- * Access token is kept IN MEMORY ONLY (`_accessToken`). Never written to
- * sessionStorage or localStorage. On page reload the in-memory copy is
- * gone; the page either renders with a fresh access token injected by
- * the Astro middleware (see BaseLayout), or the client calls
- * /auth/token/refresh-cookie to mint a new one from the httpOnly
- * refresh cookie. An XSS payload that exfiltrates storage therefore
- * cannot steal a working access token (L-6 / HIGH-03 hardening).
- *
- * Refresh token is NOT stored on the client at all. It lives in an
- * httpOnly Secure cookie (`sb_refresh_token`) set by the
- * /api/auth/login Astro proxy and forwarded by the browser
- * automatically (credentials: 'include') to Sattabase endpoints.
- *
- * Handoff from server middleware: src/middleware.ts validates the
- * refresh cookie on every page request and stores the freshly minted
- * access token on `Astro.locals.accessToken`. BaseLayout injects that
- * value into the page as `window.__INITIAL_AUTH_TOKEN__`. We hydrate
- * `_accessToken` from it synchronously on module load so the FIRST
- * /billing/auth/me call after page mount has a valid Bearer token —
- * no 401 → refresh-cookie → retry dance.
- */
-let _accessToken: string | null = null;
-
-// Hydrate from server-injected token (set by BaseLayout before this
-// module evaluates). Synchronous, runs once per page load.
-if (typeof window !== "undefined") {
-  const initial = window.__INITIAL_AUTH_TOKEN__;
-  if (initial) {
-    _accessToken = initial;
-  }
-}
-
-// ─── Token Accessors ─────────────────────────────────────────────────────────
-
-/** Get the current access token from memory. */
-export function getAccessToken(): string | null {
-  return _accessToken;
-}
+// ─── Token state (delegated to lib/tokenStore.ts) ────────────────────────────
+//
+// The actual _accessToken state lives in lib/tokenStore.ts so other modules
+// (useAccess, useAppData) can import it without creating a circular
+// dependency on useAuth (which imports from this file).
+//
+// The access token is kept IN MEMORY ONLY — never in localStorage or
+// sessionStorage. On page load, lib/tokenStore hydrates it synchronously
+// from window.__INITIAL_AUTH_TOKEN__ (set by BaseLayout). The refresh
+// token lives in an httpOnly cookie that JavaScript cannot read.
 
 /**
  * Check whether the browser currently holds the refresh cookie.
@@ -106,28 +80,25 @@ export function hasRefreshCookie(): boolean {
 }
 
 /**
- * Store the access token in memory.
- *
- * The refresh token is no longer accepted as a parameter — it is set
- * by the server as an httpOnly cookie via /api/auth/login and is not
- * readable by JavaScript.
+ * Store the access token in memory. The refresh token is set by the server
+ * as an httpOnly cookie via /api/auth/login and is not readable by JS.
  */
 export function setTokens(access: string): void {
-  _accessToken = access;
+  setAccessToken(access);
 }
 
 /**
- * Clear the access token from memory. The refresh cookie is cleared
- * by POSTing to /api/auth/logout (which the caller must do); this
- * function only handles the in-memory access token.
+ * Clear the access token from memory. The refresh cookie is cleared by
+ * POSTing to /api/auth/logout; this function only handles the in-memory
+ * access token.
  */
 export function clearTokens(): void {
-  _accessToken = null;
+  clearAccessToken();
 }
 
 /** Check if the user has a non-expired access token in memory. */
 export function isAuthenticated(): boolean {
-  return !!_accessToken;
+  return getAccessToken() !== null;
 }
 
 // ─── Request Headers ─────────────────────────────────────────────────────────
@@ -215,27 +186,27 @@ function buildHeaders(
       headers["X-Dealer-Username"] = dealerUsername;
     }
 
-    // FIX A-1 (Phase A — CRIT-1): forward the access map to the backend
-    // so server-side plan limits (max_products, max_dsrs, max_suppliers,
-    // export_pdf, ai_insights, ...) can be enforced. The access map is
-    // populated from /billing/auth/me via useAuth + useAccess.
+    // Audit fix H2 + A-1: forward the access map to the backend so
+    // server-side plan limits (max_products, max_dsrs, max_suppliers,
+    // export_pdf, ai_insights, ...) can be enforced.
     //
-    // Lazy import to avoid a circular dependency: useAccess imports
-    // getAccessToken from this file.
-    try {
-      // Dynamic require keeps the module load order safe.
-      const accessModule = require("../composables/useAccess");
-      const accessMap = accessModule?.access?.value;
-      if (accessMap && typeof accessMap === "object" && Object.keys(accessMap).length > 0) {
-        try {
-          headers["X-Plan-Limits"] = JSON.stringify(accessMap);
-        } catch {
-          // If the map contains non-serializable values (shouldn't
-          // happen — backend sends primitives only) skip silently.
-        }
+    // Previously this used require("../composables/useAccess") inside a
+    // try/catch — but require() is undefined in ESM bundles (Astro/Vite),
+    // so the catch always fired and the header was silently skipped.
+    // We now read from a leaf module (lib/accessMapStore.ts) that has no
+    // circular dependencies, so this works reliably.
+    const accessMap = getAccessMap();
+    if (
+      accessMap &&
+      typeof accessMap === "object" &&
+      Object.keys(accessMap).length > 0
+    ) {
+      try {
+        headers["X-Plan-Limits"] = JSON.stringify(accessMap);
+      } catch {
+        // Non-serializable values shouldn't happen (backend sends
+        // primitives only) — skip silently if they do.
       }
-    } catch {
-      // useAccess not available — skip header.
     }
   }
 
@@ -279,27 +250,19 @@ export async function refreshAccessToken(): Promise<string | null> {
       );
 
       if (!response.ok) {
-        clearTokens();
+        clearAccessToken();
         return null;
       }
 
       const data = await response.json();
       if (data.access) {
-        _accessToken = data.access;
-        // The rotated refresh cookie arrives in Set-Cookie; the browser
-        // stores it automatically because of credentials: 'include' on
-        // this fetch. We don't need to read it from JS — we just trust
-        // the cookie is set on the dealerfrontend origin (because the
-        // middleware/proxy ensures the proxy response carries
-        // Set-Cookie, and refresh-cookie is called directly from the
-        // client to sattabase, which also sets the cookie on its own
-        // origin for cross-tab SSO).
+        setAccessToken(data.access);
         return data.access;
       }
 
       return null;
     } catch {
-      clearTokens();
+      clearAccessToken();
       return null;
     } finally {
       refreshPromise = null;
@@ -337,6 +300,17 @@ interface RequestOptions extends RequestInit {
   params?: Record<string, string | number | boolean>;
   /** Use dealer backend instead of SattaBase backend. */
   useDealerBackend?: boolean;
+  /**
+   * Audit fix M10: skip injecting the Authorization header for this
+   * request. Use this for public endpoints (e.g. invitation validation)
+   * so a logged-in dealer's JWT isn't sent along unnecessarily.
+   *
+   * Note: the backend ignores auth for public endpoints anyway, so this
+   * is mostly a hygiene/cleanliness fix — but it does prevent the
+   * `Authorization` header from appearing in the Network tab on these
+   * requests, which would otherwise suggest they require auth.
+   */
+  skipAuth?: boolean;
 }
 
 // ─── Core Request Handler ────────────────────────────────────────────────────
@@ -345,13 +319,25 @@ async function request<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { params, useDealerBackend = false, ...restOptions } = options;
+  const {
+    params,
+    useDealerBackend = false,
+    skipAuth = false,
+    ...restOptions
+  } = options;
   const baseUrl = useDealerBackend ? DEALER_API_URL : API_BASE_URL;
   const url = buildUrl(path, baseUrl, params);
   const headers = buildHeaders(
     restOptions.headers as Record<string, string> | undefined,
     useDealerBackend,
   );
+
+  // Audit fix M10: strip the Authorization header for skipAuth requests.
+  // buildHeaders always adds it if a token is in memory; we remove it here
+  // so public endpoints (e.g. invitation validation) don't leak the JWT.
+  if (skipAuth && headers["Authorization"]) {
+    delete headers["Authorization"];
+  }
 
   const fetchOptions: RequestInit = {
     ...restOptions,
@@ -367,6 +353,25 @@ async function request<T>(
   // and we redirect to /login. The refresh-cookie endpoint is the
   // authoritative check for cookie presence server-side.
   if (response.status === 401 && !useDealerBackend) {
+    // Check if we're in DSR portal mode. If so, DON'T try to refresh
+    // the dealer token (there's no sb_refresh_token cookie) and DON'T
+    // redirect to /login. The DSR session is valid — it's just not a
+    // SattaBase dealer session. Just throw the 401 and let the caller
+    // handle it.
+    const inDsrPortalMode =
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("dealercore:dsr_portal_mode") === "true";
+
+    if (inDsrPortalMode) {
+      // DSR portal mode: the /billing/auth/me call is expected to fail
+      // (the DSR JWT is not valid for SattaBase). Don't redirect —
+      // just throw so the caller can handle it gracefully.
+      throw createApiError(
+        response,
+        "SattaBase auth not available in DSR portal mode",
+      );
+    }
+
     const newToken = await refreshAccessToken();
     if (newToken) {
       const retryHeaders = buildHeaders(
@@ -381,7 +386,7 @@ async function request<T>(
       });
     } else {
       // Refresh failed — clear in-memory token and redirect to login.
-      clearTokens();
+      clearAccessToken();
       if (typeof window !== "undefined") {
         window.location.href = "/login";
       }

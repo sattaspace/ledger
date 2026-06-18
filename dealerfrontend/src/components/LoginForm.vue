@@ -28,7 +28,10 @@ const errorMessage = computed(() => error.value?.message || null);
 
 const isValid = computed(() => {
   const trimmedEmail = email.value.trim();
-  return EMAIL_RE.test(trimmedEmail) && password.value.length >= 6;
+  // Audit fix M6: align dealer-login password length check with DSR
+  // registration (>=8) and Django's default backend policy. Previously
+  // this used >=6, which was inconsistent with the DSR register forms.
+  return EMAIL_RE.test(trimmedEmail) && password.value.length >= 8;
 });
 
 async function handleSubmit() {

@@ -11,6 +11,14 @@
  * GET    /invitations/assignments/list → listAssignments(params)
  * PATCH  /invitations/assignments/:id/deactivate → deactivateAssignment(id)
  * PATCH  /invitations/assignments/:id/activate   → activateAssignment(id)
+ *
+ * Audit fix TS-3: the `apiClient.get(endpoint, config)` signature takes
+ * a `RequestConfig` object as the 2nd argument, NOT a params object.
+ * `services/apiClient.ts` does NOT translate a `params` config field
+ * into query string parameters (unlike `lib/api.ts`). To pass query
+ * string params, we build the URL inline using `URLSearchParams` in
+ * each method that accepts params (see `listInvitations` and
+ * `listAssignments` below).
  */
 
 import apiClient, { ApiResponse } from "../apiClient";
@@ -57,7 +65,16 @@ export class InvitationService {
   async listInvitations(
     params?: ListInvitationsParams,
   ): Promise<ApiResponse<DsrInvitation[]>> {
-    return apiClient.get<DsrInvitation[]>("/invitations/list", params);
+    // Audit fix TS-3: services/apiClient.ts's get(endpoint, config) doesn't
+    // build query strings from a `params` field. We construct the URL
+    // inline using URLSearchParams so the status/limit filters actually
+    // reach the backend.
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    const url = query ? `/invitations/list?${query}` : "/invitations/list";
+    return apiClient.get<DsrInvitation[]>(url);
   }
 
   /** GET /invitations/:token — Get invitation details by token (public) */
@@ -96,10 +113,17 @@ export class InvitationService {
   async listAssignments(
     params?: ListAssignmentsParams,
   ): Promise<ApiResponse<DsrAssignment[]>> {
-    return apiClient.get<DsrAssignment[]>(
-      "/invitations/assignments/list",
-      params,
-    );
+    // Audit fix TS-3: build query string inline (services/apiClient.ts
+    // doesn't translate a `params` config field into query params).
+    const qs = new URLSearchParams();
+    if (params?.isActive !== undefined)
+      qs.set("is_active", String(params.isActive));
+    if (params?.role) qs.set("role", params.role);
+    const query = qs.toString();
+    const url = query
+      ? `/invitations/assignments/list?${query}`
+      : "/invitations/assignments/list";
+    return apiClient.get<DsrAssignment[]>(url);
   }
 
   /** PATCH /invitations/assignments/:id/deactivate — Deactivate an assignment */

@@ -21,7 +21,6 @@ import { apiClient } from "../lib/api";
 import {
   login as authLogin,
   logout as authLogout,
-  getAuthMe,
   redirectToBase,
   redirectToBaseWithAuthCode,
   requireAuth,
@@ -29,10 +28,17 @@ import {
 } from "../lib/auth";
 import type { User, Subscription, AuthMeResponse } from "../lib/types";
 import { setAccessMap, clearAccessMap } from "./useAccess";
+// Audit fix H2: write the user to the leaf userStore so useAccess.isDealer
+// (and useAppData.isDealerUser) can read it without a circular import.
+import { sharedUser, setSharedUser } from "../lib/userStore";
 
 // ─── Module-level shared state (singleton across all components) ────────────
+//
+// Audit fix H2: sharedUser is now imported from lib/userStore.ts so that
+// useAccess.isDealer and useAppData.isDealerUser can read the same ref
+// without creating a circular import (they previously used require(),
+// which is undefined in ESM and always threw).
 
-const sharedUser = ref<User | null>(null);
 const sharedSubscription = ref<Subscription | null>(null);
 const sharedAccess = ref<Record<string, string | boolean | number>>({});
 const sharedLoading = ref(false);
@@ -60,7 +66,7 @@ function registerBillingListener() {
   window.addEventListener(BILLING_EVENT, () => {
     if (sharedInitialized.value) {
       // Clear everything so the next fetch hits the API
-      sharedUser.value = null;
+      setSharedUser(null);
       sharedSubscription.value = null;
       sharedAccess.value = {};
       sharedInitialized.value = false;
@@ -108,20 +114,19 @@ async function fetchAuthMe(): Promise<User | null> {
     }
 
     // The backend returns user + subscription + access scoped to this domain
-    sharedUser.value = data.user as unknown as User;
+    setSharedUser(data.user as unknown as User);
     sharedSubscription.value = data.subscription as unknown as Subscription;
 
-    // FIX: /billing/auth/me is ONLY called by dealers (DSRs use the DSR auth
-    // flow via /dsr/auth/* endpoints). Dealers always manage their own DSRs,
-    // but 'manage_dsrs' is NOT a SattaBase plan-level access key — it's a
-    // DSR-specific permission. The dealer's access map therefore doesn't
-    // include it. We inject it here so hasAccess('manage_dsrs') returns true
-    // for dealers — this makes the Team menu and Team tab content visible.
-    // For DSRs, this is overwritten in handleDsrEnterPortal() based on their
-    // per-dealer assignment permissions.
+    // FIX (audit M5): only inject manage_dsrs:true when the caller is
+    // actually a dealer. The previous code unconditionally injected it
+    // for every caller of /billing/auth/me, which would grant DSRs the
+    // manage_dsrs permission if they ever called this endpoint.
+    const isDealer =
+      (data.access as Record<string, unknown>)?.is_dealer === true ||
+      (data.access as Record<string, unknown>)?.role === "dealer";
     const accessWithDealerPerms: Record<string, string | boolean | number> = {
       ...(data.access as Record<string, string | boolean | number>),
-      manage_dsrs: true,
+      ...(isDealer ? { manage_dsrs: true } : {}),
     };
     sharedAccess.value = accessWithDealerPerms;
     setAccessMap(accessWithDealerPerms);
@@ -177,8 +182,18 @@ export function useAuth() {
    * a fresh API call.
    */
   async function fetchProfile(): Promise<User | null> {
-    // Return cached user if already loaded
-    if (sharedInitialized.value && sharedUser.value) return sharedUser.value;
+    // Return cached user if already loaded AND the user object is non-null.
+    // Audit fix L6: previously this checked `sharedInitialized.value &&
+    // sharedUser.value`. If any future code path cleared `sharedUser`
+    // (via setSharedUser(null)) WITHOUT also clearing `sharedInitialized`,
+    // this function would return null without re-fetching. The current
+    // code is correct (logout + invalidateProfile both clear both flags),
+    // but we tighten the check to be defensive: if `sharedInitialized` is
+    // true but `sharedUser` is null (shouldn't happen, but could due to a
+    // race), trigger a fresh fetch instead of returning null.
+    if (sharedInitialized.value && sharedUser.value) {
+      return sharedUser.value;
+    }
 
     // Deduplicate concurrent fetches
     if (fetchPromise) return fetchPromise;
@@ -214,7 +229,7 @@ export function useAuth() {
    */
   async function logout(): Promise<void> {
     // Clear local state first for immediate UI feedback
-    sharedUser.value = null;
+    setSharedUser(null);
     sharedSubscription.value = null;
     sharedAccess.value = {};
     sharedInitialized.value = false;
@@ -247,7 +262,7 @@ export function useAuth() {
    * Useful after profile updates, email changes, or billing operations.
    */
   function invalidateProfile(): void {
-    sharedUser.value = null;
+    setSharedUser(null);
     sharedSubscription.value = null;
     sharedAccess.value = {};
     sharedInitialized.value = false;

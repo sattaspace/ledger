@@ -820,47 +820,87 @@ class DsrAuthController:
         """Refresh access token using refresh token."""
         from ninja_jwt.tokens import RefreshToken
         from django.contrib.auth import get_user_model
+        from asgiref.sync import sync_to_async
+        import logging
+        logger = logging.getLogger(__name__)
 
-        try:
+        # ── FIX: RefreshToken(data.refresh) calls check_blacklist() which
+        # does a synchronous ORM query (BlacklistedToken.objects.filter).
+        # Django's async safety guard raises SynchronousOnlyOperation when
+        # this is called from an async context. We wrap the entire token
+        # validation + DB lookup chain in sync_to_async so it runs in a
+        # thread pool where synchronous ORM access is allowed.
+        #
+        # Without this, DSR refresh ALWAYS fails with 401 — the token is
+        # valid but the blacklist check crashes before it can complete.
+        def _do_refresh():  # NOTE: synchronous — sync_to_async wraps this below
             refresh = RefreshToken(data.refresh)
             user_id = refresh.get("user_id") or refresh.get("sub")
             if not user_id:
-                return error_invalid_token()
+                logger.warning("[DSR-AUTH] refresh: no user_id in token payload")
+                return None
             # FIX H-7: enforce the password_changed_at check at refresh
             # time as well. If the user changed their password since the
             # refresh token was issued, refuse to mint a new access token.
             User = get_user_model()
             try:
-                user = await User.objects.aget(id=user_id)
+                user = User.objects.get(id=user_id)
             except User.DoesNotExist:
-                return error_invalid_token()
+                logger.warning("[DSR-AUTH] refresh: user %s not found", user_id)
+                return None
             if not user.is_active:
-                return error_invalid_token()
+                logger.warning("[DSR-AUTH] refresh: user %s is inactive", user_id)
+                return None
             if not _pwd_changed_at_matches(user, dict(refresh.payload)):
-                return error_invalid_token()
+                logger.warning(
+                    "[DSR-AUTH] refresh: pwd_changed_at mismatch for user %s "
+                    "(token=%s, db=%s)",
+                    user_id,
+                    refresh.payload.get("pwd_changed_at"),
+                    int(user.password_changed_at.timestamp()) if user.password_changed_at else 0,
+                )
+                return None
             access = str(refresh.access_token)
             new_refresh = str(refresh)
+            return {"access": access, "refresh": new_refresh}
 
-            return {
-                "access": access,
-                "refresh": new_refresh,
-            }
-        except Exception:
+        try:
+            result = await sync_to_async(_do_refresh, thread_sensitive=True)()
+            if result is None:
+                return error_invalid_token()
+            return result
+        except Exception as exc:
+            # Diagnostic: log the ACTUAL exception so we can see WHY
+            # RefreshToken(data.refresh) is throwing. The generic
+            # error_invalid_token() hides the real cause.
+            logger.error(
+                "[DSR-AUTH] refresh: RefreshToken() raised %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             return error_invalid_token()
 
     @http_post("/logout", response=MessageOutput)
     async def logout(self, request: HttpRequest):
         """Logout DSR by blacklisting the refresh token."""
         from ninja_jwt.tokens import RefreshToken
+        from asgiref.sync import sync_to_async
 
         refresh_token = request.COOKIES.get("dsr_refresh_token")
 
         if refresh_token:
-            try:
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-            except Exception:
-                pass
+            # FIX: same SynchronousOnlyOperation issue as /refresh —
+            # RefreshToken(token) calls check_blacklist() which does a
+            # synchronous ORM query. Wrap in sync_to_async.
+            def _do_blacklist():
+                try:
+                    token = RefreshToken(refresh_token)
+                    token.blacklist()
+                except Exception:
+                    pass  # Token already blacklisted or invalid — ignore
+
+            await sync_to_async(_do_blacklist, thread_sensitive=True)()
 
         response = JsonResponse({"message": "Logout successful"})
         response.delete_cookie("dsr_refresh_token")

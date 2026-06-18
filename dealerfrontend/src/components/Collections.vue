@@ -596,7 +596,7 @@ const collectionStatusOptions = computed(() => ({
 
                   <td class="py-3.5 px-4 text-center">
                     <span class="bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-md text-xs font-semibold">
-                      {{ sale.dueDate ? new Date(sale.dueDate).toLocaleDateString() : 'No date' }}
+                      {{ sale.dueDate ? new Date(sale.dueDate).toLocaleDateString('en-IN') : 'No date' }}
                     </span>
                   </td>
 
@@ -636,7 +636,7 @@ const collectionStatusOptions = computed(() => ({
                         <h4 class="font-bold text-slate-800 text-sm mb-3">Invoice Summary</h4>
                         <div class="space-y-2 text-sm text-slate-600">
                           <p class="flex justify-between"><span class="text-slate-400">Invoice ID</span> <span class="font-mono font-bold text-slate-700">{{ sale.id }}</span></p>
-                          <p class="flex justify-between"><span class="text-slate-400">Date</span> <span>{{ new Date(sale.date).toLocaleString() }}</span></p>
+                          <p class="flex justify-between"><span class="text-slate-400">Date</span> <span>{{ new Date(sale.date).toLocaleString('en-IN') }}</span></p>
                           <p class="flex justify-between"><span class="text-slate-400">Original Total</span> <span class="font-mono">{{ formatCurrency(sale.totalAmount) }}</span></p>
                           <p v-if="sale.returnTotalAmount && sale.returnTotalAmount > 0" class="flex justify-between"><span class="text-amber-500 font-semibold">Returns Deducted</span> <span class="font-mono text-amber-600">-{{ formatCurrency(sale.returnTotalAmount) }}</span></p>
                           <p v-if="sale.returnTotalAmount && sale.returnTotalAmount > 0" class="flex justify-between"><span class="text-slate-400">Net Amount</span> <span class="font-mono font-bold">{{ formatCurrency(sale.netAmount || (sale.totalAmount - sale.returnTotalAmount)) }}</span></p>
@@ -658,7 +658,7 @@ const collectionStatusOptions = computed(() => ({
                             </thead>
                             <tbody class="divide-y divide-slate-100 text-slate-600 font-medium">
                               <tr v-for="(pRecord, pIdx) in sale.payments" :key="pIdx">
-                                <td class="py-2 px-3 text-slate-500">{{ new Date(pRecord.date).toLocaleDateString() }}</td>
+                                <td class="py-2 px-3 text-slate-500">{{ new Date(pRecord.date).toLocaleDateString('en-IN') }}</td>
                                 <td class="py-2 px-3 text-right font-mono text-emerald-600 font-bold">+{{ formatCurrency(pRecord.amount) }}</td>
                                 <td class="py-2 px-3 text-slate-600">{{ pRecord.receivedBy }}</td>
                               </tr>
@@ -690,7 +690,7 @@ const collectionStatusOptions = computed(() => ({
                             </thead>
                             <tbody class="divide-y divide-slate-100 text-slate-600 font-medium">
                               <tr v-for="(ret, rIdx) in sale.returns" :key="rIdx">
-                                <td class="py-2 px-3 text-slate-500">{{ new Date(ret.date).toLocaleDateString() }}</td>
+                                <td class="py-2 px-3 text-slate-500">{{ new Date(ret.date).toLocaleDateString('en-IN') }}</td>
                                 <td class="py-2 px-3 text-center font-mono">-{{ ret.quantity }}</td>
                                 <td class="py-2 px-3 text-right font-mono text-amber-600 font-bold">-{{ formatCurrency(ret.returnAmount) }}</td>
                                 <td class="py-2 px-3">{{ ret.reason }}</td>

@@ -15,6 +15,13 @@
  *
  *   // List invitations
  *   await fetchInvitations();
+ *
+ * Audit fix TS-2: the previous version checked `response.error` on every
+ * call, but `services/apiClient.ts`'s `ApiResponse<T>` type is
+ * `{ ok: boolean; status: number; data: T }` — there is NO `error` field.
+ * The apiClient THROWS an `ApiError` instance on non-2xx responses, so
+ * the catch block already handles all error cases. The `if (response.error)`
+ * checks were dead code that also produced TypeScript errors. Removed.
  */
 
 import { ref, computed, type Ref } from "vue";
@@ -84,15 +91,12 @@ export function useInvitations(): UseInvitationsReturn {
     error.value = null;
 
     try {
+      // Audit fix TS-2: apiClient throws on non-2xx, so the catch block
+      // handles all error cases. No `response.error` check needed.
       const response = await invitationService.listInvitations(
         status ? { status: status as any } : undefined,
       );
-
-      if (response.error) {
-        error.value = response.error;
-      } else {
-        invitations.value = response.data || [];
-      }
+      invitations.value = response.data || [];
     } catch (err: any) {
       error.value = err.message || "Failed to fetch invitations";
     } finally {
@@ -111,18 +115,11 @@ export function useInvitations(): UseInvitationsReturn {
 
     try {
       const response = await invitationService.createInvitation(data);
-
-      if (response.error) {
-        error.value = response.error;
-        return null;
-      }
-
       // Add to local list
       if (response.data) {
         invitations.value.unshift(response.data);
         return response.data;
       }
-
       return null;
     } catch (err: any) {
       error.value = err.message || "Failed to create invitation";
@@ -140,19 +137,12 @@ export function useInvitations(): UseInvitationsReturn {
     error.value = null;
 
     try {
-      const response = await invitationService.revokeInvitation(id);
-
-      if (response.error) {
-        error.value = response.error;
-        return false;
-      }
-
+      await invitationService.revokeInvitation(id);
       // Update local state
       const index = invitations.value.findIndex((inv) => inv.id === id);
       if (index !== -1) {
         invitations.value[index].status = "revoked";
       }
-
       return true;
     } catch (err: any) {
       error.value = err.message || "Failed to revoke invitation";
@@ -170,16 +160,9 @@ export function useInvitations(): UseInvitationsReturn {
     error.value = null;
 
     try {
-      const response = await invitationService.deleteInvitation(id);
-
-      if (response.error) {
-        error.value = response.error;
-        return false;
-      }
-
+      await invitationService.deleteInvitation(id);
       // Remove from local list
       invitations.value = invitations.value.filter((inv) => inv.id !== id);
-
       return true;
     } catch (err: any) {
       error.value = err.message || "Failed to delete invitation";
@@ -200,12 +183,7 @@ export function useInvitations(): UseInvitationsReturn {
       const response = await invitationService.listAssignments(
         isActive !== undefined ? { isActive } : undefined,
       );
-
-      if (response.error) {
-        error.value = response.error;
-      } else {
-        assignments.value = response.data || [];
-      }
+      assignments.value = response.data || [];
     } catch (err: any) {
       error.value = err.message || "Failed to fetch assignments";
     } finally {
@@ -221,19 +199,12 @@ export function useInvitations(): UseInvitationsReturn {
     error.value = null;
 
     try {
-      const response = await invitationService.deactivateAssignment(id);
-
-      if (response.error) {
-        error.value = response.error;
-        return false;
-      }
-
+      await invitationService.deactivateAssignment(id);
       // Update local state
       const index = assignments.value.findIndex((a) => a.id === id);
       if (index !== -1) {
         assignments.value[index].isActive = false;
       }
-
       return true;
     } catch (err: any) {
       error.value = err.message || "Failed to deactivate assignment";
@@ -251,19 +222,12 @@ export function useInvitations(): UseInvitationsReturn {
     error.value = null;
 
     try {
-      const response = await invitationService.activateAssignment(id);
-
-      if (response.error) {
-        error.value = response.error;
-        return false;
-      }
-
+      await invitationService.activateAssignment(id);
       // Update local state
       const index = assignments.value.findIndex((a) => a.id === id);
       if (index !== -1) {
         assignments.value[index].isActive = true;
       }
-
       return true;
     } catch (err: any) {
       error.value = err.message || "Failed to activate assignment";

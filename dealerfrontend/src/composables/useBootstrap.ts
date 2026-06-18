@@ -15,7 +15,12 @@ import { useAuth } from "./useAuth";
 import { useDealerContext } from "./useDealerContext";
 import { useAppData } from "./useAppData";
 import { useDsrPortal } from "./useDsrPortal";
-import { authHelpers } from "../lib/api";
+// Audit fix TS-12: removed `authHelpers` import — no longer used after
+// removing the `authHelpers.getRefreshToken()` check (the refresh token
+// is now in an httpOnly cookie that JS cannot read).
+// Audit fix H3: wire fetchDsrPermissions into the bootstrap flow so the
+// PermissionGuard / useDsrPermissions infrastructure is actually populated.
+import { fetchDsrPermissions, clearDsrPermissions } from "./useDsrPermissions";
 
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -28,7 +33,9 @@ let bootstrapPromise: Promise<void> | null = null;
  * Returns true if authenticated, false otherwise.
  */
 export async function ensureAuthenticated(): Promise<boolean> {
-  const { isAuthenticated, refreshUser, initialized } = useAuth();
+  // Audit fix TS-10: removed unused `initialized` from the useAuth()
+  // destructure. isAuthenticated + refreshUser are the only fields used.
+  const { isAuthenticated, refreshUser } = useAuth();
   const { dsrInPortalMode } = useDsrPortal();
 
   // Fast path — already authenticated
@@ -38,14 +45,24 @@ export async function ensureAuthenticated(): Promise<boolean> {
   // can still access /dashboard, /inventory, etc. Don't redirect them.
   if (dsrInPortalMode.value) return true;
 
-  // Try to restore session via refresh token
-  if (authHelpers.getRefreshToken()) {
-    try {
-      const user = await refreshUser();
-      if (user) return true;
-    } catch {
-      // refreshUser swallows errors; fall through to redirect
-    }
+  // Audit fix TS-12: previously this checked `authHelpers.getRefreshToken()`
+  // before attempting refreshUser(). That check is now always false because
+  // the refresh token lives in an httpOnly cookie that JavaScript cannot
+  // read (authHelpers.getRefreshToken() always returns null post-migration).
+  // The check was therefore dead code — unauthenticated users were
+  // immediately redirected without ever attempting the refresh.
+  //
+  // We now ALWAYS attempt refreshUser(). The underlying apiClient in
+  // lib/api.ts has a 401-refresh interceptor that calls
+  // /auth/token/refresh-cookie (using credentials: 'include' to send the
+  // httpOnly cookie) when /billing/auth/me returns 401. If the cookie is
+  // absent or expired, refreshUser() returns null and we fall through to
+  // the redirect below.
+  try {
+    const user = await refreshUser();
+    if (user) return true;
+  } catch {
+    // refreshUser swallows errors; fall through to redirect
   }
 
   // Not authenticated — redirect to login
@@ -56,8 +73,13 @@ export async function ensureAuthenticated(): Promise<boolean> {
 }
 
 /**
- * Full bootstrap: auth + dealer context + app data.
+ * Full bootstrap: auth + dealer context + app data + DSR permissions.
  * Used by the AppShell on mount, and by pages that need app data.
+ *
+ * Audit fix H3: also calls fetchDsrPermissions() after auth resolves.
+ * Previously fetchDsrPermissions was exported but never called, so
+ * the entire PermissionGuard / useDsrPermissions infrastructure was
+ * dead code (dsrPermissions stayed {}, isDsrDealer stayed false).
  */
 export async function bootstrapAppData(): Promise<void> {
   if (bootstrapPromise) return bootstrapPromise;
@@ -67,6 +89,23 @@ export async function bootstrapAppData(): Promise<void> {
     if (!ok) return;
     const { ensureLoaded } = useAppData();
     await ensureLoaded();
+
+    // Audit fix H3: fetch DSR permissions in the background (don't block
+    // the bootstrap chain on it). This populates dsrPermissions and
+    // isDsrDealer in useDsrPermissions, so PermissionGuard and
+    // useDsrPermissions().hasPermission() work correctly.
+    //
+    // The /dsr/permissions endpoint returns is_dealer=true for dealers
+    // (with empty permissions — dealers bypass all module checks) and
+    // the actual per-dealer permissions for DSRs. For unauthenticated
+    // callers it returns 401 (handled silently by useDsrPermissions).
+    fetchDsrPermissions().catch((err) => {
+      // Don't fail the bootstrap — permissions are a fallback safety
+      // check; the backend enforces them authoritatively.
+      if (import.meta.env.DEV) {
+        console.warn("[BOOTSTRAP] fetchDsrPermissions failed:", err);
+      }
+    });
   })();
 
   return bootstrapPromise;
@@ -74,6 +113,9 @@ export async function bootstrapAppData(): Promise<void> {
 
 /**
  * Reset bootstrap state — used on logout.
+ *
+ * Audit fix H3: also clear DSR permissions so a new login doesn't see
+ * the previous user's permission state.
  */
 export function resetBootstrap(): void {
   bootstrapPromise = null;
@@ -81,4 +123,6 @@ export function resetBootstrap(): void {
   clearAll();
   const { clearDealerContext } = useDealerContext();
   clearDealerContext();
+  // Audit fix H3: clear DSR permissions on logout.
+  clearDsrPermissions();
 }

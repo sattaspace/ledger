@@ -12,7 +12,9 @@
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useAuth } from "../composables/useAuth";
 import { useDsrPortal } from "../composables/useDsrPortal";
-import { authHelpers } from "../lib/api";
+// Audit fix TS-12: removed `authHelpers` import — no longer used after
+// removing the `authHelpers.getRefreshToken()` check (the refresh token
+// is now in an httpOnly cookie that JS cannot read).
 
 const props = defineProps<{
   requireAuth?: boolean;
@@ -25,8 +27,17 @@ const hasChecked = ref(false);
 
 function redirectToLogin() {
   if (typeof window === "undefined") return;
-  // If in DSR portal mode, send them back to DSR dashboard
-  if (dsrInPortalMode.value || localStorage.getItem("dsr_access_token")) {
+  // If in DSR portal mode, send them back to DSR dashboard.
+  // Audit fix C1: DSR access token is no longer in localStorage (it's in
+  // memory only). Use the dsr_user key as a hint that the user was logged
+  // in as a DSR on this tab.
+  // Audit fix M2: previously this also checked localStorage.getItem("dsr_access_token")
+  // and redirected to /dsr/dashboard if present — but that key may be stale
+  // (we no longer write it). The /dsr/dashboard page itself does a server-
+  // side refresh-cookie check via bootstrapDsrSession(), so sending the user
+  // there is safe even if their DSR cookie has expired. We keep the
+  // `dsr_user` localStorage check as a hint of previous DSR login.
+  if (dsrInPortalMode.value || localStorage.getItem("dsr_user")) {
     window.location.href = "/dsr/dashboard";
   } else {
     window.location.href = "/login";
@@ -47,20 +58,20 @@ onMounted(async () => {
     return;
   }
 
-  // Try to restore session via refresh token
-  if (authHelpers.getRefreshToken()) {
-    try {
-      const user = await refreshUser();
-      if (!user && !dsrInPortalMode.value) {
-        redirectToLogin();
-        return;
-      }
-    } catch {
+  // Audit fix TS-12: previously this checked `authHelpers.getRefreshToken()`
+  // before attempting refreshUser(). That check is now always false because
+  // the refresh token lives in an httpOnly cookie that JavaScript cannot
+  // read (authHelpers.getRefreshToken() always returns null post-migration).
+  // We now ALWAYS attempt refreshUser() — the underlying apiClient has a
+  // 401-refresh interceptor that uses credentials: 'include' to send the
+  // httpOnly cookie to /auth/token/refresh-cookie.
+  try {
+    const user = await refreshUser();
+    if (!user && !dsrInPortalMode.value) {
       redirectToLogin();
       return;
     }
-  } else if (!dsrInPortalMode.value) {
-    // No refresh token and not in portal mode → redirect
+  } catch {
     redirectToLogin();
     return;
   }

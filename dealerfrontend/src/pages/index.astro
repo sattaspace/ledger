@@ -2,14 +2,20 @@
 /**
  * / — root redirect page.
  *
- * Server-side, we don't know auth state (tokens are in localStorage/sessionStorage).
- * So we ship a tiny inline script that decides:
- *   - If dealer refresh token exists → /dashboard
- *   - Else if DSR portal mode flag is set → /dashboard
- *   - Else if DSR access token exists → /dsr/dashboard
- *   - Else → /login
+ * Server-side, we don't know auth state (the refresh token lives in an
+ * httpOnly cookie that JS cannot read, and the access token is in memory).
+ * So we ship a tiny inline script that decides where to send the user:
+ *   - If DSR portal mode flag is set → /dashboard (middleware validates)
+ *   - Else if remember-me cookie is set → /dashboard (middleware validates)
+ *   - Else if DSR session hint in localStorage → /dsr/dashboard
+ *   - Else → /dashboard (middleware will redirect to /login if no cookie)
  *
- * The script runs synchronously in <head> to avoid any flash.
+ * The script runs synchronously in <body> to avoid any flash.
+ *
+ * Audit fix L7: removed the previous `if (window.location.pathname === "/")`
+ * check — this script only runs on `/` anyway (it's the / page's inline
+ * script), so the check was dead code. Keeping it would suggest it served
+ * a purpose, which it did not.
  */
 import BaseLayout from "../layouts/BaseLayout.astro";
 
@@ -25,7 +31,9 @@ const title = "DEALERCORE v3.0 — Dealer Management System";
         style="width:48px;height:48px;border:4px solid #FBE4D7;border-top-color:#E25212;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"
       >
       </div>
-      <p style="color:#736B60;font-family:Inter,sans-serif;font-size:14px;">Loading DEALERCORE…</p>
+      <p style="color:#736B60;font-family:Inter,sans-serif;font-size:14px;">
+        Loading DEALERCORE…
+      </p>
     </div>
   </div>
   <style is:inline>
@@ -38,23 +46,36 @@ const title = "DEALERCORE v3.0 — Dealer Management System";
   <script is:inline>
     (function () {
       try {
-        var dealerRefresh =
-          sessionStorage.getItem("dealercore:refresh_token") ||
-          localStorage.getItem("dealercore:refresh_token");
-        var dsrAccess = localStorage.getItem("dsr_access_token");
-        var portalMode = localStorage.getItem("dealercore:dsr_portal_mode") === "true";
+        var dsrUser = localStorage.getItem("dsr_user");
+        var portalMode =
+          localStorage.getItem("dealercore:dsr_portal_mode") === "true";
+        // Audit fix H4: the dealer refresh token lives in an httpOnly
+        // cookie that JS cannot read. Use the non-httpOnly `sb_remember_me`
+        // cookie as a proxy signal that the user has an active dealer session.
+        var hasRememberCookie = /sb_remember_me=/.test(document.cookie);
 
-        var target = "/login";
-        if (portalMode || dealerRefresh) {
+        var target;
+        if (portalMode) {
+          // DSR is in portal mode. They have an httpOnly cookie set by
+          // the proxy. The /dashboard middleware will validate it.
           target = "/dashboard";
-        } else if (dsrAccess) {
+        } else if (hasRememberCookie) {
+          // Dealer with remember-me cookie. Let /dashboard middleware
+          // validate the httpOnly refresh cookie.
+          target = "/dashboard";
+        } else if (dsrUser) {
+          // DSR with a previous session. Go to DSR dashboard.
           target = "/dsr/dashboard";
+        } else {
+          // Default: try /dashboard first. If the user has an httpOnly
+          // refresh cookie but no remember-me (session-only login), the
+          // middleware will validate it. If no cookie, the middleware
+          // will redirect to /login. This avoids the "always /login"
+          // bug for dealers who chose not to be remembered.
+          target = "/dashboard";
         }
 
-        // Only redirect if we're actually at "/" — avoids redirect loop on /
-        if (window.location.pathname === "/") {
-          window.location.replace(target);
-        }
+        window.location.replace(target);
       } catch (e) {
         // On any error, fall through to /login
         window.location.replace("/login");

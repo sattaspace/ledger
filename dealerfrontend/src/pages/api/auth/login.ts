@@ -35,6 +35,56 @@ interface LoginBody {
 }
 
 /**
+ * Audit fix H7: CSRF guard. Rejects any POST whose Origin or Referer
+ * header is not the dealerfrontend origin. Prevents login-CSRF (session
+ * fixation) and logout-CSRF attacks.
+ */
+function rejectCrossOriginPost(request: Request): Response | null {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const allowed = new Set<string>([config.thisDomainUrl]);
+  if (import.meta.env.DEV) {
+    try {
+      const u = new URL(config.thisDomainUrl);
+      allowed.add(`http://${u.host}`);
+      allowed.add(`https://${u.host}`);
+      allowed.add("http://localhost:4323");
+      allowed.add("http://127.0.0.1:4323");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (origin) {
+    return allowed.has(origin)
+      ? null
+      : new Response(
+          JSON.stringify({ detail: "Cross-origin requests are not allowed" }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+  }
+  if (referer) {
+    try {
+      const r = new URL(referer);
+      return allowed.has(`${r.protocol}//${r.host}`)
+        ? null
+        : new Response(
+            JSON.stringify({ detail: "Cross-origin requests are not allowed" }),
+            { status: 403, headers: { "Content-Type": "application/json" } },
+          );
+    } catch {
+      return new Response(
+        JSON.stringify({ detail: "Malformed Referer header" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+  return new Response(
+    JSON.stringify({ detail: "Missing Origin/Referer header" }),
+    { status: 403, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
  * Parse the backend's Set-Cookie header and return each Set-Cookie value
  * as a separate string. The fetch API collapses multi-value headers
  * (e.g. multiple Set-Cookie entries) into a single comma-separated
@@ -54,15 +104,19 @@ function splitSetCookies(combined: string | null): string[] {
 }
 
 export const POST: APIRoute = async ({ request }) => {
+  // ── Audit fix H7: CSRF check ────────────────────────────────────────────
+  const csrf = rejectCrossOriginPost(request);
+  if (csrf) return csrf;
+
   // ── 1. Parse request body ─────────────────────────────────────────────
   let body: LoginBody;
   try {
     body = (await request.json()) as LoginBody;
   } catch {
-    return new Response(
-      JSON.stringify({ detail: "Invalid JSON body" }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ detail: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const { email, password, remember } = body;
@@ -97,10 +151,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   // Forward content-type from backend (or default)
   const backendContentType = backendRes.headers.get("content-type");
-  responseHeaders.set(
-    "Content-Type",
-    backendContentType || "application/json",
-  );
+  responseHeaders.set("Content-Type", backendContentType || "application/json");
 
   // Forward Set-Cookie headers verbatim. Multiple Set-Cookie entries are
   // collapsed by fetch() into a single comma-separated string — split

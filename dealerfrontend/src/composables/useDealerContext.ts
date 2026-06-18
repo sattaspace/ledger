@@ -18,7 +18,8 @@
  *   const { selectedDealer, dealers, selectDealer, isMultiDealer } = useDealerContext();
  */
 
-import { ref, computed, watch } from "vue";
+// Audit fix TS-11: removed unused `watch` import (no watch() calls in this file).
+import { ref, computed } from "vue";
 import { dealerService } from "../services/api";
 import type { DealerConfig, User } from "../lib/types";
 

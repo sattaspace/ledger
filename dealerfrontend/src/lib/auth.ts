@@ -93,10 +93,11 @@ export async function login(
   password: string,
   remember = false,
 ): Promise<{ access: string }> {
-  const data = await postSameOrigin<{ access: string }>(
-    "/api/auth/login",
-    { email, password, remember },
-  );
+  const data = await postSameOrigin<{ access: string }>("/api/auth/login", {
+    email,
+    password,
+    remember,
+  });
   // Persist access token in memory only (refresh lives in httpOnly cookie).
   authHelpers.setTokens(data.access);
   // Defensive: a dealer login must never inherit a stale DSR portal flag
@@ -178,7 +179,16 @@ export async function exchangeAuthCode(code: string): Promise<TokenPair> {
   const data = await apiClient.post<TokenPair>("/auth/token/exchange", {
     code,
   });
-  authHelpers.setTokens(data.access, data.refresh);
+  // Audit fix L1: previously called setTokens(data.access, data.refresh)
+  // with two args — but setTokens only accepts one (the refresh token
+  // lives in an httpOnly cookie set by the backend, not in JS memory).
+  // The second arg was silently ignored. We now call with just the
+  // access token. Note: exchangeAuthCode is currently unused (it's a
+  // stub for a future SSO flow where the BASE domain might forward a
+  // code back to the sister domain). If that flow is implemented, the
+  // backend should set the refresh cookie via a proxy endpoint, not
+  // return the refresh token in the JSON body.
+  authHelpers.setTokens(data.access);
   return data;
 }
 

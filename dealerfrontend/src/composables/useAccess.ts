@@ -25,7 +25,17 @@
  */
 
 import { computed, type ComputedRef, ref } from "vue";
-import { getAccessToken } from "../lib/api";
+// Audit fix H2: import getAccessToken from the new leaf tokenStore module
+// instead of lib/api.ts. This breaks the circular import that previously
+// forced useAccess to use require() for useAuth (which always returned
+// false in ESM).
+import { getAccessToken } from "../lib/tokenStore";
+// Audit fix H2: import the access-map leaf store so setAccessMap can write
+// to the same singleton that lib/api.ts reads for the X-Plan-Limits header.
+import { setAccessMapValue, clearAccessMapValue } from "../lib/accessMapStore";
+// Audit fix H2: read the user role from the leaf userStore, avoiding the
+// require("./useAuth") that always threw in ESM.
+import { isDealerUser } from "../lib/userStore";
 
 // ─── Access Map State ────────────────────────────────────────────────────────
 
@@ -38,6 +48,10 @@ const isLoadingAccess = ref(false);
 
 /**
  * Update the access map (called by useAuth after fetching /billing/auth/me).
+ *
+ * Audit fix H2: now writes to the leaf accessMapStore module so lib/api.ts
+ * can read the same singleton for the X-Plan-Limits header without a
+ * circular import.
  *
  * FIX M-15: validate the payload before storing. Without this, an
  * accidental nested object/array from a backend contract change would
@@ -77,6 +91,10 @@ export function setAccessMap(
       },
     );
   }
+  // Audit fix H2: write to the leaf store so lib/api.ts can read it.
+  setAccessMapValue(sanitized);
+  // Also update the local ref for backwards compat with any consumer that
+  // reads useAccess().access directly.
   accessMap.value = sanitized;
 }
 
@@ -86,6 +104,8 @@ export function setAccessMap(
  * @internal Use only via useAuth. Not part of the useAccess() composable API.
  */
 export function clearAccessMap(): void {
+  // Audit fix H2: clear the leaf store too.
+  clearAccessMapValue();
   accessMap.value = {};
 }
 
@@ -149,17 +169,22 @@ export function useAccess() {
           // "NO", "disabled" were all truthy. Now any case of false-ish
           // strings is treated as falsy.
           const lower = value.trim().toLowerCase();
-          return lower !== "" && lower !== "false" && lower !== "0" && lower !== "no";
+          return (
+            lower !== "" && lower !== "false" && lower !== "0" && lower !== "no"
+          );
         }
         return Boolean(value);
       })();
 
-      console.log(`%c[ACCESS] hasAccess("${key}")`, "color: #f59e0b;", {
-        key,
-        value,
-        result,
-        accessMapKeys: Object.keys(accessMap.value),
-      });
+      // Audit fix H6: gate verbose access-check logging behind DEV mode.
+      if (import.meta.env.DEV) {
+        console.log(`%c[ACCESS] hasAccess("${key}")`, "color: #f59e0b;", {
+          key,
+          value,
+          result,
+          accessMapKeys: Object.keys(accessMap.value),
+        });
+      }
 
       return result;
     });
@@ -229,19 +254,17 @@ export function useAccess() {
    * plan happened to include `dashboard`. We now read the user's actual
    * role from the auth profile (set via /billing/auth/me).
    *
-   * Lazy-imported to avoid a circular import: useAuth.ts already imports
-   * getAccessToken from this file.
+   * Audit fix H2: previously this used require("./useAuth") inside a
+   * try/catch to lazily load useAuth (avoiding a circular import).
+   * require() is undefined in ESM bundles (Astro/Vite), so the catch
+   * always fired and isDealer ALWAYS returned false — breaking dealer
+   * bypasses in PermissionGuard, the X-Plan-Limits header, etc.
+   *
+   * We now read from lib/userStore.ts, a leaf module with no imports,
+   * that useAuth writes to. No cycle, no require(), and isDealer
+   * correctly returns true for dealers.
    */
-  const isDealer = computed(() => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const authModule = require("./useAuth");
-      const user = authModule?.user?.value;
-      return user?.role === "dealer" || user?.is_dealer === true;
-    } catch {
-      return false;
-    }
-  });
+  const isDealer = computed(() => isDealerUser());
 
   return {
     // State

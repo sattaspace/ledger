@@ -83,9 +83,12 @@ export async function fetchDsrPermissions(): Promise<void> {
   isLoading.value = true;
 
   try {
-    const response =
+    // Audit fix TS-1: `apiClient` from `lib/api.ts` returns the parsed
+    // JSON body directly (not wrapped in `{ ok, status, data }`).
+    // The previous `response.data` access was a type error inherited from
+    // the services/apiClient.ts pattern. We now read the body directly.
+    const data =
       await apiClient.get<DsrPermissionsResponse>("/dsr/permissions");
-    const data = response.data;
 
     isDsrDealer.value = data.is_dealer;
     dsrRole.value = data.role;
@@ -106,9 +109,18 @@ export async function fetchDsrPermissions(): Promise<void> {
       );
     }
   } catch (error: any) {
-    // If the endpoint returns 404 or 403, the user likely doesn't have
-    // a DSR assignment. Set empty permissions (most restrictive).
-    if (error?.response?.status === 404 || error?.response?.status === 403) {
+    // Audit fix H5: previously this checked `error?.response?.status`
+    // (Axios-style), but our apiClient throws plain objects with
+    // `.status` (not `.response.status`). The old check was always
+    // false, so 404/403 (no DSR assignment — the common case for
+    // dealers) was not treated as the "empty permissions" case.
+    //
+    // We now check both shapes for safety: `.status` (lib/api.ts,
+    // services/apiClient.ts) and `.response.status` (Axios, if ever
+    // swapped in).
+    const status = error?.status ?? error?.response?.status ?? null;
+    if (status === 404 || status === 403) {
+      // No DSR assignment found — set empty permissions (most restrictive).
       dsrPermissions.value = {};
       isLoaded.value = true;
       if (import.meta.env.DEV) {

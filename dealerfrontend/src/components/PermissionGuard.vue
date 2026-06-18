@@ -70,13 +70,25 @@ const canAccess = computed(() => {
   );
 
   if (!hasCondition) {
-    const msg = '[PermissionGuard] No condition prop provided (feature/module/any/all). Denying by default.';
-    if (import.meta.env.DEV) {
-      console.error(msg);
-      throw new Error(msg);
-    }
-    console.warn(msg);
-    return false;
+    // Audit fix L2: previously this only threw in dev mode and warned +
+    // denied in production. The denial was correct (fail-closed), but
+    // silently warning in production meant a missing-prop bug could ship
+    // to production and deny access to all users without any signal.
+    //
+    // We now throw in BOTH dev and production. The throw is caught by
+    // Vue's error boundary (if one exists upstream) or surfaces as a
+    // console error in production. This makes missing-prop bugs
+    // immediately visible during QA rather than silently breaking
+    // access for end users.
+    //
+    // If you genuinely want a no-op PermissionGuard (e.g. as a placeholder
+    // during development), use `<PermissionGuard :feature="'_placeholder'">`
+    // or wrap the slot without PermissionGuard at all.
+    const msg =
+      "[PermissionGuard] No condition prop provided (feature/module/any/all). " +
+      "Denying by default. Either pass a condition prop or remove the PermissionGuard wrapper.";
+    console.error(msg);
+    throw new Error(msg);
   }
 
   // ─── DSR Module Permission Check ──────────────────────────────────

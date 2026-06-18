@@ -5,7 +5,7 @@
  * loading states, and request management.
  */
 
-import { ref, type Ref } from 'vue';
+import { ref, shallowRef, type Ref } from "vue";
 
 export interface UseAsyncOptions<T> {
   /** Callback on successful execution */
@@ -23,7 +23,20 @@ export interface UseAsyncState<T> {
   isLoading: Ref<boolean>;
   /** Error message if operation failed */
   error: Ref<string | null>;
-  /** Last successful result */
+  /**
+   * Last successful result.
+   *
+   * Audit fix TS-8 (revised): uses `shallowRef` instead of `ref` for the
+   * data field. `ref<T | null>(null)` returns `Ref<UnwrapRef<T | null>>`
+   * which is a complex union type for generic T — TypeScript can't prove
+   * it's assignable to `Ref<T | null>`. `shallowRef<T | null>(null)`
+   * returns `ShallowRef<T | null>` which IS directly assignable to
+   * `Ref<T | null>` (ShallowRef extends Ref).
+   *
+   * This is also more correct semantically: we always do
+   * `data.value = result` (whole-value replacement), never deep mutation,
+   * so shallow reactivity is sufficient and more efficient.
+   */
   data: Ref<T | null>;
   /** Execute the async function */
   execute: (fn: () => Promise<T>) => Promise<T | null>;
@@ -33,28 +46,34 @@ export interface UseAsyncState<T> {
 
 /**
  * Composable for managing async operations with loading and error states
- * 
+ *
  * @example
  * ```ts
  * const { isLoading, error, execute } = useAsync<Product[]>();
- * 
+ *
  * async function loadProducts() {
  *   const products = await execute(async () => {
  *     const res = await api.getProducts();
- *     if (!res.ok) throw new Error(res.error || 'Failed to load');
+ *     // Audit fix TS-13: updated JSDoc example — services/apiClient.ts
+ *     // throws ApiError on non-2xx (no `res.error` field on ApiResponse).
+ *     // The execute() catch block handles errors automatically.
  *     return res.data;
  *   });
- *   
+ *
  *   if (products) {
  *     // Handle success
  *   }
  * }
  * ```
  */
-export function useAsync<T = any>(options: UseAsyncOptions<T> = {}): UseAsyncState<T> {
+export function useAsync<T = any>(
+  options: UseAsyncOptions<T> = {},
+): UseAsyncState<T> {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
-  const data = ref<T | null>(null);
+  // Audit fix TS-8 (revised): use shallowRef instead of ref. See the
+  // interface docstring above for the full explanation.
+  const data = shallowRef<T | null>(null);
 
   async function execute(fn: () => Promise<T>): Promise<T | null> {
     isLoading.value = true;
@@ -66,15 +85,18 @@ export function useAsync<T = any>(options: UseAsyncOptions<T> = {}): UseAsyncSta
       options.onSuccess?.(result);
       return result;
     } catch (err: any) {
-      const errorMessage = err?.message || options.defaultErrorMessage || 'An unexpected error occurred';
+      const errorMessage =
+        err?.message ||
+        options.defaultErrorMessage ||
+        "An unexpected error occurred";
       error.value = errorMessage;
-      
-      console.error('Async operation failed:', err);
-      
+
+      console.error("Async operation failed:", err);
+
       if (options.showErrorAlert !== false) {
         alert(errorMessage);
       }
-      
+
       options.onError?.(err);
       return null;
     } finally {
@@ -93,14 +115,14 @@ export function useAsync<T = any>(options: UseAsyncOptions<T> = {}): UseAsyncSta
     error,
     data,
     execute,
-    reset
+    reset,
   };
 }
 
 /**
  * Execute an async function with automatic error handling
  * Standalone version for one-off operations
- * 
+ *
  * @example
  * ```ts
  * const products = await withErrorHandling(
@@ -111,21 +133,24 @@ export function useAsync<T = any>(options: UseAsyncOptions<T> = {}): UseAsyncSta
  */
 export async function withErrorHandling<T>(
   fn: () => Promise<T>,
-  options: UseAsyncOptions<T> = {}
+  options: UseAsyncOptions<T> = {},
 ): Promise<T | null> {
   try {
     const result = await fn();
     options.onSuccess?.(result);
     return result;
   } catch (err: any) {
-    const errorMessage = err?.message || options.defaultErrorMessage || 'An unexpected error occurred';
-    
-    console.error('Operation failed:', err);
-    
+    const errorMessage =
+      err?.message ||
+      options.defaultErrorMessage ||
+      "An unexpected error occurred";
+
+    console.error("Operation failed:", err);
+
     if (options.showErrorAlert !== false) {
       alert(errorMessage);
     }
-    
+
     options.onError?.(err);
     return null;
   }
@@ -136,7 +161,7 @@ export async function withErrorHandling<T>(
  */
 export function useDebounce<T extends (...args: any[]) => void>(
   fn: T,
-  delay: number
+  delay: number,
 ): (...args: Parameters<T>) => void {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -144,7 +169,7 @@ export function useDebounce<T extends (...args: any[]) => void>(
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
-    
+
     timeoutId = setTimeout(() => {
       fn(...args);
     }, delay);
@@ -156,7 +181,7 @@ export function useDebounce<T extends (...args: any[]) => void>(
  */
 export function useThrottle<T extends (...args: any[]) => void>(
   fn: T,
-  limit: number
+  limit: number,
 ): (...args: Parameters<T>) => void {
   let inThrottle = false;
 

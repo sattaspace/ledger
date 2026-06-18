@@ -279,17 +279,22 @@ watch([dsrEmail, dsrPhone, role, parentDsrId], () => {
 
 <template>
   <!-- Backdrop -->
-  <Teleport to="body">
-    <Transition name="fade">
+  <!-- Hydration fix H-1: move v-if from inside <Transition> to the
+       <Teleport> itself. When the modal is closed (isOpen is false),
+       the entire <Teleport> block is skipped during SSR — no
+       placeholder, no hydration mismatch. The `appear` attribute on
+       <Transition> ensures the fade-in animation plays when the modal
+       is opened client-side. The inner <Transition name="scale"> no
+       longer needs its own v-if (the parent Teleport gates it). -->
+  <Teleport v-if="isOpen" to="body">
+    <Transition name="fade" appear>
       <div
-        v-if="isOpen"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
         @click.self="handleClose"
       >
         <!-- Modal -->
-        <Transition name="scale">
+        <Transition name="scale" appear>
           <div
-            v-if="isOpen"
             class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto"
             @click.stop
           >

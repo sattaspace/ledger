@@ -7,7 +7,7 @@
  * 
  * Uses the isolated dsrClient - NO dependency on dealer auth.
  */
-import { ref, computed } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 import { Store, CheckCircle, UserPlus, AlertCircle, Mail, ShieldCheck } from 'lucide-vue-next';
 import { dsrApi } from '../services/dsrClient';
 
@@ -24,12 +24,17 @@ const errorMessage = ref('');
 const successMessage = ref('');
 const showVerificationNotice = ref(false);  // FIX DSR-INV-005
 
+// Audit fix M9: email regex (same as LoginForm.vue) so client-side
+// validation rejects malformed emails like "a@b" before submitting.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // Computed
 const canSubmit = computed(() => {
-  return fullName.value && 
-         email.value && 
-         password.value && 
-         confirmPassword.value && 
+  return fullName.value &&
+         email.value &&
+         EMAIL_RE.test(email.value.trim()) &&
+         password.value &&
+         confirmPassword.value &&
          password.value === confirmPassword.value &&
          password.value.length >= 8 &&
          !isLoading.value;
@@ -52,7 +57,10 @@ async function handleRegister() {
   successMessage.value = '';
   
   try {
-    console.log('[DSR REGISTER] Registering:', email.value);
+    // Audit fix H6/L3: gate behind DEV to avoid leaking email PII.
+    if (import.meta.env.DEV) {
+      console.log('[DSR REGISTER] Registering:', email.value);
+    }
     
     await dsrApi.register(
       email.value,
@@ -65,8 +73,10 @@ async function handleRegister() {
     successMessage.value = 'Account created successfully!';
     showVerificationNotice.value = true;
     
-    // Navigate to DSR dashboard after a delay so the user can read the verification notice
-    setTimeout(() => {
+    // Audit fix M1: capture the timeout id so we can clear it in
+    // onUnmounted (prevents the redirect firing after the user has
+    // already navigated away or clicked a different link).
+    redirectTimer = window.setTimeout(() => {
       window.location.href = '/dsr/dashboard';
     }, 5000);
   } catch (error: any) {
@@ -86,6 +96,16 @@ async function handleRegister() {
     isLoading.value = false;
   }
 }
+
+// Audit fix M1: track the redirect timeout so we can clear it on unmount.
+let redirectTimer: number | null = null;
+
+onUnmounted(() => {
+  if (redirectTimer !== null) {
+    clearTimeout(redirectTimer);
+    redirectTimer = null;
+  }
+});
 </script>
 
 <template>

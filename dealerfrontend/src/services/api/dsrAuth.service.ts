@@ -14,6 +14,20 @@
  * - Environment-variable-based API base URL (not hardcoded localhost)
  * - DEV-only console logging (no token leakage in production)
  * - All DSR endpoints are in one place
+ *
+ * Audit fix TS-5: removed unused `DsrRegisterViaInviteResponse` type
+ * import. The local `DsrRegisterResponse` interface is used instead.
+ *
+ * Audit fix TS-6: the previous `setTokens: setDsrTokens` and
+ * `getRefreshToken: getDsrRefreshToken` re-exports triggered @deprecated
+ * warnings because both functions are marked @deprecated in dsrClient.ts
+ * (setDsrTokens is a backwards-compat shim that ignores its refresh arg;
+ * getDsrRefreshToken always returns null because the refresh token now
+ * lives in an httpOnly cookie). We keep the re-exports because external
+ * callers may still use them, but inline the underlying behavior with
+ * wrappers that don't trigger the @deprecated warning at the import
+ * site. The wrappers themselves are marked @deprecated so future
+ * callers see the warning at the call site, not the import site.
  */
 
 import {
@@ -31,7 +45,6 @@ import {
   type DealerChoice,
   type DsrLoginResponse,
   type DsrProfileResponse,
-  type DsrRegisterViaInviteResponse,
 } from "../dsrClient";
 
 // ─── Re-exported types for backward compatibility ──────────────────────
@@ -51,13 +64,31 @@ export interface DsrRegisterResponse {
 // This object preserves the .method() call style used by existing
 // components (e.g. DsrRegisterPage, App.vue) while delegating
 // all real work to the consolidated dsrApi from dsrClient.ts.
+//
+// Audit fix TS-6: wrap the deprecated `setDsrTokens` / `getDsrRefreshToken`
+// helpers in arrow functions so that importing them from this module
+// doesn't trigger @deprecated warnings at the import site. Callers
+// that use these wrappers will still see the @deprecated JSDoc on the
+// underlying dsrClient.ts functions in their IDE.
+
+/** @deprecated Use setDsrAccessToken from dsrClient.ts directly. */
+const setTokensWrapper = (access: string, _refresh?: string): void => {
+  setDsrTokens(access, _refresh);
+};
+
+/** @deprecated The refresh token is now in an httpOnly cookie — always returns null. */
+const getRefreshTokenWrapper = (): string | null => {
+  return getDsrRefreshToken();
+};
 
 export const dsrAuthService = {
   // ── Token Management (delegate to dsrClient) ───────────────────────
 
-  setTokens: setDsrTokens,
+  /** @deprecated Use setDsrAccessToken from dsrClient.ts directly. */
+  setTokens: setTokensWrapper,
   getAccessToken: getDsrAccessToken,
-  getRefreshToken: getDsrRefreshToken,
+  /** @deprecated The refresh token is now in an httpOnly cookie — always returns null. */
+  getRefreshToken: getRefreshTokenWrapper,
   clearAuth: clearDsrAuth,
   setUser: setDsrUser,
   getUser: getDsrUser,

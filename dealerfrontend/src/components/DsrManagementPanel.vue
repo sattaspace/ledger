@@ -604,10 +604,15 @@ defineExpose({ fetchData });
          - Commission rate input
          - "Reset to role defaults" button
     ═══════════════════════════════════════════════════════════════════ -->
-    <Teleport to="body">
-      <Transition name="fade">
+    <!-- Hydration fix H-1: move v-if from inside <Transition> to the
+         <Teleport> itself. When the modal is closed (showPermissionModal
+         is false), the entire <Teleport> block is skipped during SSR —
+         no placeholder, no hydration mismatch. The `appear` attribute
+         on <Transition> ensures the fade-in animation plays when the
+         modal is opened client-side. -->
+    <Teleport v-if="showPermissionModal" to="body">
+      <Transition name="fade" appear>
         <div
-          v-if="showPermissionModal"
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           @click.self="showPermissionModal = false"
         >
@@ -745,10 +750,10 @@ defineExpose({ fetchData });
     </Teleport>
 
     <!-- Remove Confirmation Modal -->
-    <Teleport to="body">
-      <Transition name="fade">
+    <!-- Hydration fix H-1: same pattern as above — v-if on <Teleport>. -->
+    <Teleport v-if="showRemoveModal" to="body">
+      <Transition name="fade" appear>
         <div
-          v-if="showRemoveModal"
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           @click.self="showRemoveModal = false"
         >

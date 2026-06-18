@@ -174,14 +174,26 @@ interface BulkRow {
   dueDate: string;
 }
 
-const getDefaultDueDate = () => {
+// Hydration fix L-4: use a deterministic counter for row IDs instead of
+// Math.random(). Random IDs at setup time would cause server/client
+// hydration mismatches if the rows are ever rendered server-side.
+// We also defer the initial bulkRows population to onMounted so SSR
+// renders an empty list (matching the client's first paint before
+// onMounted runs) and the actual rows appear only after mount.
+let _bulkRowCounter = 0;
+const nextBulkRowId = (): string => {
+  _bulkRowCounter += 1;
+  return `bulk-row-${_bulkRowCounter}`;
+};
+
+const getDefaultDueDate = (): string => {
   const d = new Date();
   d.setDate(d.getDate() + 30);
   return d.toISOString().split('T')[0];
 };
 
 const createEmptyRow = (): BulkRow => ({
-  id: Math.random().toString(36).substring(2, 9),
+  id: nextBulkRowId(),
   productId: '',
   quantity: '1',
   customerName: '',
@@ -191,11 +203,10 @@ const createEmptyRow = (): BulkRow => ({
   dueDate: getDefaultDueDate()
 });
 
-const bulkRows = ref<BulkRow[]>([
-  createEmptyRow(),
-  createEmptyRow(),
-  createEmptyRow(),
-]);
+// Hydration fix L-4: initialize as empty on SSR + client first paint,
+// then populate in onMounted. This prevents server/client mismatch on
+// the random IDs and date-derived dueDate values.
+const bulkRows = ref<BulkRow[]>([]);
 
 const bulkVehicleNumber = ref('');
 const bulkDsrId = ref('');
@@ -212,6 +223,11 @@ interface BulkDraft {
 const drafts = ref<BulkDraft[]>([]);
 
 onMounted(() => {
+  // Hydration fix L-4: populate the initial 3 empty bulk rows here
+  // (not at setup time) so SSR + client first paint both render an
+  // empty list, avoiding Math.random() / new Date() hydration mismatch.
+  bulkRows.value = [createEmptyRow(), createEmptyRow(), createEmptyRow()];
+
   try {
     const stored = localStorage.getItem('unique_vehicle_route_drafts');
     drafts.value = stored ? JSON.parse(stored) : [];

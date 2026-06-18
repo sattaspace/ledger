@@ -88,7 +88,24 @@ const printData = ref<{
   type: 'EXECUTIVE' | 'DSR_STATEMENT' | 'VEHICLE_TRIP' | 'CUSTOMER_DUE';
   period: string;
   payload: any;
+  // Hydration fix L-7/L-8: capture the docketId / processedOn / hash at
+  // the moment the user clicks Print, so the values don't change on
+  // every re-render of the print overlay. Previously these were computed
+  // inline in the template via Math.random() and new Date() — they
+  // would change every time Vue re-rendered the print preview, producing
+  // a different DOCKET ID each time the user scrolled or interacted.
+  docketId?: string;
+  processedOn?: string;
+  docHash?: string;
 } | null>(null);
+
+// Hydration fix L-7/L-8: compute these once per print action, not per render.
+const generateDocketId = (): string =>
+  'DMS-' + Math.floor(100000 + Math.random() * 900000);
+const generateDocHash = (): string =>
+  Math.random().toString(36).substring(2, 11).toUpperCase();
+const formatProcessedDate = (): string =>
+  new Date().toLocaleDateString('en-IN');
 
 const selectedPeriod = ref<'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'QUARTER' | 'YEAR'>('ALL');
 const expandedVehicle = ref<string | null>(null);
@@ -486,7 +503,7 @@ const handleExportCSV = () => {
     rSales.forEach((s: any) => {
       const balance = s.isClosedWithDue ? 0 : Math.max(0, s.totalAmount - s.amountPaid);
       rows.push([
-        new Date(s.date).toLocaleDateString(),
+        new Date(s.date).toLocaleDateString('en-IN'),
         s.id || '--',
         s.customerName,
         s.productName,
@@ -504,7 +521,7 @@ const handleExportCSV = () => {
     v.records.forEach((r: any) => {
       const balance = r.isClosedWithDue ? 0 : Math.max(0, r.totalAmount - r.amountPaid);
       rows.push([
-        new Date(r.date).toLocaleDateString(),
+        new Date(r.date).toLocaleDateString('en-IN'),
         r.customerName,
         r.customerPhone || 'N/A',
         r.productName,
@@ -883,7 +900,7 @@ const revenueTrendOptions = computed(() => ({
             <span>Hide</span>
           </button>
 
-          <button 
+          <button
             id="btn-print-executive-report"
             @click="printData = {
               type: 'EXECUTIVE',
@@ -894,7 +911,11 @@ const revenueTrendOptions = computed(() => ({
                 vehicles: vehiclePerformance,
                 customers: customerDueData,
                 lowStock: products.filter(p => p.stock <= (p.minStockAlert || 10))
-              }
+              },
+              // Hydration fix L-7/L-8: capture once per print action.
+              docketId: generateDocketId(),
+              processedOn: formatProcessedDate(),
+              docHash: generateDocHash()
             }"
             class="py-2.5 px-4 bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-2 transition cursor-pointer font-semibold text-sm shadow-sm"
           >
@@ -1137,7 +1158,7 @@ const revenueTrendOptions = computed(() => ({
                       <div class="flex items-center gap-2">
                         <button
                           type="button"
-                          @click="printData = { type: 'DSR_STATEMENT', period: selectedPeriod, payload: { rep: rep, sales: periodFilteredSales.filter(s => s.dsrId === rep.id || (s.dsrName && s.dsrName.toLowerCase().trim() === rep.name.toLowerCase().trim())) } }"
+                          @click="printData = { type: 'DSR_STATEMENT', period: selectedPeriod, payload: { rep: rep, sales: periodFilteredSales.filter(s => s.dsrId === rep.id || (s.dsrName && s.dsrName.toLowerCase().trim() === rep.name.toLowerCase().trim())) }, docketId: generateDocketId(), processedOn: formatProcessedDate(), docHash: generateDocHash() }"
                           class="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer transition shadow-sm"
                         >
                           <Printer class="h-3.5 w-3.5 text-violet-600" />
@@ -1163,7 +1184,7 @@ const revenueTrendOptions = computed(() => ({
                           </thead>
                           <tbody class="divide-y divide-slate-100 text-sm font-medium text-slate-600">
                             <tr v-for="sale in repSales.slice((repRecordPage - 1) * subSalesPerPage, repRecordPage * subSalesPerPage)" :key="sale.id" class="hover:bg-slate-50 transition align-middle">
-                              <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(sale.date).toLocaleDateString() }}</td>
+                              <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(sale.date).toLocaleDateString('en-IN') }}</td>
                               <td class="py-3 px-3 font-bold text-slate-800 leading-tight">
                                 {{ sale.customerName }}
                                 <span v-if="sale.isVehicle && sale.vehicleNumber" class="ml-1 px-1.5 bg-slate-800 text-white rounded font-mono text-[10px] uppercase">{{ sale.vehicleNumber }}</span>
@@ -1326,7 +1347,7 @@ const revenueTrendOptions = computed(() => ({
           <div class="flex items-center gap-3">
             <button
               type="button"
-              @click="printData = { type: 'VEHICLE_TRIP', period: selectedPeriod, payload: { vehicle: vehiclePerformance.find(v => v.vehicleNumber === expandedVehicle) } }"
+              @click="printData = { type: 'VEHICLE_TRIP', period: selectedPeriod, payload: { vehicle: vehiclePerformance.find(v => v.vehicleNumber === expandedVehicle) }, docketId: generateDocketId(), processedOn: formatProcessedDate(), docHash: generateDocHash() }"
               class="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer transition shadow-sm"
             >
               <Printer class="h-3.5 w-3.5 text-blue-600" />
@@ -1355,7 +1376,7 @@ const revenueTrendOptions = computed(() => ({
             </thead>
             <tbody class="divide-y divide-slate-100 text-sm font-medium text-slate-600">
               <tr v-for="r in currVehicleRecords.slice((vRecordPage - 1) * subSalesPerPage, vRecordPage * subSalesPerPage)" :key="r.id" class="hover:bg-slate-50 transition align-top">
-                <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(r.date).toLocaleDateString() }}</td>
+                <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(r.date).toLocaleDateString('en-IN') }}</td>
                 <td class="py-3 px-3">
                   <p class="font-bold text-slate-800 leading-tight">{{ r.customerName }}</p>
                   <p class="text-xs text-slate-400 mt-0.5">{{ r.customerPhone || 'N/A' }}</p>
@@ -1416,7 +1437,7 @@ const revenueTrendOptions = computed(() => ({
           </div>
           <button 
             type="button"
-            @click="printData = { type: 'CUSTOMER_DUE', period: selectedPeriod, payload: { customers: customerDueData } }"
+            @click="printData = { type: 'CUSTOMER_DUE', period: selectedPeriod, payload: { customers: customerDueData }, docketId: generateDocketId(), processedOn: formatProcessedDate(), docHash: generateDocHash() }"
             class="shrink-0 px-3 py-2.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer transition shadow-sm"
           >
             <Printer class="h-3.5 w-3.5 text-rose-600" />
@@ -1518,7 +1539,7 @@ const revenueTrendOptions = computed(() => ({
             </thead>
             <tbody class="divide-y divide-slate-100 text-sm font-medium text-slate-600">
               <tr v-for="r in custRec.slice((custRecordPage - 1) * subSalesPerPage, custRecordPage * subSalesPerPage)" :key="r.id" class="hover:bg-slate-50 transition align-top">
-                <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(r.date).toLocaleDateString() }}</td>
+                <td class="py-3 px-3 text-xs text-slate-400 font-mono">{{ new Date(r.date).toLocaleDateString('en-IN') }}</td>
                 <td class="py-3 px-3">
                   <p class="font-semibold text-slate-700 leading-none">{{ r.productName }}</p>
                   <p v-if="r.isVehicle && r.vehicleNumber" class="text-xs text-blue-500 mt-0.5 font-mono">{{ r.vehicleNumber }}</p>
@@ -1692,8 +1713,8 @@ const revenueTrendOptions = computed(() => ({
               </p>
             </div>
             <div class="text-left sm:text-right text-xs text-slate-500 space-y-0.5">
-              <p class="font-bold text-slate-900 font-mono tracking-wide leading-none">DOCKET ID: DMS-{{ Math.floor(100000 + Math.random() * 900000) }}</p>
-              <p>Processed On: {{ new Date().toLocaleDateString() }}</p>
+              <p class="font-bold text-slate-900 font-mono tracking-wide leading-none">DOCKET ID: {{ printData.docketId }}</p>
+              <p>Processed On: {{ printData.processedOn }}</p>
               <p>Period: {{ printData.period }}</p>
             </div>
           </div>
@@ -1768,7 +1789,7 @@ const revenueTrendOptions = computed(() => ({
               <thead><tr class="bg-slate-100 border-b border-slate-300 font-mono font-bold text-xs uppercase text-slate-500"><th class="py-2.5 px-3">Date</th><th class="py-2.5 px-3">Customer</th><th class="py-2.5 px-3">Product</th><th class="py-2.5 px-2 text-right">Invoice</th><th class="py-2.5 px-2 text-right">Paid</th><th class="py-2.5 px-2 text-right text-rose-700">Outstanding</th><th class="py-2.5 px-3 text-center">Signature</th></tr></thead>
               <tbody class="divide-y divide-slate-100 font-semibold">
                 <tr v-for="sale in printData.payload.sales" :key="sale.id" class="align-top hover:bg-slate-50">
-                  <td class="py-2.5 px-3 text-xs font-mono text-slate-400">{{ new Date(sale.date).toLocaleDateString() }}</td>
+                  <td class="py-2.5 px-3 text-xs font-mono text-slate-400">{{ new Date(sale.date).toLocaleDateString('en-IN') }}</td>
                   <td class="py-2.5 px-3"><p class="font-bold text-slate-800 leading-tight">{{ sale.customerName }}</p><p v-if="sale.customerPhone" class="text-xs text-slate-400 font-mono mt-0.5">{{ sale.customerPhone }}</p></td>
                   <td class="py-2.5 px-3"><p class="font-medium text-slate-700">{{ sale.productName }}</p><p class="text-xs text-slate-400 font-mono mt-0.5">Qty: {{ sale.quantity }} @ {{ formatCurrency(sale.sellingPrice) }}</p></td>
                   <td class="py-2.5 px-2 text-right font-mono">{{ formatCurrency(sale.totalAmount) }}</td>
@@ -1830,7 +1851,7 @@ const revenueTrendOptions = computed(() => ({
               <thead><tr class="bg-slate-50 border-b border-slate-200 font-mono font-bold text-[10px] uppercase text-slate-500"><th class="py-2 px-2">Date</th><th class="py-2 px-2">Product</th><th class="py-2 px-2 text-center">Billed</th><th class="py-2 px-2 text-center">Paid</th><th class="py-2 px-2 text-center text-rose-700">Balance</th><th class="py-2 px-2 text-center">Status</th></tr></thead>
               <tbody class="divide-y divide-slate-100 font-medium">
                 <tr v-for="r in cust.records" :key="r.id">
-                  <td class="py-1.5 px-2 font-mono text-slate-400">{{ new Date(r.date).toLocaleDateString() }}</td>
+                  <td class="py-1.5 px-2 font-mono text-slate-400">{{ new Date(r.date).toLocaleDateString('en-IN') }}</td>
                   <td class="py-1.5 px-2">{{ r.productName }} (x{{ r.quantity }})</td>
                   <td class="py-1.5 px-2 text-center font-mono">{{ formatCurrency(r.totalAmount) }}</td>
                   <td class="py-1.5 px-2 text-center font-mono text-emerald-700">{{ formatCurrency(r.amountPaid) }}</td>
@@ -1860,7 +1881,7 @@ const revenueTrendOptions = computed(() => ({
 
         <div class="mt-10 border-t border-slate-200 pt-4 flex flex-col sm:flex-row justify-between items-center text-xs text-slate-400 font-mono text-center sm:text-left gap-2 leading-none">
           <span>This document is an automated DMS generation and is verified by regional management.</span>
-          <span>Hash: {{ Math.random().toString(36).substr(2, 9).toUpperCase() }}</span>
+          <span>Hash: {{ printData.docHash }}</span>
         </div>
       </div>
     </div>
