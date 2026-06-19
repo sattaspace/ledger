@@ -32,16 +32,25 @@ export function getSharedUser(): Ref<User | null> {
 /**
  * Check if the current user is a dealer (vs. a DSR in portal mode).
  *
- * Used by useAccess.isDealer and useAppData.isDealerUser without needing
- * to import useAuth (which would re-introduce the cycle).
+ * SattaBase user roles are "owner", "admin", "member" — there is NO
+ * "dealer" role. A "dealer" is any SattaBase user with a DealerCore
+ * subscription.
+ *
+ * DSR users (from dealerbackend) have a `user_type` field (e.g. "dsr").
+ * SattaBase users do NOT have `user_type`.
+ *
+ * So the check is:
+ *   - If user has `user_type` → it's a DSR → return false
+ *   - If user has no `user_type` → it's a SattaBase user (dealer) → return true
  */
 export function isDealerUser(): boolean {
   const user = sharedUser.value;
   if (!user) return false;
-  // Check both common shapes: explicit role field, or is_dealer flag.
-  // The /billing/auth/me response includes both for backwards compat.
-  return (
-    (user as unknown as { role?: string }).role === "dealer" ||
-    (user as unknown as { is_dealer?: boolean }).is_dealer === true
-  );
+  // DSR users have user_type set (e.g. "dsr", "Senior_DSR", etc.)
+  // SattaBase users do NOT have this field.
+  const userType = (user as unknown as { user_type?: string }).user_type;
+  if (userType) {
+    return false; // DSR
+  }
+  return true; // SattaBase user = dealer
 }

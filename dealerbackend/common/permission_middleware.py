@@ -167,111 +167,106 @@ class PermissionMiddleware:
 
     def _verify_sattabase_jwt(self, token: str, logger) -> Optional[tuple]:
         """
-        Verify a SattaBase-issued JWT using RS256 with the public key.
+        Verify a SattaBase-issued JWT.
         
-        Audit A1: Removed HS256 shared-secret fallback. SattaBase JWTs are
-        now verified ONLY with the RS256 public key.
+        Two verification modes:
+        1. RS256 (production): uses SATTABASE_JWT_PUBLIC_KEY
+        2. HS256 (dev): uses SATTABASE_JWT_SHARED_SECRET (same as
+           SattaBase's SB_JWT_SIGNING_KEY)
         
-        DEVELOPMENT MODE: When SATTABASE_JWT_PUBLIC_KEY is not configured
-        AND DEBUG=True, the JWT is decoded WITHOUT signature verification
-        so that user identity (user_id, is_dealer) can still be extracted.
-        The DealerConfig DB check provides an additional identity validation
+        DEVELOPMENT MODE: When neither key is configured AND DEBUG=True,
+        the JWT is decoded WITHOUT signature verification so that user
+        identity (user_id, is_dealer) can still be extracted. The
+        DealerConfig DB check provides an additional identity validation
         layer. A loud warning is logged every time this path is taken.
         
-        In production (DEBUG=False), missing public key → fail closed.
+        In production (DEBUG=False), missing key → fail closed.
         
         Returns (role, is_dealer, username, email, is_dsr=False, dsr_user_id=None)
         or None if verification fails.
         """
         public_key = getattr(settings, 'SATTABASE_JWT_PUBLIC_KEY', '') or ''
+        shared_secret = getattr(settings, 'SATTABASE_JWT_SHARED_SECRET', '') or ''
+        algorithm = getattr(settings, 'SATTABASE_JWT_ALGORITHM', 'RS256') or 'RS256'
         
-        if not public_key:
-            # Production: fail closed — no verification possible without public key
-            if not getattr(settings, 'DEBUG', False):
-                logger.debug(
-                    "[PERMISSION MIDDLEWARE] SATTABASE_JWT_PUBLIC_KEY not "
-                    "configured and DEBUG=False — skipping SattaBase JWT "
-                    "verification. Only local DSR JWTs will be accepted."
-                )
-                return None
-            
-            # Development: decode without verification so we can still
-            # extract user identity (user_id, email, is_dealer claim).
-            # The DealerConfig DB check validates the user is a real
-            # dealer. This is NOT secure for production — anyone could
-            # forge a JWT with an arbitrary user_id.
-            logger.warning(
-                "[PERMISSION MIDDLEWARE] SATTABASE_JWT_PUBLIC_KEY not "
-                "configured — decoding SattaBase JWT WITHOUT signature "
-                "verification (DEBUG=True). THIS IS INSECURE — set "
-                "SATTABASE_JWT_PUBLIC_KEY in production!"
-            )
+        # ── HS256 path (dev): verify with shared secret ──
+        if shared_secret and algorithm.upper() == 'HS256':
             try:
                 payload = jwt.decode(
                     token,
-                    options={"verify_signature": False},
-                    algorithms=["RS256", "HS256"],
+                    shared_secret,
+                    algorithms=["HS256"],
+                    options={"verify_exp": True},
+                    issuer=getattr(settings, 'SATTABASE_JWT_ISSUER', '') or None,
+                    audience=getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or None,
                 )
+                return self._extract_sattabase_claims(payload, logger)
             except Exception as e:
                 logger.debug(
-                    "[PERMISSION MIDDLEWARE] SattaBase JWT decode (no-verify) "
-                    "failed: %s: %s", type(e).__name__, e,
+                    "[PERMISSION MIDDLEWARE] SattaBase JWT HS256 "
+                    "verification failed: %s: %s", type(e).__name__, e,
                 )
                 return None
-            
-            # FIX: The previous code used a `token_type` claim heuristic
-            # to distinguish SattaBase JWTs from DSR JWTs. This was BROKEN
-            # because BOTH types of JWTs are issued via ninja_jwt and BOTH
-            # contain `token_type: "access"`. The heuristic caused SattaBase
-            # JWTs to be bounced to _verify_dsr_jwt (which failed HS256
-            # verification), leaving is_dealer=False and causing 403 on
-            # every dealer-only endpoint (e.g. /api/dealer/dsr — the Team
-            # menu).
-            #
-            # The correct fix is in _extract_user_info: try _verify_dsr_jwt
-            # FIRST. If HS256 verification succeeds, it's a DSR JWT. If it
-            # fails, the token falls through to here (SattaBase path).
-            # By the time we reach this point, we KNOW the token is not a
-            # valid DSR JWT, so we can safely treat it as a SattaBase JWT
-            # and proceed with claim extraction + DealerConfig lookup.
-            
-            # Reject expired tokens even in dev mode
-            exp = payload.get("exp")
-            if exp and exp < time.time():
-                logger.debug("[PERMISSION MIDDLEWARE] SattaBase JWT expired")
+
+        # ── RS256 path (production): verify with public key ──
+        if public_key:
+            try:
+                payload = jwt.decode(
+                    token,
+                    public_key,
+                    algorithms=[algorithm] if algorithm.upper() == 'RS256' else ["RS256"],
+                    options={"verify_exp": True},
+                    issuer=getattr(settings, 'SATTABASE_JWT_ISSUER', '') or None,
+                    audience=getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or None,
+                )
+                return self._extract_sattabase_claims(payload, logger)
+            except Exception as e:
+                logger.debug(
+                    "[PERMISSION MIDDLEWARE] SattaBase JWT RS256 "
+                    "verification failed: %s: %s", type(e).__name__, e,
+                )
                 return None
-            
-            return self._extract_sattabase_claims(payload, logger)
-
-        # Production path: verify signature with RS256 public key
-        verify_key = public_key
-        algorithms = [getattr(settings, 'SATTABASE_JWT_ALGORITHM', 'RS256') or 'RS256']
-
-        decode_kwargs = {
-            'algorithms': algorithms,
-            'options': {
-                'verify_signature': True,
-                'require': ['exp'],
-            },
-        }
-        issuer = getattr(settings, 'SATTABASE_JWT_ISSUER', '') or ''
-        audience = getattr(settings, 'SATTABASE_JWT_AUDIENCE', '') or ''
         
-        if issuer:
-            decode_kwargs['issuer'] = issuer
-        if audience:
-            decode_kwargs['audience'] = audience
-
+        # ── No key configured ──
+        # Production: fail closed
+        if not getattr(settings, 'DEBUG', False):
+            logger.debug(
+                "[PERMISSION MIDDLEWARE] No JWT verification key "
+                "configured and DEBUG=False — skipping SattaBase JWT "
+                "verification. Only local DSR JWTs will be accepted."
+            )
+            return None
+        
+        # Development: decode without verification so we can still
+        # extract user identity (user_id, email, is_dealer claim).
+        # The DealerConfig DB check validates the user is a real
+        # dealer. This is NOT secure for production — anyone could
+        # forge a JWT with an arbitrary user_id.
+        logger.warning(
+            "[PERMISSION MIDDLEWARE] No JWT verification key "
+            "configured (neither SATTABASE_JWT_PUBLIC_KEY nor "
+            "SATTABASE_JWT_SHARED_SECRET) — decoding SattaBase JWT "
+            "WITHOUT signature verification (DEBUG=True). THIS IS "
+            "INSECURE — set SATTABASE_JWT_SHARED_SECRET (HS256, dev) "
+            "or SATTABASE_JWT_PUBLIC_KEY (RS256, production)!"
+        )
         try:
-            payload = jwt.decode(token, verify_key, **decode_kwargs)
-        except jwt.ExpiredSignatureError:
-            logger.debug("[PERMISSION MIDDLEWARE] SattaBase JWT expired")
-            return None
-        except jwt.InvalidTokenError as e:
-            logger.debug(f"[PERMISSION MIDDLEWARE] SattaBase JWT invalid: {e}")
-            return None
+            payload = jwt.decode(
+                token,
+                options={"verify_signature": False},
+                algorithms=["RS256", "HS256"],
+            )
         except Exception as e:
-            logger.error(f"[PERMISSION MIDDLEWARE] SattaBase JWT decode unexpected error: {type(e).__name__}:{e}")
+            logger.debug(
+                "[PERMISSION MIDDLEWARE] SattaBase JWT decode (no-verify) "
+                "failed: %s: %s", type(e).__name__, e,
+            )
+            return None
+        
+        # Reject expired tokens even in dev mode
+        exp = payload.get("exp")
+        if exp and exp < time.time():
+            logger.debug("[PERMISSION MIDDLEWARE] SattaBase JWT expired")
             return None
         
         return self._extract_sattabase_claims(payload, logger)

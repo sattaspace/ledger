@@ -24,6 +24,10 @@ import {
 import type { Product, SaleRecord, DSR } from '../types';
 import { BaseChart, ChartCard } from './charts';
 import type { ChartData, ChartOptions } from 'chart.js';
+// Audit fix GAP C-1: import usePermissions for operation-level enforcement.
+import { usePermissions } from '../composables/usePermissions';
+
+const { canEdit, canDelete } = usePermissions();
 
 const props = withDefaults(defineProps<{
   products: Product[];
@@ -827,12 +831,14 @@ const handleReturnSubmit = async () => {
         <p class="text-sm text-slate-500 mt-1">Sell products via vehicle delivery or sales rep</p>
       </div>
 
-      <button 
+      <!-- Audit fix GAP C-1: gate New Sale button by sales.edit permission -->
+      <button
+        v-if="canEdit('sales').value"
         id="sales-btn-toggle-log"
         @click="showLogForm = !showLogForm"
         :class="['py-2.5 px-5 rounded-lg flex items-center gap-2 transition font-semibold text-sm cursor-pointer',
-          showLogForm 
-            ? 'bg-rose-600 text-white shadow-sm hover:bg-rose-700' 
+          showLogForm
+            ? 'bg-rose-600 text-white shadow-sm hover:bg-rose-700'
             : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
         ]"
       >

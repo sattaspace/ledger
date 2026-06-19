@@ -117,16 +117,29 @@ async function fetchAuthMe(): Promise<User | null> {
     setSharedUser(data.user as unknown as User);
     sharedSubscription.value = data.subscription as unknown as Subscription;
 
-    // FIX (audit M5): only inject manage_dsrs:true when the caller is
-    // actually a dealer. The previous code unconditionally injected it
-    // for every caller of /billing/auth/me, which would grant DSRs the
-    // manage_dsrs permission if they ever called this endpoint.
-    const isDealer =
-      (data.access as Record<string, unknown>)?.is_dealer === true ||
-      (data.access as Record<string, unknown>)?.role === "dealer";
+    // The backend's /billing/auth/me returns:
+    //   { user: { id, email, role, ... }, subscription: {...}, access: {...} }
+    //
+    // SattaBase user roles are "owner", "admin", "member" — there is NO
+    // "dealer" role. A "dealer" is any SattaBase user with a DealerCore
+    // subscription.
+    //
+    // Since /billing/auth/me is ONLY called by dealers (DSRs in portal
+    // mode skip this call in useAppData.ts and use /dsr/auth/refresh-access
+    // instead), we can safely inject manage_dsrs: true for every successful
+    // /billing/auth/me response.
+    //
+    // The previous M5 audit fix tried to check data.access.is_dealer, but
+    // that field doesn't exist in the access map (which only contains
+    // AccessEntry keys like dashboard, inventory, etc.). This caused
+    // isDealer to always be false → manage_dsrs was never injected →
+    // the Team menu was always hidden for dealers.
     const accessWithDealerPerms: Record<string, string | boolean | number> = {
       ...(data.access as Record<string, string | boolean | number>),
-      ...(isDealer ? { manage_dsrs: true } : {}),
+      // Always inject manage_dsrs: true — dealers always manage their own DSRs.
+      // This key is NOT a SattaBase plan-level key; it's a DSR-specific
+      // permission. DSRs never reach this code path.
+      manage_dsrs: true,
     };
     sharedAccess.value = accessWithDealerPerms;
     setAccessMap(accessWithDealerPerms);

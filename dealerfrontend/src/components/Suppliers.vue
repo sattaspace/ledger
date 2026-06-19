@@ -13,6 +13,10 @@ import {
   Download
 } from 'lucide-vue-next';
 import type { Supplier, Category } from '../types';
+// Audit fix GAP C-1: import usePermissions for operation-level enforcement.
+import { usePermissions } from "../composables/usePermissions";
+
+const { canEdit, canDelete } = usePermissions();
 
 const props = withDefaults(defineProps<{
   suppliers: Supplier[];
@@ -235,12 +239,14 @@ const handleConfirmDeleteSupplier = async () => {
 
         <!-- ACTION BUTTONS -->
         <div class="flex flex-wrap gap-3">
-          <button 
+          <!-- Audit fix GAP C-1: gate Add Supplier button by suppliers.edit permission -->
+          <button
+            v-if="canEdit('suppliers').value"
             id="sup-btn-add"
             @click="showAddForm = !showAddForm; showEditForm = false; editingSupplier = null; formError = ''; formSuccess = ''"
             :class="['min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 transition font-semibold text-sm cursor-pointer border',
-              showAddForm 
-                ? 'bg-violet-600 border-violet-600 text-white shadow-lg' 
+              showAddForm
+                ? 'bg-violet-600 border-violet-600 text-white shadow-lg'
                 : 'bg-white text-violet-700 border-violet-200 hover:bg-violet-50 hover:border-violet-300 shadow-sm'
             ]"
           >
@@ -459,16 +465,20 @@ const handleConfirmDeleteSupplier = async () => {
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button 
-              @click="handleStartEditSupplier(s)" 
-              class="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer" 
+            <!-- Audit fix GAP C-1: gate Edit button by suppliers.edit permission -->
+            <button
+              v-if="canEdit('suppliers').value"
+              @click="handleStartEditSupplier(s)"
+              class="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer"
               title="Edit supplier"
             >
               <Edit class="h-4 w-4" />
             </button>
-            <button 
-              @click="handleDeleteSupplier(s)" 
-              class="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer" 
+            <!-- Audit fix GAP C-1: gate Delete button by suppliers.delete permission -->
+            <button
+              v-if="canDelete('suppliers').value"
+              @click="handleDeleteSupplier(s)"
+              class="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
               title="Delete supplier"
             >
               <Trash2 class="h-4 w-4" />

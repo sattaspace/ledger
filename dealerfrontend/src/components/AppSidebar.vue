@@ -90,8 +90,15 @@ const allNavItems = [
 
 const navItems = computed(() => {
   return allNavItems.filter((item) => {
-    if (item.accessKey === "manage_dsrs" && !dsrInPortalMode.value) {
-      return true; // Dealers always see Team
+    // GAP B-1 fix: Team menu visibility should be explicit, not implicit.
+    // Show Team if:
+    //   - The user is a dealer (dealers always manage their own DSRs), OR
+    //   - The effective_access map includes manage_dsrs=true (DSR was
+    //     granted manage_dsrs by the dealer via DsrManagementPanel)
+    // Previously this checked `!dsrInPortalMode.value` which relied on the
+    // implicit assumption that only dealers can be outside portal mode.
+    if (item.accessKey === "manage_dsrs") {
+      return isDealerUser.value || hasAccess("manage_dsrs").value;
     }
     return hasAccess(item.accessKey).value;
   });
@@ -105,8 +112,12 @@ function isActive(href: string): boolean {
 }
 
 const isDealerUser = computed(
-  () =>
-    user.value?.is_dealer === true || user.value?.role === "dealer" || access.value?.is_dealer === true,
+  () => {
+    // DSR users have user_type field; SattaBase users do NOT.
+    // No user_type = SattaBase user = dealer.
+    const userType = (user.value as any)?.user_type;
+    return !userType; // true for dealers, false for DSRs
+  },
 );
 
 // ─── Actions ───────────────────────────────────────────────────────────────

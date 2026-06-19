@@ -22,6 +22,10 @@ import BulkActionsBar from './BulkActionsBar.vue';
 import type { Product, RestockRecord, Supplier, DSR, Brand, Category } from '../types';
 import { BaseChart, ChartCard } from './charts';
 import type { ChartData, ChartOptions } from 'chart.js';
+// Audit fix GAP C-1: import usePermissions for operation-level enforcement.
+import { usePermissions } from '../composables/usePermissions';
+
+const { canEdit, canDelete } = usePermissions();
 
 const props = withDefaults(defineProps<{
   products: Product[];
@@ -626,12 +630,14 @@ const handleConfirmDeleteProduct = async () => {
 
       <!-- ACTION BUTTONS -->
       <div class="flex flex-wrap gap-3">
-        <button 
+        <!-- Audit fix GAP C-1: gate Add Product button by inventory.edit permission -->
+        <button
+          v-if="canEdit('inventory').value"
           id="inv-btn-add-prod"
           @click="showAddForm = true; showRestockForm = false; showHistory = false; emit('clearQuickActionProduct')"
           :class="['min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 transition font-semibold text-sm cursor-pointer border',
-            showAddForm 
-              ? 'bg-slate-800 border-slate-800 text-white shadow-lg' 
+            showAddForm
+              ? 'bg-slate-800 border-slate-800 text-white shadow-lg'
               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300 shadow-sm'
           ]"
         >
@@ -639,12 +645,14 @@ const handleConfirmDeleteProduct = async () => {
           <span>As Product Template</span>
         </button>
 
-        <button 
+        <!-- Audit fix GAP C-1: gate Restock button by inventory.edit permission -->
+        <button
+          v-if="canEdit('inventory').value"
           id="inv-btn-restock"
           @click="showRestockForm = true; showAddForm = false; showHistory = false;"
           :class="['min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 transition font-semibold text-sm cursor-pointer border',
-            showRestockForm 
-              ? 'bg-emerald-600 border-emerald-600 text-white shadow-lg' 
+            showRestockForm
+              ? 'bg-emerald-600 border-emerald-600 text-white shadow-lg'
               : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300 shadow-sm'
           ]"
         >
@@ -1446,7 +1454,9 @@ const handleConfirmDeleteProduct = async () => {
             <span>Restock</span>
           </button>
 
+          <!-- Audit fix GAP C-1: gate Edit button by inventory.edit permission -->
           <button
+            v-if="canEdit('inventory').value"
             :id="`inv-btn-edit-shortcut-${p.id}`"
             @click="handleStartEdit(p)"
             class="min-h-[36px] flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-3 py-2 rounded-xl border border-slate-200 flex items-center justify-center gap-1 cursor-pointer transition"
@@ -1455,7 +1465,9 @@ const handleConfirmDeleteProduct = async () => {
             <span>Edit</span>
           </button>
 
+          <!-- Audit fix GAP C-1: gate Delete button by inventory.delete permission -->
           <button
+            v-if="canDelete('inventory').value"
             :id="`inv-btn-delete-shortcut-${p.id}`"
             @click="handleDeleteProduct(p)"
             class="min-h-[36px] flex-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold px-3 py-2 rounded-xl border border-rose-200 flex items-center justify-center gap-1 cursor-pointer transition"
@@ -1493,9 +1505,9 @@ const handleConfirmDeleteProduct = async () => {
             <td class="py-2 px-3 text-right font-semibold text-slate-800">{{ formatCurrency(product.sellingPrice) }}</td>
             <td class="py-2 px-3 text-center">
               <div class="flex justify-center gap-1">
-                <button @click="() => { selectedProduct = product; restockFields = { quantity: '', supplierName: '', costPrice: product.unitPrice.toString(), receivedBy: '' }; showRestockForm = true; showAddForm = false; showEditForm = false; showHistory = false; scrollToTop(); }" class="p-1 hover:bg-emerald-50 rounded text-emerald-600" title="Restock"><Package class="h-3.5 w-3.5" /></button>
-                <button @click="handleStartEdit(product)" class="p-1 hover:bg-blue-50 rounded text-blue-600" title="Edit"><Edit class="h-3.5 w-3.5" /></button>
-                <button @click="handleDeleteProduct(product)" class="p-1 hover:bg-rose-50 rounded text-rose-600" title="Delete"><Trash2 class="h-3.5 w-3.5" /></button>
+                <button v-if="canEdit('inventory').value" @click="() => { selectedProduct = product; restockFields = { quantity: '', supplierName: '', costPrice: product.unitPrice.toString(), receivedBy: '' }; showRestockForm = true; showAddForm = false; showEditForm = false; showHistory = false; scrollToTop(); }" class="p-1 hover:bg-emerald-50 rounded text-emerald-600" title="Restock"><Package class="h-3.5 w-3.5" /></button>
+                <button v-if="canEdit('inventory').value" @click="handleStartEdit(product)" class="p-1 hover:bg-blue-50 rounded text-blue-600" title="Edit"><Edit class="h-3.5 w-3.5" /></button>
+                <button v-if="canDelete('inventory').value" @click="handleDeleteProduct(product)" class="p-1 hover:bg-rose-50 rounded text-rose-600" title="Delete"><Trash2 class="h-3.5 w-3.5" /></button>
               </div>
             </td>
           </tr>

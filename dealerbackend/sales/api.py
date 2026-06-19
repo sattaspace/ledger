@@ -49,7 +49,7 @@ from ninja.errors import HttpError
 
 from dealercore.async_db import aatomic, async_aggregate, async_exists
 from common.dealer_context import get_dealer_context
-from common.dsr_permissions import enforce_dsr_permission
+from common.dsr_permissions import enforce_dsr_permission, enforce_dealer_access
 from dealer.models import DealerConfig
 from inventory.models import Product
 from users.models import DsrUser
@@ -220,6 +220,11 @@ class SalesController:
         Uses select_for_update() to prevent race conditions with concurrent
         collection requests on the same sale.
         """
+        # GAP E-1 fix: enforce bad_debt plan-level access BEFORE the
+        # DSR-level collections.edit check. This ensures a DSR on a
+        # Free-plan dealer (bad_debt=false) cannot write off sales as
+        # bad debt, even if the dealer granted them collections.edit.
+        await enforce_dealer_access(request, "bad_debt")
         await enforce_dsr_permission(request, "collections", "edit")
         dealer_username = await get_dealer_context(request)
         async with aatomic():

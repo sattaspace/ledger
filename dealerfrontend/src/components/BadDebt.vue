@@ -14,6 +14,10 @@ import {
 } from 'lucide-vue-next';
 import { useFormatters } from '../composables/useFormatters';
 import type { SaleRecord } from '../types';
+// Audit fix GAP C-1: import usePermissions for operation-level enforcement.
+import { usePermissions } from "../composables/usePermissions";
+
+const { can, canEdit } = usePermissions();
 
 const props = defineProps<{
   sales: SaleRecord[];
@@ -145,7 +149,9 @@ const { formatCurrency } = useFormatters({ formatCurrency: props.formatCurrency 
           </h2>
           <p class="text-sm text-slate-400 mt-1">All written-off sales and unrecoverable debts</p>
         </div>
-        <button 
+        <!-- Audit fix GAP C-1: gate Export button by bad_debt feature permission -->
+        <button
+          v-if="can('bad_debt').value"
           @click="handleExport"
           :disabled="isExporting"
           class="min-h-[40px] px-5 py-2.5 rounded-xl flex items-center gap-2 bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200 transition font-semibold text-sm disabled:opacity-50"

@@ -20,6 +20,10 @@ import {
 import type { SaleRecord } from '../types';
 import { BaseChart, ChartCard } from './charts';
 import type { ChartData, ChartOptions } from 'chart.js';
+// Audit fix GAP C-1: import usePermissions for operation-level enforcement.
+import { usePermissions } from "../composables/usePermissions";
+
+const { canEdit, can } = usePermissions();
 
 const props = withDefaults(defineProps<{
   sales: SaleRecord[];
@@ -973,8 +977,10 @@ const collectionStatusOptions = computed(() => ({
                     <td class="py-2.5 px-3 text-right font-bold font-mono text-rose-600">{{ formatCurrency(saleRecord.balanceDue || (saleRecord.totalAmount - saleRecord.amountPaid)) }}</td>
                     <td class="py-2.5 px-3 text-center">
                       <div class="flex gap-1.5 justify-center">
-                        <button @click="() => { selectedSale = saleRecord; amount = ''; receivedBy = saleRecord.dsrName || 'Counter Staff'; scrollToTop(); }" class="bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-rose-200 font-semibold">Collect</button>
-                        <button @click="handleCloseWithDue(saleRecord)" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-emerald-200 font-semibold">Write Off</button>
+                        <!-- Audit fix GAP C-1: gate Collect button by collections.edit permission -->
+                        <button v-if="canEdit('collections').value" @click="() => { selectedSale = saleRecord; amount = ''; receivedBy = saleRecord.dsrName || 'Counter Staff'; scrollToTop(); }" class="bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-rose-200 font-semibold">Collect</button>
+                        <!-- Audit fix GAP C-1: gate Write Off button by bad_debt feature + collections.edit permission -->
+                        <button v-if="can('bad_debt').value && canEdit('collections').value" @click="handleCloseWithDue(saleRecord)" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1 rounded-lg cursor-pointer border border-emerald-200 font-semibold">Write Off</button>
                       </div>
                     </td>
                   </tr>

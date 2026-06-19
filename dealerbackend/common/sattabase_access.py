@@ -261,8 +261,11 @@ class SattaBaseAccessClient:
     """
 
     def __init__(self) -> None:
-        self._base_url = getattr(settings, "SATTABASE_API_BASE_URL", "http://localhost:8086")
+        self._base_url = getattr(settings, "SATTABASE_API_BASE_URL", "http://localhost:8086/api/v1")
         self._api_key = getattr(settings, "SATTABASE_API_KEY", "")
+        # SATTABASE_API_KEY is set in settings.py from the env var
+        # SATTABASE_API_KEY_FOR_DEALER (named per-sister-domain so future
+        # sister domains can have their own keys in the same .env file).
         self._service_domain = getattr(settings, "SATTABASE_SERVICE_DOMAIN", "localhost:4323")
         self._cache_ttl = getattr(settings, "SATTABASE_ACCESS_CACHE_TTL", 300)
         self._strict_mode = getattr(settings, "SATTABASE_ACCESS_STRICT_MODE", False)

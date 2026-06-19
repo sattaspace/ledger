@@ -242,29 +242,55 @@ JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=60)
 
 
 # SattaBase JWT verification (FIX S-1, Audit A1).
-# The PermissionMiddleware verifies SattaBase-issued JWTs using RS256 with
-# the public key below. This is the ONLY supported verification method —
-# asymmetric crypto ensures that a compromised DealerBackend cannot be used
-# to forge SattaBase JWTs for other sister domains.
+# The PermissionMiddleware verifies SattaBase-issued JWTs.
 #
-# REMOVED: SATTABASE_JWT_SHARED_SECRET (HS256 fallback). This was a security
-# anti-pattern — it required copying SattaBase's signing key to DealerBackend,
-# which means a DealerBackend compromise would let an attacker forge tokens
-# for ALL sister domains. The API key (SATTABASE_API_KEY) handles
-# server-to-server auth; JWT verification must use RS256 only.
+# Two verification modes are supported:
 #
-# If SATTABASE_JWT_PUBLIC_KEY is not configured, SattaBase JWT verification
-# fails closed (only local DSR JWTs will work). This is the correct default.
+# 1. RS256 (production, recommended): Set SATTABASE_JWT_PUBLIC_KEY to the
+#    PEM-encoded public key. Asymmetric crypto ensures a DealerBackend
+#    compromise cannot be used to forge SattaBase JWTs for other sister
+#    domains.
 #
-# To obtain the public key from SattaBase:
-#   1. SattaBase .env has SB_JWT_PUBLIC_KEY (or extract from the signing key)
-#   2. Or: curl http://localhost:8086/api/v1/auth/.well-known/jwks.json
-#   3. Set it here as a single-line PEM (replace newlines with \n)
-SATTABASE_JWT_ALGORITHM = os.getenv("SATTABASE_JWT_ALGORITHM", "RS256")
-SATTABASE_JWT_PUBLIC_KEY = os.getenv("SATTABASE_JWT_PUBLIC_KEY", "")
+# 2. HS256 (dev only): Set SATTABASE_JWT_SHARED_SECRET to SattaBase's
+#    JWT signing key (same value as SB_JWT_SIGNING_KEY in SattaBase .env).
+#    This is simpler for dev but is a security anti-pattern in production
+#    (a DealerBackend compromise would let an attacker forge tokens for
+#    ALL sister domains).
+#
+# If neither key is configured, SattaBase JWT verification decodes WITHOUT
+# signature verification (DEBUG=True only — fails closed in production).
+#
+# Env var compatibility: both SATTABASE_JWT_* and SB_JWT_* prefixes are
+# accepted. The .env.example uses SB_ prefix; some deployments use
+# SATTABASE_ prefix. We try both.
+
+# JWT algorithm — HS256 for dev (shared secret), RS256 for prod (public key)
+SATTABASE_JWT_ALGORITHM = os.getenv(
+    "SATTABASE_JWT_ALGORITHM",
+    os.getenv("SB_JWT_ALGORITHM", "RS256"),
+)
+
+# HS256 shared secret (dev only — same as SattaBase's SB_JWT_SIGNING_KEY)
+SATTABASE_JWT_SHARED_SECRET = os.getenv(
+    "SATTABASE_JWT_SHARED_SECRET",
+    os.getenv("SB_JWT_SIGNING_KEY", os.getenv("SB_JWT_SHARED_SECRET", "")),
+)
+
+# RS256 public key (production)
+SATTABASE_JWT_PUBLIC_KEY = os.getenv(
+    "SATTABASE_JWT_PUBLIC_KEY",
+    os.getenv("SB_JWT_PUBLIC_KEY", ""),
+)
+
 # Issuer and audience validation - leave empty if SattaBase JWT doesn't include these claims
-SATTABASE_JWT_ISSUER = os.getenv("SATTABASE_JWT_ISSUER", "")
-SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "")
+SATTABASE_JWT_ISSUER = os.getenv(
+    "SATTABASE_JWT_ISSUER",
+    os.getenv("SB_JWT_ISSUER", ""),
+)
+SATTABASE_JWT_AUDIENCE = os.getenv(
+    "SATTABASE_JWT_AUDIENCE",
+    os.getenv("SB_JWT_AUDIENCE", ""),
+)
 
 
 
@@ -278,29 +304,57 @@ SATTABASE_JWT_AUDIENCE = os.getenv("SATTABASE_JWT_AUDIENCE", "")
 # be constrained accordingly.
 
 # Base URL of the SattaBase backend (no trailing slash)
+# Env var compat: .env.example uses SB_API_BASE_URL, some deployments use SATTABASE_API_BASE_URL
 SATTABASE_API_BASE_URL = os.getenv(
     "SATTABASE_API_BASE_URL",
-    "http://localhost:8086",
+    os.getenv("SB_API_BASE_URL", "http://localhost:8086/api/v1"),
 )
 # dealercore's API key for authenticating to SattaBase. This is a "ServiceCredential"
-# API key issued by SattaBase for this sister domain (ServiceCredential).
+# API key issued by SattaBase for this sister domain's ServiceDomain.
 # Required in production — the /billing/service/subscriber/access endpoint
 # uses IsServiceAuthenticated which validates the X-API-Key header.
-SATTABASE_API_KEY = os.getenv("SATTABASE_API_KEY", "sb_live__qoUu-jmS7e1BQsmYenCAVn5c4rBY4zMpbwgBPri1Wc")
+#
+# Named SATTABASE_API_KEY_FOR_DEALER because each sister domain gets its
+# OWN API key. Future sister domains will have their own keys
+# (SATTABASE_API_KEY_FOR_INVENTORY, etc.). We also accept the legacy
+# SATTABASE_API_KEY and SB_API_KEY names for backwards compatibility.
+SATTABASE_API_KEY = (
+    os.getenv("SATTABASE_API_KEY_FOR_DEALER")
+    or os.getenv("SATTABASE_API_KEY")
+    or os.getenv("SB_API_KEY")
+    or ""
+)
+
 
 # The service domain slug that identifies this product in SattaBase's
 # ServiceDomain table. Must match the `domain` field exactly.
+# Env var compat: .env.example uses SB_SERVICE_DOMAIN
 SATTABASE_SERVICE_DOMAIN = os.getenv(
     "SATTABASE_SERVICE_DOMAIN",
-    "localhost:4323",
+    os.getenv("SB_SERVICE_DOMAIN", "localhost:4323"),
 )
 
 # Cache TTL (seconds) for dealer access lookups. 5 minutes balances
 # freshness (plan changes propagate quickly) against SattaBase load.
 SATTABASE_ACCESS_CACHE_TTL = int(os.getenv("SATTABASE_ACCESS_CACHE_TTL", "300"))
 
-
-
+# GAP E-4 fix: strict mode controls what happens when SattaBase is
+# unreachable (network error, missing API key, 404 on subscriber).
+#
+# False (default, dev-friendly): permissive fallback — empty access map,
+# which means missing keys are treated as "allowed". This keeps the dev
+# environment working without a running SattaBase, but is a security
+# risk in production (a SattaBase outage disables ALL plan-level
+# enforcement).
+#
+# True (production): restrictive fallback — all gated modules denied.
+# This is the safe default for production. Set via env var so it can
+# be toggled without code changes.
+#
+# In production, set SATTABASE_ACCESS_STRICT_MODE=True in the .env file.
+SATTABASE_ACCESS_STRICT_MODE = os.getenv(
+    "SATTABASE_ACCESS_STRICT_MODE", "false"
+).lower() in ("true", "1", "yes", "on")
 
 
 
